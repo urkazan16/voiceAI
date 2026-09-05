@@ -166,7 +166,6 @@ pub fn run() {
 
             dictation::start_worker(app.handle().clone(), shared.clone(), capture.clone());
 
-            let engine_for_hotkey = shared.clone();
             app.handle().plugin(
                 tauri_plugin_global_shortcut::Builder::new()
                     .with_handler(move |_app, shortcut, event| {
@@ -178,18 +177,7 @@ pub fn run() {
                             dictation::enqueue(dictation::DictationCmd::Cancel);
                             return;
                         }
-                        let keys = engine_for_hotkey.lock().ok().map(|eng| {
-                            (
-                                eng.hotkey_registered
-                                    .clone()
-                                    .unwrap_or_else(|| eng.settings.hotkey.clone()),
-                                eng.settings.copy_last_hotkey.clone(),
-                                eng.settings.paste_last_hotkey.clone(),
-                            )
-                        });
-                        let Some((talk, copy, paste)) = keys else {
-                            return;
-                        };
+                        let (talk, copy, paste) = dictation::bound_hotkeys();
                         if shortcut_matches(shortcut, &copy) && pressed {
                             dictation::enqueue(dictation::DictationCmd::CopyLast);
                             return;
@@ -243,12 +231,15 @@ fn shortcut_matches(event: &Shortcut, configured: &str) -> bool {
 
 pub fn apply_shortcuts(app: &AppHandle, engine: &SharedEngine) -> Option<String> {
     let (talk, copy, paste, previous) = match engine.lock() {
-        Ok(eng) => (
-            eng.settings.hotkey.clone(),
-            eng.settings.copy_last_hotkey.clone(),
-            eng.settings.paste_last_hotkey.clone(),
-            eng.hotkey_registered.clone(),
-        ),
+        Ok(eng) => {
+            dictation::remember_microphone(eng.settings.microphone_name.clone());
+            (
+                eng.settings.hotkey.clone(),
+                eng.settings.copy_last_hotkey.clone(),
+                eng.settings.paste_last_hotkey.clone(),
+                eng.hotkey_registered.clone(),
+            )
+        }
         Err(_) => return Some("engine lock poisoned".into()),
     };
     for old in [
@@ -278,6 +269,8 @@ pub fn apply_shortcuts(app: &AppHandle, engine: &SharedEngine) -> Option<String>
     let _ = app.global_shortcut().register(copy.as_str());
     let _ = app.global_shortcut().register(paste.as_str());
     let _ = app.global_shortcut().register("Escape");
+    let talk_active = registered.clone().unwrap_or(talk);
+    dictation::remember_hotkeys(talk_active.clone(), copy, paste);
     if let Ok(mut eng) = engine.lock() {
         eng.hotkey_registered = registered.clone();
         if let Some(active) = &registered {

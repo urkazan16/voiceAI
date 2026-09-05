@@ -1,7 +1,10 @@
 use crate::audio::{self, SharedCapture};
 use crate::engine::SharedEngine;
 use crate::error::LfError;
+use crate::injection::ClipboardInjector;
+use crate::llm::NativeLlm;
 use crate::pipeline::PipelineState;
+use crate::stt::{NativeStt, SpeechToText};
 use serde::Serialize;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Sender};
@@ -13,6 +16,45 @@ static CANCEL: AtomicBool = AtomicBool::new(false);
 static HANDS_FREE: AtomicBool = AtomicBool::new(false);
 static PRESS_AT: Mutex<Option<Instant>> = Mutex::new(None);
 static WORKER: OnceLock<Sender<DictationCmd>> = OnceLock::new();
+static BOUND_HOTKEYS: Mutex<(String, String, String)> = Mutex::new((
+    String::new(),
+    String::new(),
+    String::new(),
+));
+static MICROPHONE: Mutex<Option<String>> = Mutex::new(None);
+
+/// Cached shortcuts so the Carbon/hotkey callback never waits on the engine mutex
+/// (Whisper can hold that lock for tens of seconds).
+pub fn remember_hotkeys(talk: String, copy: String, paste: String) {
+    if let Ok(mut slot) = BOUND_HOTKEYS.lock() {
+        *slot = (talk, copy, paste);
+    }
+}
+
+pub fn bound_hotkeys() -> (String, String, String) {
+    BOUND_HOTKEYS
+        .lock()
+        .ok()
+        .map(|g| g.clone())
+        .filter(|(talk, _, _)| !talk.is_empty())
+        .unwrap_or_else(|| {
+            (
+                "Control+Shift+Space".into(),
+                "Command+Control+C".into(),
+                "Command+Control+V".into(),
+            )
+        })
+}
+
+pub fn remember_microphone(name: Option<String>) {
+    if let Ok(mut slot) = MICROPHONE.lock() {
+        *slot = name;
+    }
+}
+
+fn cached_microphone() -> Option<String> {
+    MICROPHONE.lock().ok().and_then(|g| g.clone())
+}
 
 #[derive(Debug, Clone, Copy)]
 pub enum DictationCmd {
@@ -87,7 +129,7 @@ pub fn emit_state(app: &AppHandle, state: DictationState) {
 
 pub fn show_bar(app: &AppHandle, engine: &SharedEngine) {
     let enabled = engine
-        .lock()
+        .try_lock()
         .map(|eng| eng.settings.show_flow_bar)
         .unwrap_or(true);
     if !enabled {
@@ -113,7 +155,17 @@ pub fn hide_bar_later(app: &AppHandle) {
 }
 
 pub fn on_hotkey_pressed(app: &AppHandle, engine: &SharedEngine, capture: &SharedCapture) {
-    if capture.is_recording() || HANDS_FREE.load(Ordering::Relaxed) {
+    if HANDS_FREE.load(Ordering::Relaxed) || capture.is_recording() {
+        let too_soon = PRESS_AT
+            .lock()
+            .ok()
+            .and_then(|g| *g)
+            .map(|t| t.elapsed() < Duration::from_millis(250))
+            .unwrap_or(false);
+        if too_soon {
+            return;
+        }
+        stop_and_process(app, engine, capture);
         return;
     }
     CANCEL.store(false, Ordering::Relaxed);
@@ -121,10 +173,15 @@ pub fn on_hotkey_pressed(app: &AppHandle, engine: &SharedEngine, capture: &Share
     if let Ok(mut slot) = PRESS_AT.lock() {
         *slot = Some(Instant::now());
     }
-    let mic = engine
-        .lock()
-        .ok()
-        .and_then(|eng| eng.settings.microphone_name.clone());
+    let mic = match engine.try_lock() {
+        Ok(mut eng) => {
+            remember_microphone(eng.settings.microphone_name.clone());
+            eng.snapshot.reset();
+            let _ = eng.snapshot.transition(PipelineState::Recording);
+            eng.settings.microphone_name.clone()
+        }
+        Err(_) => cached_microphone(),
+    };
     let engine_for_target = engine.clone();
     std::thread::spawn(move || {
         let (pid, name) = crate::injection::frontmost_target();
@@ -133,10 +190,6 @@ pub fn on_hotkey_pressed(app: &AppHandle, engine: &SharedEngine, capture: &Share
             eng.insert_target_app = name;
         }
     });
-    if let Ok(mut eng) = engine.lock() {
-        eng.snapshot.reset();
-        let _ = eng.snapshot.transition(PipelineState::Recording);
-    }
     match capture.start(mic) {
         Ok(()) => {
             show_bar(app, engine);
@@ -205,6 +258,9 @@ pub fn stop_and_process(app: &AppHandle, engine: &SharedEngine, capture: &Shared
 pub fn cancel(app: &AppHandle, engine: &SharedEngine, capture: &SharedCapture) {
     CANCEL.store(true, Ordering::Relaxed);
     HANDS_FREE.store(false, Ordering::Relaxed);
+    if let Ok(mut slot) = PRESS_AT.lock() {
+        *slot = None;
+    }
     let _ = capture.stop();
     if let Ok(mut eng) = engine.lock() {
         eng.snapshot.reset();
@@ -249,6 +305,9 @@ fn wait_for_vad_stop(app: &AppHandle, engine: &SharedEngine, capture: &SharedCap
 }
 
 fn finish_recording(app: &AppHandle, engine: &SharedEngine, capture: &SharedCapture) {
+    if let Ok(mut slot) = PRESS_AT.lock() {
+        *slot = None;
+    }
     if CANCEL.load(Ordering::Relaxed) {
         let _ = capture.stop();
         return;
@@ -285,8 +344,41 @@ fn finish_recording(app: &AppHandle, engine: &SharedEngine, capture: &SharedCapt
             );
             return;
         }
+        let (stt_path, lang, pid) = match engine.lock() {
+            Ok(eng) => (
+                eng.ready_model_path("stt"),
+                eng.settings.stt_language.clone(),
+                eng.insert_target_pid,
+            ),
+            Err(_) => {
+                fail(
+                    &app,
+                    &engine,
+                    "engine lock poisoned",
+                    duration_ms,
+                );
+                return;
+            }
+        };
+        let raw = match NativeStt.transcribe(&pcm, stt_path.as_deref(), &lang) {
+            Ok(text) => text,
+            Err(err) => {
+                fail(&app, &engine, &err.to_string(), duration_ms);
+                return;
+            }
+        };
+        if CANCEL.load(Ordering::Relaxed) {
+            emit_cancelled(&app, &engine);
+            return;
+        }
         let result = match engine.lock() {
-            Ok(mut eng) => eng.process_captured_audio(&pcm),
+            Ok(mut eng) => eng.run_text_pipeline(
+                &raw,
+                &NativeStt,
+                &NativeLlm,
+                &ClipboardInjector { target_pid: pid },
+                &[],
+            ),
             Err(_) => Err(LfError::Other("engine lock poisoned".into())),
         };
         if CANCEL.load(Ordering::Relaxed)

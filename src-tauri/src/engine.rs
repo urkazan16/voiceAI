@@ -146,7 +146,7 @@ impl AppEngine {
         Ok(path)
     }
 
-    fn ready_model_path(&self, kind: &str) -> Option<PathBuf> {
+    pub(crate) fn ready_model_path(&self, kind: &str) -> Option<PathBuf> {
         let id = match kind {
             "llm" => self.settings.active_llm_model.as_ref()?,
             _ => self.settings.active_stt_model.as_ref()?,
