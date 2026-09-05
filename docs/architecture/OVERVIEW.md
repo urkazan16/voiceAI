@@ -1,6 +1,6 @@
 # Architecture
 
-LocalFlow.app contains Tauri, the Rust core, a native runtime library, and the UI. Model weights stay in:
+LocalFlow.app contains Tauri, the Rust core (whisper-rs STT), and the UI. Model weights stay in:
 
 ```text
 ~/Library/Application Support/LocalFlow/models/{whisper,llm}/

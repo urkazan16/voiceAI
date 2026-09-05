@@ -16,7 +16,15 @@ fn known() -> [KnownPhrase; 2] {
         KnownPhrase {
             canonical: NALIM_TONGUE_TWISTER,
             stems: &[
-                "налим", "лиман", "ленив", "ловил", "мели", "линя", "любв", "молил", "манил",
+                "налим",
+                "лиман",
+                "ленив",
+                "ловил",
+                "мели",
+                "линя",
+                "любв",
+                "молил",
+                "манил",
                 "туман",
             ],
             min_stems: 5,
@@ -130,5 +138,20 @@ mod tests {
             "Мы вчера ловили налима на мели."
         );
         assert_eq!(recover("Привет, Саша"), "Привет, Саша");
+    }
+
+    #[test]
+    fn compact_alpha_maps_ukrainian_i() {
+        assert_eq!(
+            recover("шла саша по шоссе і сосала сушку"),
+            SASHA_TONGUE_TWISTER
+        );
+    }
+
+    #[test]
+    fn empty_and_short_text_pass_through() {
+        assert_eq!(recover(""), "");
+        assert_eq!(recover("ок"), "ок");
+        assert_eq!(recover("налим"), "налим");
     }
 }

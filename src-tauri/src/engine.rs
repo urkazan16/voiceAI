@@ -195,6 +195,8 @@ impl AppEngine {
             &NativeLlm,
             &ClipboardInjector {
                 target_pid: self.insert_target_pid,
+                target_app: self.insert_target_app.clone(),
+                insert_delay_ms: self.settings.insert_delay_ms,
             },
             &pcm,
         )
@@ -225,8 +227,15 @@ impl AppEngine {
         } else {
             transcript.to_string()
         };
+        let raw = crate::sanitize::strip_model_tags(&raw);
+        let cues = crate::whisper_stt::last_cues();
+        let timeout =
+            std::time::Duration::from_millis(self.settings.postprocess_timeout_ms.max(1_000));
         if crate::dictation::is_cancelled() {
             return Err(LfError::Other("cancelled".into()));
+        }
+        if started.elapsed() > timeout {
+            return Err(LfError::Other("postprocess timeout".into()));
         }
         let (after_command, command_mode, _) = profiles::apply_voice_command(&raw);
         let resolved = self.resolve_context();
@@ -260,7 +269,8 @@ impl AppEngine {
             formatted_text.clone()
         };
         self.snapshot.transition(PipelineState::Llm)?;
-        let llm_text = if skip_llm {
+        let timed_out = started.elapsed() > timeout;
+        let llm_text = if skip_llm || timed_out {
             personalized_text.clone()
         } else {
             match mode {
@@ -307,6 +317,7 @@ impl AppEngine {
             final_text: final_text.clone(),
             mode,
             insert_ok,
+            cues: cues.clone(),
         };
         self.last_output = Some(output.clone());
         if !final_text.is_empty() {
@@ -316,6 +327,15 @@ impl AppEngine {
             "last_transcript",
             &serde_json::to_string(&output).unwrap_or_default(),
         );
+        let timecodes = if cues.is_empty() {
+            crate::pipeline::cues_to_srt(&[crate::pipeline::TranscriptCue {
+                start_ms: 0,
+                end_ms: started.elapsed().as_millis() as u64,
+                text: final_text.clone(),
+            }])
+        } else {
+            crate::pipeline::cues_to_srt(&cues)
+        };
         let item = HistoryItem {
             id: Uuid::new_v4().to_string(),
             created_at: Utc::now().to_rfc3339(),
@@ -326,6 +346,7 @@ impl AppEngine {
             profile: resolved.profile_name.clone(),
             model: self.settings.active_stt_model.clone().unwrap_or_default(),
             processing_time_ms: started.elapsed().as_millis() as u64,
+            timecodes,
         };
         self.store.insert_history(&item)?;
         self.snapshot.transition(PipelineState::Idle)?;
@@ -336,6 +357,7 @@ impl AppEngine {
     }
 
     pub fn run_scripted(&mut self, transcript: &str) -> LfResult<PipelineOutput> {
+        crate::dictation::clear_cancel();
         let stt = ScriptedStt {
             transcript: transcript.to_string(),
         };
@@ -430,6 +452,8 @@ impl AppEngine {
             .ok_or_else(|| LfError::Other("no last transcript".into()))?;
         crate::injection::ClipboardInjector {
             target_pid: crate::injection::frontmost_unix_id(),
+            target_app: crate::injection::frontmost_app_name(),
+            insert_delay_ms: self.settings.insert_delay_ms,
         }
         .insert_text(&text, self.settings.restore_clipboard)?;
         Ok(text)

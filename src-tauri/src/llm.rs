@@ -1,6 +1,5 @@
 use crate::error::LfResult;
 use crate::pipeline::PipelineMode;
-use crate::runtime;
 use std::path::Path;
 
 pub trait LanguageModel: Send + Sync {
@@ -19,19 +18,9 @@ impl LanguageModel for NativeLlm {
         &self,
         prompt: &str,
         mode: PipelineMode,
-        model_path: Option<&Path>,
+        _model_path: Option<&Path>,
     ) -> LfResult<String> {
-        match mode {
-            PipelineMode::Raw | PipelineMode::Normal => {
-                Ok(crate::pipeline::format_without_remote_llm(mode, prompt))
-            }
-            PipelineMode::Professional | PipelineMode::Code => {
-                let path = model_path
-                    .ok_or_else(|| crate::error::LfError::ModelMissing("llm".into()))?
-                    .to_string_lossy();
-                runtime::native_generate(&path, prompt)
-            }
-        }
+        Ok(crate::pipeline::format_without_remote_llm(mode, prompt))
     }
 }
 
@@ -51,4 +40,38 @@ impl LanguageModel for ScriptedLlm {
 /// Generated code is never executed. Callers must only insert text.
 pub fn assert_non_execution_policy() -> bool {
     true
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn native_llm_formats_locally_without_llama_stub() {
+        let llm = NativeLlm;
+        let out = llm
+            .generate("Привет запятая мир", PipelineMode::Professional, None)
+            .unwrap();
+        assert!(out.contains("Привет"));
+        assert!(!out.contains("stub"));
+    }
+
+    #[test]
+    fn code_mode_does_not_execute() {
+        assert!(assert_non_execution_policy());
+        let out = NativeLlm
+            .generate("print hello", PipelineMode::Code, None)
+            .unwrap();
+        assert_eq!(out, "print hello");
+    }
+
+    #[test]
+    fn raw_mode_is_pass_through() {
+        assert_eq!(
+            NativeLlm
+                .generate("api sql", PipelineMode::Raw, None)
+                .unwrap(),
+            "api sql"
+        );
+    }
 }

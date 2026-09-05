@@ -3,15 +3,13 @@
 Local, private, CPU-first voice-to-text for macOS. Hold **Option+Space**, speak, release. Speech-to-text, dictionary, personalization, and optional local LLM formatting run on this machine. Inserted text is never executed.
 
 ```text
-git clone
-install prerequisites
-npm install
-npm test
-npm run build
+./install.sh
 npm run tauri dev
 ```
 
-No cloud account is required. Core dictation does not call a backend.
+Hold **Control+Shift+Space**, speak, release. Speech-to-text, dictionary, personalization, and optional local formatting run on this machine. Inserted text is never executed.
+
+One-file uninstall: `scripts/uninstall.sh` (asks whether to keep history). The Privacy screen has the same Uninstall button.
 
 ## Prerequisites (minimum versions)
 
@@ -49,7 +47,7 @@ There are no secret environment variables and no absolute developer paths in the
 | `npm run test:all`      | Unit, integration, UI, pipeline, dictionary, personalization                           |
 | `npm run test:ai`       | AI benchmark profile (requires catalog + optional local models)                        |
 | `npm run build`         | Frontend production bundle + debug Rust binary                                         |
-| `npm run build:release` | Checks UI, builds Rust, compiles native runtime, packages `.app`/`.dmg`, SBOM, SHA-256 |
+| `npm run build:release` | Checks UI, builds Rust, packages `.app`/`.dmg`, SBOM, SHA-256 |
 | `npm run license:check` | Dependency license allowlist                                                           |
 | `npm run sbom`          | CycloneDX SBOM                                                                         |
 

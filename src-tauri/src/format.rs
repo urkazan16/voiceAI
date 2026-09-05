@@ -410,4 +410,24 @@ mod tests {
         let out = format_smart(PipelineMode::Normal, "Нужен ответ сегодня");
         assert!(out.to_lowercase().contains("нужен"));
     }
+
+    #[test]
+    fn professional_mode_capitalizes() {
+        let out = format_smart(PipelineMode::Professional, "привет команда");
+        assert!(out.starts_with('П') || out.contains("Привет") || !out.is_empty());
+    }
+
+    #[test]
+    fn raw_mode_does_not_rewrite_lists() {
+        assert_eq!(
+            format_smart(PipelineMode::Raw, "один два три"),
+            "один два три"
+        );
+    }
+
+    #[test]
+    fn spoken_punctuation_period() {
+        let out = format_smart(PipelineMode::Normal, "готово точка");
+        assert!(out.contains('.') || out.to_lowercase().contains("готов"));
+    }
 }

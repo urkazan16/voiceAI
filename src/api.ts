@@ -41,6 +41,10 @@ export interface AppSettings {
   personalization_enabled: boolean;
   learn_from_corrections: boolean;
   stt_language: string;
+  insert_delay_ms: number;
+  postprocess_timeout_ms: number;
+  sound_cues: boolean;
+  log_max_bytes: number;
 }
 
 export interface ModelRecord {
@@ -140,6 +144,7 @@ export interface PipelineOutput {
   final_text: string;
   mode: AppSettings["mode"];
   insert_ok: boolean;
+  cues?: { start_ms: number; end_ms: number; text: string }[];
 }
 
 export interface HistoryItem {
@@ -152,6 +157,7 @@ export interface HistoryItem {
   profile: string;
   model: string;
   processing_time_ms: number;
+  timecodes?: string;
 }
 
 export interface PrivacySummary {
@@ -291,4 +297,12 @@ export const api = {
   listModelStatus: () => call<ModelInstallStatus[]>("list_model_status"),
   setActiveModel: (modelId: string) => call<string>("set_active_model", { modelId }),
   getHotkeyStatus: () => call<HotkeyStatus>("get_hotkey_status"),
+  getStats: () => call<{ recordings: number }>("get_stats"),
+  resetStats: () => call<void>("reset_stats"),
+  exportHistoryTimecodes: () => call<string>("export_history_timecodes"),
+  uninstallLocalflow: (keepHistory: boolean) =>
+    call<{ kept_history: boolean; removed: string[]; skipped: string[] }>("uninstall_localflow", {
+      keepHistory,
+    }),
+  installDictateMacro: () => call<string>("install_dictate_macro"),
 };

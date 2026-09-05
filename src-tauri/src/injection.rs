@@ -30,11 +30,19 @@ impl TextInjector for MemoryInjector {
 #[derive(Default)]
 pub struct ClipboardInjector {
     pub target_pid: Option<i32>,
+    pub target_app: Option<String>,
+    pub insert_delay_ms: u64,
 }
 
 impl TextInjector for ClipboardInjector {
     fn insert_text(&self, text: &str, restore_clipboard: bool) -> LfResult<()> {
-        insert_via_clipboard(text, restore_clipboard, self.target_pid)
+        insert_via_clipboard(
+            text,
+            restore_clipboard,
+            self.target_pid,
+            self.target_app.as_deref(),
+            self.insert_delay_ms,
+        )
     }
 }
 
@@ -96,14 +104,28 @@ fn insert_via_clipboard(
     text: &str,
     restore_clipboard: bool,
     target_pid: Option<i32>,
+    target_app: Option<&str>,
+    insert_delay_ms: u64,
 ) -> LfResult<()> {
     #[cfg(target_os = "macos")]
     {
-        macos::insert_text(text, restore_clipboard, target_pid)
+        macos::insert_text(
+            text,
+            restore_clipboard,
+            target_pid,
+            target_app,
+            insert_delay_ms,
+        )
     }
     #[cfg(not(target_os = "macos"))]
     {
-        let _ = (text, restore_clipboard, target_pid);
+        let _ = (
+            text,
+            restore_clipboard,
+            target_pid,
+            target_app,
+            insert_delay_ms,
+        );
         Err(LfError::InjectionFailed(
             "clipboard injection is implemented for macOS in this MVP".into(),
         ))
@@ -159,10 +181,18 @@ mod macos {
         text: &str,
         restore_clipboard: bool,
         target_pid: Option<i32>,
+        target_app: Option<&str>,
+        insert_delay_ms: u64,
     ) -> LfResult<()> {
         prepare_keyboard();
         focus_pid(target_pid);
-        std::thread::sleep(Duration::from_millis(40));
+        let delay = insert_delay_ms.max(40);
+        let extra = if is_editor_or_terminal(target_app) {
+            delay.saturating_add(80)
+        } else {
+            delay
+        };
+        std::thread::sleep(Duration::from_millis(extra));
 
         let previous = if restore_clipboard {
             std::process::Command::new("pbpaste")
@@ -204,6 +234,27 @@ mod macos {
             let _ = child.wait();
         }
         Ok(())
+    }
+
+    fn is_editor_or_terminal(app: Option<&str>) -> bool {
+        let Some(name) = app else {
+            return false;
+        };
+        let n = name.to_ascii_lowercase();
+        n.contains("term")
+            || n.contains("iterm")
+            || n.contains("warp")
+            || n.contains("kitty")
+            || n.contains("ghostty")
+            || n.contains("alacritty")
+            || n.contains("code")
+            || n.contains("cursor")
+            || n.contains("zed")
+            || n.contains("xcode")
+            || n.contains("sublime")
+            || n.contains("vim")
+            || n.contains("nvim")
+            || n.contains("helix")
     }
 
     fn focus_pid(pid: Option<i32>) {
@@ -294,7 +345,6 @@ mod macos {
         unsafe {
             let source = CGEventSourceCreate(HID_SYSTEM_STATE);
             for key in [
-                VK_SPACE,
                 VK_CONTROL,
                 VK_RIGHT_CONTROL,
                 VK_SHIFT,

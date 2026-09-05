@@ -70,6 +70,7 @@ pub fn save_settings(
     {
         let mut eng = lock(&engine)?;
         eng.settings = settings;
+        crate::journal::set_max_bytes(eng.settings.log_max_bytes);
         eng.persist()?;
     }
     crate::apply_shortcuts(&app, &engine);
@@ -280,6 +281,8 @@ pub fn paste_text(engine: tauri::State<SharedEngine>, text: String) -> Result<()
     let restore = lock(&engine)?.settings.restore_clipboard;
     crate::injection::ClipboardInjector {
         target_pid: crate::injection::frontmost_unix_id(),
+        target_app: crate::injection::frontmost_app_name(),
+        insert_delay_ms: lock(&engine)?.settings.insert_delay_ms,
     }
     .insert_text(&text, restore)?;
     Ok(())
@@ -551,4 +554,78 @@ pub fn get_hotkey_status(engine: tauri::State<SharedEngine>) -> Result<HotkeySta
         registered: eng.hotkey_registered.clone(),
         error: eng.hotkey_error.clone(),
     })
+}
+
+#[derive(Serialize)]
+pub struct StatsSnapshot {
+    pub recordings: u64,
+}
+
+#[tauri::command]
+pub fn get_stats(engine: tauri::State<SharedEngine>) -> Result<StatsSnapshot, CommandError> {
+    let eng = lock(&engine)?;
+    let recordings = eng
+        .store
+        .get_kv("stats_recordings")
+        .ok()
+        .flatten()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(0);
+    Ok(StatsSnapshot { recordings })
+}
+
+#[tauri::command]
+pub fn reset_stats(engine: tauri::State<SharedEngine>) -> Result<(), CommandError> {
+    lock(&engine)?.store.put_kv("stats_recordings", "0")?;
+    crate::journal::log("stats_reset", "ok");
+    Ok(())
+}
+
+#[tauri::command]
+pub fn export_history_timecodes(
+    engine: tauri::State<SharedEngine>,
+) -> Result<String, CommandError> {
+    let items = lock(&engine)?.store.list_history()?;
+    let mut out = String::new();
+    for item in items {
+        out.push_str(&format!("# {} {}\n", item.created_at, item.application));
+        if item.timecodes.trim().is_empty() {
+            out.push_str(&format!(
+                "1\n00:00:00,000 --> 00:00:01,000\n{}\n\n",
+                item.output
+            ));
+        } else {
+            out.push_str(&item.timecodes);
+            if !item.timecodes.ends_with('\n') {
+                out.push('\n');
+            }
+            out.push('\n');
+        }
+    }
+    Ok(out)
+}
+
+#[tauri::command]
+pub fn uninstall_localflow(
+    keep_history: bool,
+) -> Result<crate::uninstall::UninstallReport, CommandError> {
+    Ok(crate::uninstall::uninstall(keep_history)?)
+}
+
+#[tauri::command]
+pub fn install_dictate_macro() -> Result<String, CommandError> {
+    let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
+    let dir = std::path::PathBuf::from(home).join("Applications");
+    std::fs::create_dir_all(&dir).map_err(LfError::from)?;
+    let path = dir.join("LocalFlow Dictate.command");
+    let script = r#"#!/bin/bash
+osascript -e 'tell application "System Events" to keystroke space using {control down, shift down}'
+"#;
+    std::fs::write(&path, script).map_err(LfError::from)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755));
+    }
+    Ok(path.display().to_string())
 }

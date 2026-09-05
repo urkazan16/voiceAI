@@ -1,18 +1,15 @@
-# Native dependency subset
+# Native inference
 
-whisper.cpp and llama.cpp are MIT at the project level. Repositories also contain examples and optional files that may differ.
+whisper.cpp is pulled in as the MIT subset vendored by `whisper-rs` 0.13.2 (`whisper-rs-sys` in `Cargo.lock`). There is no `runtime.c` stub in the app binary.
 
 LocalFlow may distribute only:
 
-- Core C/C++ inference sources required to transcribe or generate
+- Core C/C++ inference sources required to transcribe (via whisper-rs-sys)
 - Matching MIT/Apache headers
-
-The main STT path uses `whisper-rs` 0.13.2, which vendors a MIT whisper.cpp subset at build time (cmake). Record the resolved `whisper-rs-sys` crate version from `Cargo.lock` in release notes.
 
 Not distributed:
 
 - Unreviewed examples
 - Extra codec backends
 - Bundled model files
-
-Use `scripts/build-native-runtime.sh` to compile the leftover FFI stub. Linking a separately fetched llama.cpp subset still requires a pinned commit SHA in this file before release.
+- llama.cpp (professional/code modes use on-device formatting)

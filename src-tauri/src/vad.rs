@@ -2,7 +2,7 @@
 
 const FRAME_MS: u32 = 20;
 const THRESHOLD: f32 = 0.012;
-const PAD_FRAMES: usize = 8;
+const PAD_FRAMES: usize = 16;
 
 pub fn trim_silence(pcm: &[f32], sample_rate: u32) -> Vec<f32> {
     if pcm.is_empty() || sample_rate == 0 {

@@ -33,6 +33,14 @@ impl DataPaths {
         std::fs::create_dir_all(self.database_dir())?;
         std::fs::create_dir_all(self.logs())?;
         std::fs::create_dir_all(self.config_dir())?;
+        std::fs::create_dir_all(self.audio())?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            for dir in [self.audio(), self.logs(), self.root.clone()] {
+                let _ = std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700));
+            }
+        }
         Ok(())
     }
 
@@ -53,6 +61,9 @@ impl DataPaths {
     }
     pub fn logs(&self) -> PathBuf {
         self.root.join("logs")
+    }
+    pub fn audio(&self) -> PathBuf {
+        self.root.join("audio")
     }
     pub fn config_dir(&self) -> PathBuf {
         self.root.join("config")
@@ -92,5 +103,23 @@ mod tests {
         let root = PathBuf::from("/tmp/LocalFlow");
         assert!(is_inside_boundary(&root, &root.join("models")));
         assert!(!is_inside_boundary(&root, Path::new("/tmp/other")));
+    }
+
+    #[test]
+    fn audio_dir_is_private() {
+        let dir = tempdir().unwrap();
+        let paths = DataPaths::from_override(dir.path().to_path_buf());
+        paths.ensure().unwrap();
+        assert!(paths.audio().is_dir());
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(paths.audio())
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777;
+            assert_eq!(mode, 0o700);
+        }
     }
 }

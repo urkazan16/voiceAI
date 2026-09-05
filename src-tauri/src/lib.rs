@@ -14,6 +14,7 @@ pub mod build_info;
 pub mod catalog;
 pub mod commands;
 pub mod config;
+pub mod cues;
 pub mod db;
 pub mod dictation;
 pub mod dictionary;
@@ -24,6 +25,7 @@ pub mod format;
 pub mod history;
 pub mod injection;
 pub mod integrity;
+pub mod journal;
 pub mod llm;
 pub mod macos_stt;
 pub mod paths;
@@ -32,8 +34,10 @@ pub mod phrases;
 pub mod pipeline;
 pub mod profiles;
 pub mod runtime;
+pub mod sanitize;
 pub mod snippets;
 pub mod stt;
+pub mod uninstall;
 pub mod vad;
 pub mod whisper_stt;
 
@@ -94,7 +98,12 @@ pub fn run() {
             commands::retry_history,
             commands::history_to_snippet,
             commands::copy_text,
-            commands::paste_text
+            commands::paste_text,
+            commands::uninstall_localflow,
+            commands::reset_stats,
+            commands::get_stats,
+            commands::export_history_timecodes,
+            commands::install_dictate_macro
         ])
         .setup(move |app| {
             let show = MenuItem::with_id(app, "show", "Open LocalFlow", true, None::<&str>)?;
@@ -168,7 +177,7 @@ pub fn run() {
 
             app.handle().plugin(
                 tauri_plugin_global_shortcut::Builder::new()
-                    .with_handler(move |_app, shortcut, event| {
+                    .with_handler(move |app, shortcut, event| {
                         let pressed =
                             event.state == tauri_plugin_global_shortcut::ShortcutState::Pressed;
                         let released =
@@ -188,9 +197,11 @@ pub fn run() {
                         }
                         if shortcut_matches(shortcut, &talk) {
                             if pressed {
+                                dictation::notify_hotkey(app, "pressed");
                                 dictation::enqueue(dictation::DictationCmd::Pressed);
                             }
                             if released {
+                                dictation::notify_hotkey(app, "released");
                                 dictation::enqueue(dictation::DictationCmd::Released);
                             }
                         }

@@ -49,5 +49,11 @@ mod tests {
         assert_eq!(info.application, "LocalFlow");
         assert_eq!(info.version, "0.1.0");
         assert!(!info.git_sha.is_empty());
+        assert!(
+            info.native_runtime.starts_with("whisper-rs/"),
+            "{}",
+            info.native_runtime
+        );
+        assert!(!info.native_runtime.contains("stub"));
     }
 }

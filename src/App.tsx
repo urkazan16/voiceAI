@@ -37,6 +37,10 @@ const fallbackSettings = (): AppSettings => ({
   personalization_enabled: true,
   learn_from_corrections: true,
   stt_language: "ru",
+  insert_delay_ms: 120,
+  postprocess_timeout_ms: 45000,
+  sound_cues: true,
+  log_max_bytes: 2097152,
 });
 
 function isToday(iso: string): boolean {
@@ -423,6 +427,52 @@ export function App() {
               />
               Show LocalFlow Bar while listening
             </label>
+            <label className="flex items-center gap-2 text-sm">
+              <input
+                type="checkbox"
+                checked={settings.sound_cues}
+                onChange={(e) => void save({ ...settings, sound_cues: e.target.checked })}
+              />
+              Play start/end recording sounds
+            </label>
+            <label className="block text-sm text-paper/70">
+              Pause before insert (ms)
+              <input
+                className="mt-1 w-full rounded-lg bg-paper/10 p-2"
+                type="number"
+                min={40}
+                max={800}
+                value={settings.insert_delay_ms}
+                onChange={(e) =>
+                  void save({ ...settings, insert_delay_ms: Number(e.target.value) || 120 })
+                }
+              />
+            </label>
+            <label className="block text-sm text-paper/70">
+              Post-processing timeout (ms)
+              <input
+                className="mt-1 w-full rounded-lg bg-paper/10 p-2"
+                type="number"
+                min={5000}
+                max={180000}
+                value={settings.postprocess_timeout_ms}
+                onChange={(e) =>
+                  void save({
+                    ...settings,
+                    postprocess_timeout_ms: Number(e.target.value) || 45000,
+                  })
+                }
+              />
+            </label>
+            <button
+              className="rounded-full border border-paper/30 px-4 py-2"
+              onClick={async () => {
+                const path = await api.installDictateMacro();
+                setStatus(`Macro installed: ${path}. Double-click it to fire the talk hotkey.`);
+              }}
+            >
+              Install Dictate macro
+            </button>
             <label className="block text-sm text-paper/70">
               Copy last transcript
               <input
@@ -1186,6 +1236,44 @@ export function App() {
             {privacy.network_operations.map((item) => (
               <p key={item}>{item}</p>
             ))}
+            <p className="text-sm text-paper/70">Audio cache uses a private 0700 folder. Logs rotate by size and never store tokens.</p>
+            <div className="flex flex-wrap gap-3 pt-2">
+              <button
+                className="rounded-full border border-paper/30 px-4 py-2"
+                onClick={async () => {
+                  const srt = await api.exportHistoryTimecodes();
+                  setConfigText(srt);
+                  setStatus("History exported with timecodes.");
+                  setView("settings");
+                }}
+              >
+                Export history with timecodes
+              </button>
+              <button
+                className="rounded-full border border-paper/30 px-4 py-2"
+                onClick={async () => {
+                  await api.resetStats();
+                  setStatus("Statistics reset.");
+                }}
+              >
+                Reset statistics
+              </button>
+              <button
+                className="rounded-full border border-paper/30 px-4 py-2"
+                onClick={async () => {
+                  if (!window.confirm("Uninstall LocalFlow data? You can keep history.")) {
+                    return;
+                  }
+                  const keep = window.confirm("Keep dictation history?");
+                  const report = await api.uninstallLocalflow(keep);
+                  setStatus(
+                    `Removed:\n${report.removed.join("\n")}\nSkipped:\n${report.skipped.join("\n")}`,
+                  );
+                }}
+              >
+                Uninstall…
+              </button>
+            </div>
           </section>
         )}
       </main>

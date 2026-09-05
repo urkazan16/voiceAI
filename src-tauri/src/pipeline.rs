@@ -102,6 +102,37 @@ pub struct PipelineOutput {
     pub mode: PipelineMode,
     #[serde(default)]
     pub insert_ok: bool,
+    #[serde(default)]
+    pub cues: Vec<TranscriptCue>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TranscriptCue {
+    pub start_ms: u64,
+    pub end_ms: u64,
+    pub text: String,
+}
+
+pub fn cues_to_srt(cues: &[TranscriptCue]) -> String {
+    let mut out = String::new();
+    for (idx, cue) in cues.iter().enumerate() {
+        out.push_str(&format!(
+            "{}\n{} --> {}\n{}\n\n",
+            idx + 1,
+            ms_stamp(cue.start_ms),
+            ms_stamp(cue.end_ms),
+            cue.text.trim()
+        ));
+    }
+    out
+}
+
+fn ms_stamp(ms: u64) -> String {
+    let s = ms / 1000;
+    let rem = ms % 1000;
+    let m = s / 60;
+    let h = m / 60;
+    format!("{:02}:{:02}:{:02},{:03}", h, m % 60, s % 60, rem)
 }
 
 pub fn format_without_remote_llm(mode: PipelineMode, text: &str) -> String {
@@ -141,5 +172,43 @@ mod tests {
             format_without_remote_llm(PipelineMode::Raw, "api sql"),
             "api sql"
         );
+    }
+
+    #[test]
+    fn srt_export_has_timecodes() {
+        let srt = cues_to_srt(&[TranscriptCue {
+            start_ms: 0,
+            end_ms: 1500,
+            text: "Привет".into(),
+        }]);
+        assert!(srt.contains("00:00:00,000 --> 00:00:01,500"));
+        assert!(srt.contains("Привет"));
+    }
+
+    #[test]
+    fn fail_is_always_allowed() {
+        let mut snap = PipelineSnapshot::default();
+        snap.fail("mic");
+        assert_eq!(snap.state, PipelineState::Failed);
+        assert_eq!(snap.last_error.as_deref(), Some("mic"));
+        snap.reset();
+        assert_eq!(snap.state, PipelineState::Idle);
+    }
+
+    #[test]
+    fn cannot_skip_from_completed_to_recording() {
+        let mut snap = PipelineSnapshot::default();
+        snap.transition(PipelineState::Recording).unwrap();
+        snap.transition(PipelineState::ProcessingStt).unwrap();
+        snap.transition(PipelineState::Dictionary).unwrap();
+        snap.transition(PipelineState::Backtrack).unwrap();
+        snap.transition(PipelineState::Formatting).unwrap();
+        snap.transition(PipelineState::Personalization).unwrap();
+        snap.transition(PipelineState::Llm).unwrap();
+        snap.transition(PipelineState::Validate).unwrap();
+        snap.transition(PipelineState::Injecting).unwrap();
+        snap.transition(PipelineState::Completed).unwrap();
+        let err = snap.transition(PipelineState::Recording).unwrap_err();
+        assert_eq!(err.code(), "PIPELINE_INVALID_STATE");
     }
 }

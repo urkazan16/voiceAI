@@ -15,4 +15,6 @@ pub struct HistoryItem {
     pub model: String,
     #[serde(default)]
     pub processing_time_ms: u64,
+    #[serde(default)]
+    pub timecodes: String,
 }

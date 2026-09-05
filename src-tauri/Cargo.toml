@@ -21,6 +21,10 @@ name = "integration"
 path = "../tests/integration/pipeline_integration.rs"
 
 [[test]]
+name = "acceptance"
+path = "tests/acceptance.rs"
+
+[[test]]
 name = "performance"
 path = "../tests/performance/latency.rs"
 

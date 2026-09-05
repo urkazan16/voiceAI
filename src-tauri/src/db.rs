@@ -37,6 +37,7 @@ impl Store {
             ("profile", "TEXT NOT NULL DEFAULT ''"),
             ("model", "TEXT NOT NULL DEFAULT ''"),
             ("processing_time_ms", "INTEGER NOT NULL DEFAULT 0"),
+            ("timecodes", "TEXT NOT NULL DEFAULT ''"),
         ] {
             let sql = format!("ALTER TABLE history ADD COLUMN {col} {ty}");
             let _ = self.conn.execute(&sql, []);
@@ -46,8 +47,8 @@ impl Store {
 
     pub fn insert_history(&self, item: &HistoryItem) -> LfResult<()> {
         self.conn.execute(
-            "INSERT INTO history (id, created_at, mode, transcript, output, application, profile, model, processing_time_ms)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            "INSERT INTO history (id, created_at, mode, transcript, output, application, profile, model, processing_time_ms, timecodes)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
             params![
                 item.id,
                 item.created_at,
@@ -57,7 +58,8 @@ impl Store {
                 item.application,
                 item.profile,
                 item.model,
-                item.processing_time_ms as i64
+                item.processing_time_ms as i64,
+                item.timecodes
             ],
         )?;
         Ok(())
@@ -81,7 +83,8 @@ impl Store {
         let mut stmt = self.conn.prepare(
             "SELECT id, created_at, mode, transcript, output,
                     COALESCE(application, ''), COALESCE(profile, ''),
-                    COALESCE(model, ''), COALESCE(processing_time_ms, 0)
+                    COALESCE(model, ''), COALESCE(processing_time_ms, 0),
+                    COALESCE(timecodes, '')
              FROM history ORDER BY created_at DESC",
         )?;
         let rows = stmt.query_map([], |row| {
@@ -95,6 +98,7 @@ impl Store {
                 profile: row.get(6)?,
                 model: row.get(7)?,
                 processing_time_ms: row.get::<_, i64>(8)? as u64,
+                timecodes: row.get(9)?,
             })
         })?;
         let mut out = Vec::new();
@@ -149,6 +153,7 @@ mod tests {
                 profile: "email".into(),
                 model: "whisper-small".into(),
                 processing_time_ms: 12,
+                timecodes: "1\n00:00:00,000 --> 00:00:01,000\nHello.\n".into(),
             })
             .unwrap();
         assert_eq!(store.list_history().unwrap().len(), 1);

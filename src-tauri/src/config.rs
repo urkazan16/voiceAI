@@ -24,6 +24,30 @@ pub struct AppSettings {
     pub personalization_enabled: bool,
     pub learn_from_corrections: bool,
     pub stt_language: String,
+    #[serde(default = "default_insert_delay")]
+    pub insert_delay_ms: u64,
+    #[serde(default = "default_postprocess_timeout")]
+    pub postprocess_timeout_ms: u64,
+    #[serde(default = "default_true")]
+    pub sound_cues: bool,
+    #[serde(default = "default_log_max")]
+    pub log_max_bytes: u64,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+fn default_insert_delay() -> u64 {
+    120
+}
+
+fn default_postprocess_timeout() -> u64 {
+    45_000
+}
+
+fn default_log_max() -> u64 {
+    2 * 1024 * 1024
 }
 
 impl Default for AppSettings {
@@ -43,6 +67,10 @@ impl Default for AppSettings {
             personalization_enabled: true,
             learn_from_corrections: true,
             stt_language: "ru".into(),
+            insert_delay_ms: default_insert_delay(),
+            postprocess_timeout_ms: default_postprocess_timeout(),
+            sound_cues: true,
+            log_max_bytes: default_log_max(),
         }
     }
 }
@@ -128,5 +156,22 @@ mod tests {
         let json = serde_json::to_string_pretty(&exported).unwrap();
         let imported = import_config(&json, &catalog).unwrap();
         assert_eq!(imported.settings.hotkey, "Control+Shift+Space");
+        assert_eq!(imported.settings.stt_language, "ru");
+    }
+
+    #[test]
+    fn rejects_unknown_stt_model() {
+        let catalog = ModelCatalog::embedded().unwrap();
+        let mut settings = AppSettings::default();
+        settings.active_stt_model = Some("missing-whisper".into());
+        let exported = export_config(
+            &settings,
+            &[],
+            &Dictionary::default(),
+            &PersonalizationState::default(),
+            &SnippetBook::default(),
+        );
+        let json = serde_json::to_string(&exported).unwrap();
+        assert!(import_config(&json, &catalog).is_err());
     }
 }

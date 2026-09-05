@@ -19,7 +19,7 @@
     "test": "npm run test:frontend && npm run test:rust && npm run test:integration",
     "test:frontend": "vitest run",
     "test:rust": "bash scripts/run-with-toolchain.sh cargo test --manifest-path src-tauri/Cargo.toml --locked --lib",
-    "test:integration": "bash scripts/run-with-toolchain.sh cargo test --manifest-path src-tauri/Cargo.toml --locked --test integration",
+    "test:integration": "bash scripts/run-with-toolchain.sh cargo test --manifest-path src-tauri/Cargo.toml --locked --test integration --test acceptance --test performance",
     "test:all": "npm run test:frontend && bash scripts/run-with-toolchain.sh cargo test --manifest-path src-tauri/Cargo.toml --locked && npm run test:ui && npm run test:pipeline && npm run test:dictionary && npm run test:personalization",
     "test:ui": "vitest run tests/ui",
     "test:pipeline": "bash scripts/run-with-toolchain.sh cargo test --manifest-path src-tauri/Cargo.toml --locked pipeline --lib",

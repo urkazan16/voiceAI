@@ -17,19 +17,12 @@ fn git_sha() -> String {
 }
 
 fn main() {
-    println!("cargo:rerun-if-changed=native/src/runtime.c");
     println!("cargo:rerun-if-changed=native/include/localflow_runtime.h");
     println!("cargo:rerun-if-env-changed=LOCALFLOW_GIT_SHA");
     println!("cargo:rerun-if-env-changed=LOCALFLOW_BUILD_DATE");
     println!("cargo:rustc-env=LOCALFLOW_GIT_SHA={}", git_sha());
     let date = std::env::var("LOCALFLOW_BUILD_DATE").unwrap_or_else(|_| chrono_like_date());
     println!("cargo:rustc-env=LOCALFLOW_BUILD_DATE={date}");
-
-    cc::Build::new()
-        .file("native/src/runtime.c")
-        .include("native/include")
-        .warnings(true)
-        .compile("localflow_runtime");
 
     #[cfg(target_os = "macos")]
     {

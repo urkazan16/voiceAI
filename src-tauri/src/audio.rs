@@ -56,10 +56,18 @@ impl CaptureHub {
                     match cmd {
                         CaptureCommand::Start { name, reply } => {
                             if live.is_some() {
-                                let _ = reply.send(Ok(()));
-                                continue;
+                                drop(live.take().map(LiveCapture::finish));
+                                std::thread::sleep(Duration::from_millis(40));
                             }
-                            let result = start_capture(name.as_deref()).map(|capture| {
+                            let mut result = start_capture(name.as_deref());
+                            for delay_ms in [80_u64, 160, 320] {
+                                if result.is_ok() {
+                                    break;
+                                }
+                                std::thread::sleep(Duration::from_millis(delay_ms));
+                                result = start_capture(name.as_deref());
+                            }
+                            let result = result.map(|capture| {
                                 live = Some(capture);
                             });
                             let _ = reply.send(result);

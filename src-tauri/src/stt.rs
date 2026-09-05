@@ -1,5 +1,4 @@
 use crate::error::{LfError, LfResult};
-use crate::runtime;
 use std::path::Path;
 
 pub trait SpeechToText: Send + Sync {
@@ -27,18 +26,14 @@ impl SpeechToText for NativeStt {
                 crate::dictation::cancel_flag(),
                 language,
             ) {
-                Ok(text) if !text.trim().is_empty() => return Ok(text),
-                Ok(_) => {
-                    return Err(LfError::RuntimeUnsupported(
-                        "whisper.cpp produced empty text".into(),
-                    ))
-                }
-                Err(err) => return Err(err),
+                Ok(text) if !text.trim().is_empty() => Ok(text),
+                Ok(_) => Err(LfError::RuntimeUnsupported(
+                    "whisper.cpp produced empty text".into(),
+                )),
+                Err(err) => Err(err),
             }
-        }
-        match runtime::native_transcribe("", pcm) {
-            Ok(text) if !text.trim().is_empty() => Ok(text),
-            _ => crate::macos_stt::transcribe_pcm_16k(pcm),
+        } else {
+            crate::macos_stt::transcribe_pcm_16k(pcm)
         }
     }
 }
@@ -55,5 +50,28 @@ impl SpeechToText for ScriptedStt {
         _language: &str,
     ) -> LfResult<String> {
         Ok(self.transcript.clone())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn scripted_stt_returns_provided_transcript() {
+        let stt = ScriptedStt {
+            transcript: "привет".into(),
+        };
+        assert_eq!(stt.transcribe(&[], None, "ru").unwrap(), "привет");
+    }
+
+    #[test]
+    fn native_stt_missing_model_is_whisper_not_c_stub() {
+        let err = NativeStt
+            .transcribe(&[0.1; 800], Some(Path::new("/no/such/whisper.bin")), "ru")
+            .unwrap_err();
+        assert_eq!(err.code(), "MODEL_MISSING");
+        assert!(!err.to_string().contains("localflow-native-stub"));
+        assert!(!err.to_string().contains("build-native-runtime"));
     }
 }

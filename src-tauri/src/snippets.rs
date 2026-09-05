@@ -156,4 +156,13 @@ mod tests {
         book.upsert(Snippet::new("s", "mail", "x@y.z"));
         assert!(book.expand("email tomorrow", "").is_none());
     }
+
+    #[test]
+    fn remove_snippet_stops_expansion() {
+        let mut book = SnippetBook::default();
+        book.upsert(Snippet::new("s", "sig", "Best regards"));
+        assert!(book.expand("sig", "").is_some());
+        book.remove("s");
+        assert!(book.expand("sig", "").is_none());
+    }
 }

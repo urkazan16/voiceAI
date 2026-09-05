@@ -78,3 +78,49 @@ pub type LfResult<T> = Result<T, LfError>;
 pub fn path_buf_error(path: PathBuf) -> String {
     path.display().to_string()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn codes_match_acceptance_surface() {
+        assert_eq!(
+            LfError::ModelMissing("whisper".into()).code(),
+            "MODEL_MISSING"
+        );
+        assert_eq!(
+            LfError::RuntimeUnsupported("x".into()).code(),
+            "RUNTIME_UNSUPPORTED"
+        );
+        assert_eq!(
+            LfError::PipelineInvalidState {
+                from: "Idle".into(),
+                to: "Llm".into(),
+            }
+            .code(),
+            "PIPELINE_INVALID_STATE"
+        );
+        assert_eq!(
+            LfError::InjectionFailed("paste".into()).code(),
+            "INJECTION_FAILED"
+        );
+    }
+
+    #[test]
+    fn dto_preserves_code_and_message() {
+        let err = LfError::ModelChecksumMismatch {
+            expected: "aa".into(),
+            actual: "bb".into(),
+        };
+        let dto = ErrorDto::from(&err);
+        assert_eq!(dto.code, "MODEL_CHECKSUM_MISMATCH");
+        assert!(dto.message.contains("aa"));
+        assert!(dto.message.contains("bb"));
+    }
+
+    #[test]
+    fn path_buf_error_keeps_display() {
+        assert!(path_buf_error(PathBuf::from("/tmp/model.bin")).contains("model.bin"));
+    }
+}

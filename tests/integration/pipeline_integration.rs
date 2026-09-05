@@ -47,3 +47,22 @@ fn integration_exported_config_validates_against_catalog() {
     let catalog = localflow_lib::catalog::ModelCatalog::embedded().unwrap();
     import_config(&json, &catalog).unwrap();
 }
+
+#[test]
+fn integration_scripted_stt_history_and_clear() {
+    let dir = tempdir().unwrap();
+    let mut engine = AppEngine::open(DataPaths::from_override(dir.path().to_path_buf())).unwrap();
+    engine.run_scripted("первая фраза").unwrap();
+    engine.run_scripted("вторая фраза").unwrap();
+    assert_eq!(engine.store.list_history().unwrap().len(), 2);
+    engine.clear_last_transcript().unwrap();
+    assert!(engine.last_output.is_none());
+    assert_eq!(engine.store.list_history().unwrap().len(), 2);
+}
+
+#[test]
+fn integration_runtime_is_whisper_rs() {
+    let id = localflow_lib::runtime::runtime_id();
+    assert!(id.starts_with("whisper-rs/"));
+    assert!(!id.contains("stub"));
+}

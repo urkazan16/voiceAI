@@ -13,15 +13,30 @@ use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter, Manager};
 
 static CANCEL: AtomicBool = AtomicBool::new(false);
-static HANDS_FREE: AtomicBool = AtomicBool::new(false);
 static PRESS_AT: Mutex<Option<Instant>> = Mutex::new(None);
 static WORKER: OnceLock<Sender<DictationCmd>> = OnceLock::new();
-static BOUND_HOTKEYS: Mutex<(String, String, String)> = Mutex::new((
-    String::new(),
-    String::new(),
-    String::new(),
-));
+static BOUND_HOTKEYS: Mutex<(String, String, String)> =
+    Mutex::new((String::new(), String::new(), String::new()));
 static MICROPHONE: Mutex<Option<String>> = Mutex::new(None);
+
+/// Holds shorter than this are discarded. A 320 ms tap used to enter hands-free
+/// and leave the microphone open.
+pub const MIN_PTT_HOLD: Duration = Duration::from_millis(500);
+pub const REPEAT_PRESS_GUARD: Duration = Duration::from_millis(250);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReleaseAction {
+    DiscardTooShort,
+    Process,
+}
+
+pub fn classify_release(held: Duration, is_recording: bool) -> ReleaseAction {
+    if is_recording && held < MIN_PTT_HOLD {
+        ReleaseAction::DiscardTooShort
+    } else {
+        ReleaseAction::Process
+    }
+}
 
 /// Cached shortcuts so the Carbon/hotkey callback never waits on the engine mutex
 /// (Whisper can hold that lock for tens of seconds).
@@ -110,6 +125,10 @@ pub fn is_cancelled() -> bool {
     CANCEL.load(Ordering::Relaxed)
 }
 
+pub fn clear_cancel() {
+    CANCEL.store(false, Ordering::Relaxed);
+}
+
 #[derive(Clone, Serialize)]
 pub struct DictationState {
     pub phase: String,
@@ -120,10 +139,46 @@ pub struct DictationState {
 }
 
 pub fn emit_state(app: &AppHandle, state: DictationState) {
+    sync_tray(app, &state.phase);
     for label in ["main", "bar"] {
         if let Some(window) = app.get_webview_window(label) {
             let _ = window.emit("dictation-state", &state);
         }
+    }
+}
+
+pub fn notify_hotkey(app: &AppHandle, edge: &str) {
+    emit_state(
+        app,
+        DictationState {
+            phase: edge.into(),
+            message: if edge == "pressed" {
+                "Hotkey down…".into()
+            } else {
+                "Hotkey up…".into()
+            },
+            transcript: None,
+            raw_transcript: None,
+            duration_ms: 0,
+        },
+    );
+}
+
+fn sync_tray(app: &AppHandle, phase: &str) {
+    if let Some(tray) = app.tray_by_id("localflow") {
+        let tooltip = match phase {
+            "recording" => "LocalFlow — recording",
+            "processing" => "LocalFlow — processing",
+            "pressed" => "LocalFlow — recording",
+            _ => "LocalFlow",
+        };
+        let _ = tray.set_tooltip(Some(tooltip));
+        let mark = if phase == "recording" || phase == "pressed" {
+            "●"
+        } else {
+            ""
+        };
+        let _ = tray.set_title(Some(mark));
     }
 }
 
@@ -145,7 +200,7 @@ pub fn hide_bar_later(app: &AppHandle) {
     let app = app.clone();
     std::thread::spawn(move || {
         std::thread::sleep(Duration::from_millis(2400));
-        if CANCEL.load(Ordering::Relaxed) || HANDS_FREE.load(Ordering::Relaxed) {
+        if CANCEL.load(Ordering::Relaxed) {
             return;
         }
         if let Some(window) = app.get_webview_window("bar") {
@@ -155,12 +210,12 @@ pub fn hide_bar_later(app: &AppHandle) {
 }
 
 pub fn on_hotkey_pressed(app: &AppHandle, engine: &SharedEngine, capture: &SharedCapture) {
-    if HANDS_FREE.load(Ordering::Relaxed) || capture.is_recording() {
+    if capture.is_recording() {
         let too_soon = PRESS_AT
             .lock()
             .ok()
             .and_then(|g| *g)
-            .map(|t| t.elapsed() < Duration::from_millis(250))
+            .map(|t| t.elapsed() < REPEAT_PRESS_GUARD)
             .unwrap_or(false);
         if too_soon {
             return;
@@ -169,7 +224,6 @@ pub fn on_hotkey_pressed(app: &AppHandle, engine: &SharedEngine, capture: &Share
         return;
     }
     CANCEL.store(false, Ordering::Relaxed);
-    HANDS_FREE.store(false, Ordering::Relaxed);
     if let Ok(mut slot) = PRESS_AT.lock() {
         *slot = Some(Instant::now());
     }
@@ -192,6 +246,14 @@ pub fn on_hotkey_pressed(app: &AppHandle, engine: &SharedEngine, capture: &Share
     });
     match capture.start(mic) {
         Ok(()) => {
+            crate::journal::log("record_start", "microphone on");
+            if engine
+                .try_lock()
+                .map(|eng| eng.settings.sound_cues)
+                .unwrap_or(true)
+            {
+                crate::cues::play_start();
+            }
             show_bar(app, engine);
             emit_state(
                 app,
@@ -229,35 +291,18 @@ pub fn on_hotkey_released(app: &AppHandle, engine: &SharedEngine, capture: &Shar
         .and_then(|g| *g)
         .map(|t| t.elapsed())
         .unwrap_or(Duration::from_secs(1));
-    if held < Duration::from_millis(320) && capture.is_recording() {
-        HANDS_FREE.store(true, Ordering::Relaxed);
-        emit_state(
-            app,
-            DictationState {
-                phase: "recording".into(),
-                message: "Hands-free listening… Stop or pause to finish.".into(),
-                transcript: None,
-                raw_transcript: None,
-                duration_ms: 0,
-            },
-        );
-        let app = app.clone();
-        let engine = engine.clone();
-        let capture = capture.clone();
-        std::thread::spawn(move || wait_for_vad_stop(&app, &engine, &capture));
-        return;
+    match classify_release(held, capture.is_recording()) {
+        ReleaseAction::DiscardTooShort => discard_short_hold(app, engine, capture),
+        ReleaseAction::Process => finish_recording(app, engine, capture),
     }
-    finish_recording(app, engine, capture);
 }
 
 pub fn stop_and_process(app: &AppHandle, engine: &SharedEngine, capture: &SharedCapture) {
-    HANDS_FREE.store(false, Ordering::Relaxed);
     finish_recording(app, engine, capture);
 }
 
 pub fn cancel(app: &AppHandle, engine: &SharedEngine, capture: &SharedCapture) {
     CANCEL.store(true, Ordering::Relaxed);
-    HANDS_FREE.store(false, Ordering::Relaxed);
     if let Ok(mut slot) = PRESS_AT.lock() {
         *slot = None;
     }
@@ -280,27 +325,26 @@ pub fn cancel(app: &AppHandle, engine: &SharedEngine, capture: &SharedCapture) {
     }
 }
 
-fn wait_for_vad_stop(app: &AppHandle, engine: &SharedEngine, capture: &SharedCapture) {
-    let mut heard = false;
-    loop {
-        if CANCEL.load(Ordering::Relaxed) {
-            return;
-        }
-        if !capture.is_recording() {
-            return;
-        }
-        if let Some(peek) = capture.peek() {
-            let pcm = audio::to_whisper_pcm(&peek);
-            if crate::vad::had_speech(&pcm, 16_000) {
-                heard = true;
-            }
-            if heard && crate::vad::trailing_silence_ms(&pcm, 16_000) >= 1_600 {
-                HANDS_FREE.store(false, Ordering::Relaxed);
-                finish_recording(app, engine, capture);
-                return;
-            }
-        }
-        std::thread::sleep(Duration::from_millis(60));
+fn discard_short_hold(app: &AppHandle, engine: &SharedEngine, capture: &SharedCapture) {
+    if let Ok(mut slot) = PRESS_AT.lock() {
+        *slot = None;
+    }
+    let _ = capture.stop();
+    if let Ok(mut eng) = engine.lock() {
+        eng.snapshot.reset();
+    }
+    emit_state(
+        app,
+        DictationState {
+            phase: "error".into(),
+            message: "Hold longer than 500 ms, then release to dictate.".into(),
+            transcript: last_processed(engine),
+            raw_transcript: last_raw(engine),
+            duration_ms: 0,
+        },
+    );
+    if let Some(window) = app.get_webview_window("bar") {
+        let _ = window.hide();
     }
 }
 
@@ -313,8 +357,10 @@ fn finish_recording(app: &AppHandle, engine: &SharedEngine, capture: &SharedCapt
         return;
     }
     let Some(captured) = capture.stop() else {
+        crate::journal::log("record_stop", "microphone off (empty)");
         return;
     };
+    crate::journal::log("record_stop", "microphone off");
     emit_state(
         app,
         DictationState {
@@ -334,8 +380,12 @@ fn finish_recording(app: &AppHandle, engine: &SharedEngine, capture: &SharedCapt
             return;
         }
         let duration_ms = audio::duration_ms(&captured);
-        let pcm = crate::vad::trim_silence(&audio::to_whisper_pcm(&captured), 16_000);
-        if pcm.len() < 1_600 {
+        let mut pcm = crate::vad::trim_silence(&audio::to_whisper_pcm(&captured), 16_000);
+        // Keep the onset so the first phoneme/letter is not trimmed away.
+        let mut onset = vec![0.0; 2_400];
+        onset.append(&mut pcm);
+        let pcm = onset;
+        if pcm.len() < 4_800 + 2_400 {
             fail(
                 &app,
                 &engine,
@@ -344,24 +394,23 @@ fn finish_recording(app: &AppHandle, engine: &SharedEngine, capture: &SharedCapt
             );
             return;
         }
-        let (stt_path, lang, pid) = match engine.lock() {
+        let (stt_path, lang, pid, app_name, delay_ms, timeout_ms, sounds) = match engine.lock() {
             Ok(eng) => (
                 eng.ready_model_path("stt"),
                 eng.settings.stt_language.clone(),
                 eng.insert_target_pid,
+                eng.insert_target_app.clone(),
+                eng.settings.insert_delay_ms,
+                eng.settings.postprocess_timeout_ms,
+                eng.settings.sound_cues,
             ),
             Err(_) => {
-                fail(
-                    &app,
-                    &engine,
-                    "engine lock poisoned",
-                    duration_ms,
-                );
+                fail(&app, &engine, "engine lock poisoned", duration_ms);
                 return;
             }
         };
         let raw = match NativeStt.transcribe(&pcm, stt_path.as_deref(), &lang) {
-            Ok(text) => text,
+            Ok(text) => crate::sanitize::strip_model_tags(&text),
             Err(err) => {
                 fail(&app, &engine, &err.to_string(), duration_ms);
                 return;
@@ -371,15 +420,38 @@ fn finish_recording(app: &AppHandle, engine: &SharedEngine, capture: &SharedCapt
             emit_cancelled(&app, &engine);
             return;
         }
-        let result = match engine.lock() {
-            Ok(mut eng) => eng.run_text_pipeline(
-                &raw,
-                &NativeStt,
-                &NativeLlm,
-                &ClipboardInjector { target_pid: pid },
-                &[],
-            ),
-            Err(_) => Err(LfError::Other("engine lock poisoned".into())),
+        let engine_for_pipe = engine.clone();
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let result = match engine_for_pipe.lock() {
+                Ok(mut eng) => eng.run_text_pipeline(
+                    &raw,
+                    &NativeStt,
+                    &NativeLlm,
+                    &ClipboardInjector {
+                        target_pid: pid,
+                        target_app: app_name,
+                        insert_delay_ms: delay_ms,
+                    },
+                    &[],
+                ),
+                Err(_) => Err(LfError::Other("engine lock poisoned".into())),
+            };
+            let _ = tx.send(result);
+        });
+        let result = match rx.recv_timeout(Duration::from_millis(timeout_ms.max(1_000))) {
+            Ok(r) => r,
+            Err(_) => {
+                CANCEL.store(true, Ordering::Relaxed);
+                fail(
+                    &app,
+                    &engine,
+                    "Post-processing timed out. Raise the timeout in Settings.",
+                    duration_ms,
+                );
+                CANCEL.store(false, Ordering::Relaxed);
+                return;
+            }
         };
         if CANCEL.load(Ordering::Relaxed)
             || matches!(&result, Err(LfError::Other(m)) if m == "cancelled")
@@ -389,6 +461,27 @@ fn finish_recording(app: &AppHandle, engine: &SharedEngine, capture: &SharedCapt
         }
         match result {
             Ok(output) => {
+                if sounds {
+                    crate::cues::play_end();
+                }
+                crate::journal::log(
+                    "processed",
+                    if output.insert_ok {
+                        "inserted"
+                    } else {
+                        "ready"
+                    },
+                );
+                if let Ok(eng) = engine.lock() {
+                    let n: u64 = eng
+                        .store
+                        .get_kv("stats_recordings")
+                        .ok()
+                        .flatten()
+                        .and_then(|s| s.parse().ok())
+                        .unwrap_or(0);
+                    let _ = eng.store.put_kv("stats_recordings", &(n + 1).to_string());
+                }
                 let inserted = output.insert_ok;
                 emit_state(
                     &app,
@@ -467,4 +560,58 @@ fn last_raw(engine: &SharedEngine) -> Option<String> {
         .ok()
         .and_then(|eng| eng.last_output.as_ref().map(|o| o.raw_transcript.clone()))
         .filter(|t| !t.is_empty())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tap_under_320ms_does_not_process() {
+        assert_eq!(
+            classify_release(Duration::from_millis(120), true),
+            ReleaseAction::DiscardTooShort
+        );
+        assert_eq!(
+            classify_release(Duration::from_millis(319), true),
+            ReleaseAction::DiscardTooShort
+        );
+    }
+
+    #[test]
+    fn hold_at_old_hands_free_cutoff_is_still_too_short() {
+        assert_eq!(
+            classify_release(Duration::from_millis(320), true),
+            ReleaseAction::DiscardTooShort
+        );
+        assert_eq!(
+            classify_release(Duration::from_millis(499), true),
+            ReleaseAction::DiscardTooShort
+        );
+    }
+
+    #[test]
+    fn half_second_hold_processes() {
+        assert_eq!(classify_release(MIN_PTT_HOLD, true), ReleaseAction::Process);
+        assert_eq!(
+            classify_release(Duration::from_millis(800), true),
+            ReleaseAction::Process
+        );
+    }
+
+    #[test]
+    fn release_when_not_recording_is_a_noop_process() {
+        assert_eq!(
+            classify_release(Duration::from_millis(10), false),
+            ReleaseAction::Process
+        );
+    }
+
+    #[test]
+    fn default_talk_hotkey_cache_is_control_shift_space() {
+        let (talk, copy, paste) = bound_hotkeys();
+        assert!(talk.to_lowercase().contains("space") || talk == "Control+Shift+Space");
+        assert!(!copy.is_empty());
+        assert!(!paste.is_empty());
+    }
 }
