@@ -1,0 +1,7 @@
+whisper.cpp is licensed under the MIT License.
+Copyright (c) 2023 Georgi Gerganov
+https://github.com/ggerganov/whisper.cpp
+
+LocalFlow does not vendor unreviewed examples from that repository.
+The MIT license text is identical in form to licenses/tauri.txt (permission,
+inclusion of notice, provided "as is").

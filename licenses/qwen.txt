@@ -1,0 +1,6 @@
+Qwen3-4B-Instruct-2507 and Qwen2.5-Coder-7B are Apache-2.0.
+Copyright Alibaba Cloud.
+https://huggingface.co/Qwen
+
+Weights are obtained by the user through Model Manager. LocalFlow does not
+embed these files in the macOS installer for the MVP.

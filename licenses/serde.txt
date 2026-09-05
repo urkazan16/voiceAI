@@ -1,0 +1,2 @@
+Serde is dual-licensed MIT / Apache-2.0.
+https://github.com/serde-rs/serde

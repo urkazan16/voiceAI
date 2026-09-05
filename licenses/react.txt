@@ -1,0 +1,3 @@
+React is MIT-licensed.
+Copyright (c) Meta Platforms, Inc. and affiliates
+https://github.com/facebook/react

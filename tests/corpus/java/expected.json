@@ -1,0 +1,8 @@
+{
+  "id": "java-001",
+  "mode": "code",
+  "domain": "java",
+  "expected_text": "класс с junit 5",
+  "expected_output": "Java class with JUnit 5, not executed",
+  "audio": "silence.wav"
+}

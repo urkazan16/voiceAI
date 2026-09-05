@@ -1,0 +1,8 @@
+{
+  "id": "mixed-001",
+  "mode": "professional",
+  "domain": "mixed_ru_en",
+  "expected_text": "нужно пофиксить flaky test в ci",
+  "expected_output": "Нужно пофиксить flaky test в CI.",
+  "audio": "silence.wav"
+}

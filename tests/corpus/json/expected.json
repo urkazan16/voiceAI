@@ -1,0 +1,8 @@
+{
+  "id": "json-001",
+  "mode": "raw",
+  "domain": "json",
+  "expected_text": "{ \"ok\": true }",
+  "expected_output": "{ \"ok\": true }",
+  "audio": "silence.wav"
+}

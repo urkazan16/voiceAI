@@ -1,0 +1,8 @@
+{
+  "id": "qa-001",
+  "mode": "code",
+  "domain": "qa",
+  "expected_text": "junit 5 restassured тест логина",
+  "expected_output": "JUnit 5 RestAssured login test (text only, never executed)",
+  "audio": "silence.wav"
+}

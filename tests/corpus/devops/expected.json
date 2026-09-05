@@ -1,0 +1,8 @@
+{
+  "id": "devops-001",
+  "mode": "normal",
+  "domain": "devops",
+  "expected_text": "перезапусти nginx на стейдже",
+  "expected_output": "Перезапусти nginx на стейдже.",
+  "audio": "silence.wav"
+}

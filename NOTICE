@@ -1,0 +1,43 @@
+LocalFlow
+Copyright 2026 LocalFlow Contributors
+
+This product includes software developed by third parties. Attribution
+required by those licenses is listed below. Full texts live in licenses/.
+
+Tauri
+Copyright (c) 2015 - Present Tauri Programme within The Commons Conservancy
+Licensed under MIT or Apache-2.0. See licenses/tauri.txt.
+
+whisper.cpp
+Copyright (c) 2023 Georgi Gerganov
+MIT. See licenses/whisper.cpp.txt.
+Only the MIT core subset is eligible for distribution. Examples and extra
+integrations are not bundled.
+
+llama.cpp
+Copyright (c) 2023-2024 The ggml authors
+MIT for the components LocalFlow may link. See licenses/llama.cpp.txt.
+
+React
+Copyright (c) Meta Platforms, Inc. and affiliates
+MIT. See licenses/react.txt.
+
+TypeScript
+Copyright (c) Microsoft Corporation
+Apache-2.0. See licenses/typescript.txt.
+
+Tailwind CSS
+Copyright (c) Tailwind Labs, Inc.
+MIT. See licenses/tailwind.txt.
+
+Serde
+Copyright (c) 2014 The Serde Project Developers
+MIT or Apache-2.0. See licenses/serde.txt.
+
+SQLite
+Public domain. See licenses/sqlite.txt.
+
+Qwen3-4B-Instruct-2507 and Qwen2.5-Coder-7B
+Copyright Alibaba Cloud / Qwen
+Apache-2.0. Weights are not shipped in the LocalFlow installer.
+See licenses/qwen.txt and Model Manager.

@@ -1,0 +1,8 @@
+{
+  "id": "sql-001",
+  "mode": "normal",
+  "domain": "sql",
+  "expected_text": "селект из users где id равен 12",
+  "expected_output": "SELECT из users где id равен 12.",
+  "audio": "silence.wav"
+}

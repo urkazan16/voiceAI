@@ -1,0 +1,5 @@
+llama.cpp core components used for local generation are MIT-licensed.
+https://github.com/ggml-org/llama.cpp
+
+LocalFlow must not ship unreviewed extra backends. Confirm the exact
+commit's LICENSE before linking a release runtime.

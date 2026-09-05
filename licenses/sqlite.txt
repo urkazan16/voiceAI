@@ -1,0 +1,4 @@
+SQLite is public domain.
+https://www.sqlite.org/copyright.html
+
+The rusqlite crate is MIT OR Apache-2.0 and may bundle the SQLite amalgamation.

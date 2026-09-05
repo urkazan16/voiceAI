@@ -1,0 +1,60 @@
+[package]
+name = "localflow"
+version = "0.1.0"
+description = "LocalFlow desktop core — local-first voice pipeline"
+authors = ["LocalFlow Contributors"]
+license = "MIT"
+edition = "2021"
+rust-version = "1.88"
+default-run = "localflow"
+
+[lib]
+name = "localflow_lib"
+crate-type = ["lib", "cdylib", "staticlib"]
+
+[[bin]]
+name = "localflow"
+path = "src/main.rs"
+
+[[test]]
+name = "integration"
+path = "../tests/integration/pipeline_integration.rs"
+
+[[test]]
+name = "performance"
+path = "../tests/performance/latency.rs"
+
+[features]
+default = []
+ai-bench = []
+
+[build-dependencies]
+cc = "1.2.13"
+tauri-build = { version = "2.0.6", features = [] }
+
+[dependencies]
+tauri = { version = "2.2.5", features = ["macos-private-api", "tray-icon", "image-png"] }
+tauri-plugin-clipboard-manager = "2.2.0"
+tauri-plugin-global-shortcut = "2.2.0"
+serde = { version = "1.0.217", features = ["derive"] }
+serde_json = "1.0.138"
+thiserror = "2.0.11"
+sha2 = "0.10.8"
+hex = "0.4.3"
+rusqlite = { version = "0.32.1", features = ["bundled"] }
+uuid = { version = "1.12.1", features = ["v4"] }
+chrono = { version = "0.4.39", features = ["serde", "clock"] }
+cpal = "0.15.3"
+tokio = { version = "1.43.0", features = ["macros", "rt-multi-thread", "fs", "io-util", "sync"] }
+reqwest = { version = "0.12.12", default-features = false, features = ["rustls-tls", "stream"] }
+futures-util = "0.3.31"
+
+[dev-dependencies]
+tempfile = "3.16.0"
+
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = 3
+panic = "abort"
+strip = "symbols"

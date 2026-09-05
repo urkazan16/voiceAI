@@ -1,0 +1,124 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  quality:
+    name: quality
+    runs-on: macos-13
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.88.0
+          components: rustfmt, clippy
+      - run: npm ci
+      - run: npm run check
+
+  test:
+    name: test
+    runs-on: macos-13
+    needs: quality
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.88.0
+      - run: npm ci
+      - run: npm test
+      - run: npm run test:all
+
+  license:
+    name: license
+    runs-on: macos-13
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.88.0
+      - run: npm ci
+      - run: cargo fetch --manifest-path src-tauri/Cargo.toml --locked
+      - run: npm run license:check
+
+  security:
+    name: security
+    runs-on: macos-13
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.88.0
+      - run: npm ci
+      - run: npm audit --omit=dev --audit-level=high
+      - run: cargo install cargo-audit --locked
+      - run: cargo audit --manifest-path src-tauri/Cargo.toml
+
+  build:
+    name: build
+    runs-on: macos-13
+    needs: [quality, test, license]
+    strategy:
+      matrix:
+        include:
+          - os: macos-13
+            target: x86_64-apple-darwin
+            name: macos-x64
+          # Future: macos-arm64, windows-x64, linux-x64
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.88.0
+          targets: ${{ matrix.target }}
+      - run: npm ci
+      - run: npm run build
+        env:
+          LOCALFLOW_GIT_SHA: ${{ github.sha }}
+
+  package:
+    name: package
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    runs-on: macos-13
+    needs: [build, security]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.88.0
+      - run: npm ci
+      - run: npm run build:release
+      - uses: actions/upload-artifact@v4
+        with:
+          name: LocalFlow-macos-x64
+          path: release-artifacts/

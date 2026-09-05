@@ -1,0 +1,8 @@
+{
+  "id": "technical-001",
+  "mode": "normal",
+  "domain": "technical",
+  "expected_text": "подними postgres и проверь api",
+  "expected_output": "Подними Postgres и проверь API.",
+  "audio": "silence.wav"
+}

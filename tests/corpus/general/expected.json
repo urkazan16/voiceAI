@@ -1,0 +1,8 @@
+{
+  "id": "general-001",
+  "mode": "normal",
+  "domain": "general",
+  "expected_text": "доброе утро команда",
+  "expected_output": "Доброе утро команда.",
+  "audio": "silence.wav"
+}

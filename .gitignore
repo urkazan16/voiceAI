@@ -1,0 +1,24 @@
+# Dependencies and build
+node_modules/
+dist/
+src-tauri/target/
+src-tauri/gen/
+third_party/
+release-artifacts/
+*.dmg
+*.app
+
+# Tooling
+.DS_Store
+.idea/
+.vscode/
+*.log
+coverage/
+.npm-cache/
+
+# Local env (none are required for build)
+.env
+.env.local
+
+# Test / user data overrides
+.localflow-data/

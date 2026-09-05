@@ -1,0 +1,3 @@
+Tailwind CSS is MIT-licensed.
+Copyright (c) Tailwind Labs, Inc.
+https://github.com/tailwindlabs/tailwindcss
