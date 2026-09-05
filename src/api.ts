@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import catalogJson from "../src-tauri/resources/model-catalog.json";
 
 export type ViewId =
   | "home"
@@ -79,21 +80,44 @@ export interface PrivacySummary {
   data_root: string;
 }
 
+type TauriWindow = Window & {
+  __TAURI_INTERNALS__?: { invoke?: unknown };
+};
+
+export function isTauriRuntime(): boolean {
+  if (typeof window === "undefined") {
+    return false;
+  }
+  return typeof (window as TauriWindow).__TAURI_INTERNALS__?.invoke === "function";
+}
+
+export const bundledCatalog: ModelRecord[] = catalogJson.models as ModelRecord[];
+
+const BROWSER_HINT =
+  "IPC is unavailable. Use the LocalFlow window from the menu bar (npm run tauri dev), not a browser tab on localhost:1420.";
+
+async function call<T>(command: string, args?: Record<string, unknown>): Promise<T> {
+  if (!isTauriRuntime()) {
+    throw new Error(BROWSER_HINT);
+  }
+  return invoke<T>(command, args);
+}
+
 export const api = {
-  getBuildInfo: () => invoke<BuildInfo>("get_build_info"),
-  getSettings: () => invoke<AppSettings>("get_settings"),
-  saveSettings: (settings: AppSettings) => invoke<void>("save_settings", { settings }),
-  listModels: () => invoke<ModelRecord[]>("list_models"),
-  listDictionary: () => invoke<DictionaryEntry[]>("list_dictionary"),
-  upsertDictionary: (entry: DictionaryEntry) => invoke<void>("upsert_dictionary_entry", { entry }),
-  removeDictionary: (id: string) => invoke<void>("remove_dictionary_entry", { id }),
-  exportConfiguration: () => invoke<string>("export_configuration"),
-  importConfiguration: (json: string) => invoke<void>("import_configuration", { json }),
-  listHistory: () => invoke<HistoryItem[]>("list_history"),
-  deleteHistory: () => invoke<void>("delete_history"),
-  resetPersonalization: () => invoke<void>("reset_personalization"),
-  processTranscript: (transcript: string) => invoke("process_transcript", { transcript }),
-  completeOnboarding: () => invoke<void>("complete_onboarding"),
-  privacySummary: () => invoke<PrivacySummary>("privacy_summary"),
-  verifyModel: (modelId: string) => invoke<string>("verify_model", { modelId }),
+  getBuildInfo: () => call<BuildInfo>("get_build_info"),
+  getSettings: () => call<AppSettings>("get_settings"),
+  saveSettings: (settings: AppSettings) => call<void>("save_settings", { settings }),
+  listModels: () => call<ModelRecord[]>("list_models"),
+  listDictionary: () => call<DictionaryEntry[]>("list_dictionary"),
+  upsertDictionary: (entry: DictionaryEntry) => call<void>("upsert_dictionary_entry", { entry }),
+  removeDictionary: (id: string) => call<void>("remove_dictionary_entry", { id }),
+  exportConfiguration: () => call<string>("export_configuration"),
+  importConfiguration: (json: string) => call<void>("import_configuration", { json }),
+  listHistory: () => call<HistoryItem[]>("list_history"),
+  deleteHistory: () => call<void>("delete_history"),
+  resetPersonalization: () => call<void>("reset_personalization"),
+  processTranscript: (transcript: string) => call("process_transcript", { transcript }),
+  completeOnboarding: () => call<void>("complete_onboarding"),
+  privacySummary: () => call<PrivacySummary>("privacy_summary"),
+  verifyModel: (modelId: string) => call<string>("verify_model", { modelId }),
 };

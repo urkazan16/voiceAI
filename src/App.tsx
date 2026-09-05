@@ -1,6 +1,8 @@
 import { useEffect, useState } from "react";
 import {
   api,
+  bundledCatalog,
+  isTauriRuntime,
   type AppSettings,
   type BuildInfo,
   type DictionaryEntry,
@@ -55,6 +57,7 @@ export function App() {
       setPrivacy(nextPrivacy);
       setView(nextSettings.onboarding_complete ? "home" : "onboarding");
     } catch {
+      setModels(bundledCatalog);
       setView("home");
     }
   }
@@ -105,6 +108,12 @@ export function App() {
     <div className="flex min-h-screen bg-ink text-paper">
       <aside className="w-56 border-r border-paper/10 px-5 py-8">
         <p className="text-copper text-xs tracking-[0.25em] uppercase">LocalFlow</p>
+        {!isTauriRuntime() && (
+          <p className="mt-4 rounded-lg bg-copper/20 p-3 text-xs leading-relaxed text-paper">
+            This browser tab cannot talk to Rust. Keep <code>npm run tauri dev</code> running and
+            use the LocalFlow window (it should open itself).
+          </p>
+        )}
         <nav className="mt-8 space-y-1">
           {NAV.map((item) => (
             <button
@@ -133,12 +142,16 @@ export function App() {
             <button
               className="mt-4 rounded-full bg-copper px-5 py-2 text-ink"
               onClick={async () => {
+                if (!draft.trim()) {
+                  setStatus("Type a sample transcript first.");
+                  return;
+                }
                 try {
                   await api.processTranscript(draft);
                   setStatus("Processed locally and recorded in history.");
                   setHistory(await api.listHistory());
                 } catch (error) {
-                  setStatus(String(error));
+                  setStatus(error instanceof Error ? error.message : String(error));
                 }
               }}
             >
@@ -210,9 +223,10 @@ export function App() {
         {view === "models" && (
           <section>
             <h1 className="text-4xl">Model Manager</h1>
-            <p className="mt-2 text-paper/70">
-              Models are not bundled. Download is a visible network action. Activation requires
-              SHA-256.
+            <p className="mt-2 max-w-2xl text-paper/70">
+              Weights are not inside the installer. Download is a labeled network action, then
+              SHA-256 must match before activation. Catalog cards below are expected. Process
+              locally still works on typed text without downloading models.
             </p>
             <p className="mt-2 text-copper">{modelMessage}</p>
             <div className="mt-6 grid gap-4">

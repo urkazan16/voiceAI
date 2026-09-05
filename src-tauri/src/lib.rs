@@ -98,6 +98,10 @@ pub fn run() {
                     .build(),
             )?;
             app.global_shortcut().register("Alt+Space")?;
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.show();
+                let _ = window.set_focus();
+            }
             Ok(())
         })
         .run(tauri::generate_context!())
