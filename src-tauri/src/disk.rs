@@ -236,7 +236,9 @@ mod tests {
             messages: Vec::new(),
         };
         let lines = describe(&usage);
-        assert!(lines.iter().any(|l| l.contains("Not enough space for speech")));
+        assert!(lines
+            .iter()
+            .any(|l| l.contains("Not enough space for speech")));
         assert!(lines.iter().any(|l| l.contains("Whisper Small")));
     }
 

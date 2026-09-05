@@ -38,6 +38,33 @@ pub fn wpm(words: u32, duration_ms: u64) -> f64 {
     (f64::from(words) * 60_000.0) / duration_ms as f64
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct AppWpm {
+    pub application: String,
+    pub wpm_avg: f64,
+    pub utterances: u64,
+}
+
+pub fn wpm_by_application(rows: &[UtteranceLine]) -> Vec<AppWpm> {
+    use std::collections::BTreeMap;
+    let mut acc: BTreeMap<String, (f64, u64)> = BTreeMap::new();
+    for row in rows {
+        if row.wpm <= 0.0 {
+            continue;
+        }
+        let entry = acc.entry(row.application.clone()).or_insert((0.0, 0));
+        entry.0 += row.wpm;
+        entry.1 += 1;
+    }
+    acc.into_iter()
+        .map(|(application, (sum, n))| AppWpm {
+            application,
+            wpm_avg: sum / n as f64,
+            utterances: n,
+        })
+        .collect()
+}
+
 pub fn timezone_name() -> String {
     Local::now().format("%z").to_string()
 }
@@ -133,6 +160,10 @@ mod tests {
         let rows = read_since(&paths, None);
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].text, "hello world");
-        assert!(to_csv(&rows).contains("wpm"));
+        assert!(to_csv(&rows).contains("Mail"));
+        let by_app = wpm_by_application(&rows);
+        assert_eq!(by_app.len(), 1);
+        assert_eq!(by_app[0].application, "Mail");
+        assert!((by_app[0].wpm_avg - 60.0).abs() < f64::EPSILON);
     }
 }

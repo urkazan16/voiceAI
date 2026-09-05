@@ -1,6 +1,15 @@
 # LocalFlow
 
-Local, private, CPU-first voice-to-text for macOS. Hold **Option+Space**, speak, release. Speech-to-text, dictionary, personalization, and optional local LLM formatting run on this machine. Inserted text is never executed.
+Local, private, CPU-first voice-to-text for macOS.
+
+```text
+1. Capture   — hold Control+Shift+Space, microphone on only while held
+2. Recognize — local Whisper ggml (SHA-256 + format check before use)
+3. Format    — dictionary, backtrack, digits / dates / HH:MM, optional LLM
+4. Insert    — paste into the frontmost app, restore the previous clipboard
+```
+
+Speech-to-text, dictionary, personalization, and optional local formatting run on this machine. Inserted text is never executed.
 
 License: MIT. See `LICENSE`.
 
@@ -9,7 +18,7 @@ License: MIT. See `LICENSE`.
 npm run tauri dev
 ```
 
-Hold **Control+Shift+Space**, speak, release. Speech-to-text, dictionary, personalization, and optional local formatting run on this machine. Inserted text is never executed.
+Hold **Control+Shift+Space**, speak, release. Do not use Option+Space.
 
 One-file uninstall: `scripts/uninstall.sh` (asks whether to keep history). The Privacy screen has the same Uninstall button.
 
@@ -77,6 +86,7 @@ Settings live in `~/Library/Application Support/LocalFlow/config/settings.json` 
 | `autostart`                             | Launch at login                                               |
 | `history_enabled`                       | SQLite history + JSONL journal                                |
 | `sound_cues`                            | Start/end beeps                                               |
+| `sound_cue_volume`                      | Cue loudness 0.05–1.0 (default 0.25)                          |
 | `insert_delay_ms`                       | Pause before paste                                            |
 | `hands_free`                            | Press-to-toggle listen; off = hold-to-talk                    |
 | `digits_from_speech`                    | Spoken numbers become digits                                  |
@@ -89,7 +99,8 @@ Settings live in `~/Library/Application Support/LocalFlow/config/settings.json` 
 | `log_max_bytes`                         | Size rotation for `localflow.log`                             |
 
 Replace the recognizer by downloading another Whisper ggml in Model Manager, or set `active_stt_model` in `settings.json` to a catalog id whose file is already verified.
-| `npm run sbom` | CycloneDX SBOM |
+
+`npm run sbom` writes a CycloneDX SBOM.
 
 First Cargo fetch needs network. After `src-tauri/Cargo.lock` is present, crates resolve reproducibly.
 
@@ -112,3 +123,5 @@ User data lives in `~/Library/Application Support/LocalFlow/` (override with `LO
 ## License
 
 MIT. See `LICENSE`, `NOTICE`, `licenses/`, and `docs/licensing/`.
+
+Uniqueness report (attached to this tree): `docs/evaluation/UNIQUENESS.md`.

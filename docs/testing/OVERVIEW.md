@@ -19,3 +19,7 @@ cargo run --manifest-path src-tauri/Cargo.toml -- transcribe --json --language r
 Corpus lives in `tests/corpus/` with `expected.json` per domain. Audio fixtures are tiny and synthetic; large recordings are not stored in git.
 
 Reliability and network-privacy tests that need a full `.app` are described in `docs/testing/RELEASE_GATE.md`.
+
+Full field + CPU-generation matrix (open sources for similar Mac dictation apps): `docs/testing/OPEN_SOURCE_CHECKS.md`.
+
+Critical functionality only (capture → STT → format → insert, P0/P1): `docs/testing/CRITICAL_FUNCTIONALITY.md`.

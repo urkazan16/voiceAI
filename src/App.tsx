@@ -44,6 +44,7 @@ const fallbackSettings = (): AppSettings => ({
   insert_delay_ms: 120,
   postprocess_timeout_ms: 45000,
   sound_cues: true,
+  sound_cue_volume: 0.25,
   log_max_bytes: 2097152,
   autostart: false,
   history_enabled: true,
@@ -834,6 +835,11 @@ export function App() {
               />
               Restore clipboard after insert
             </label>
+            <p className="text-xs text-paper/50">
+              Keeps the previous pasteboard (text, RTF, images) after Cmd+V. Crash recovery still
+              restores text only. Password fields block paste — use Copy last after leaving the
+              field.
+            </p>
             <label className="flex items-center gap-2 text-sm">
               <input
                 type="checkbox"
@@ -849,6 +855,20 @@ export function App() {
                 onChange={(e) => void save({ ...settings, sound_cues: e.target.checked })}
               />
               Play start/end recording sounds
+            </label>
+            <label className="block text-sm text-paper/70">
+              Cue volume
+              <input
+                className="mt-1 w-full"
+                type="range"
+                min={0.05}
+                max={1}
+                step={0.05}
+                value={settings.sound_cue_volume}
+                onChange={(e) =>
+                  void save({ ...settings, sound_cue_volume: Number(e.target.value) || 0.25 })
+                }
+              />
             </label>
             <label className="block text-sm text-paper/70">
               Pause before insert (ms)
@@ -1851,6 +1871,17 @@ export function App() {
                   Words today / all: {stats.words_today} / {stats.words_total}
                 </p>
                 <p>Utterances in journal: {stats.recordings}</p>
+                {stats.wpm_by_application.length > 0 && (
+                  <div className="pt-2">
+                    <p className="text-paper/60">WPM by application</p>
+                    {stats.wpm_by_application.map((row) => (
+                      <p key={row.application}>
+                        {row.application || "(unknown)"}: {row.wpm_avg.toFixed(0)} (
+                        {row.utterances})
+                      </p>
+                    ))}
+                  </div>
+                )}
                 <button
                   className="mt-2 rounded-full border border-paper/30 px-4 py-2 font-sans"
                   onClick={async () => {

@@ -285,15 +285,29 @@ impl AppEngine {
             return Err(LfError::Other("cancelled".into()));
         }
         let raw = if transcript.is_empty() {
-            stt.transcribe(
-                pcm,
-                self.ready_model_path("stt").as_deref(),
-                &self.settings.stt_language,
-            )?
+            if !crate::vad::had_speech_at(pcm, 16_000, self.settings.vad_threshold) {
+                let msg = "No mic signal — check the input device.";
+                self.snapshot.fail(msg);
+                return Err(LfError::Other(msg.into()));
+            }
+            let path = self.ready_model_path("stt").ok_or_else(|| {
+                LfError::ModelMissing(
+                    self.settings
+                        .active_stt_model
+                        .clone()
+                        .unwrap_or_else(|| crate::config::DEFAULT_STT_MODEL.to_string()),
+                )
+            })?;
+            stt.transcribe(pcm, Some(path.as_path()), &self.settings.stt_language)?
         } else {
             transcript.to_string()
         };
         let raw = crate::sanitize::strip_model_tags(&raw);
+        if crate::sanitize::is_likely_hallucination(&raw) {
+            return Err(LfError::Other(
+                "No speech detected. Nothing was inserted.".into(),
+            ));
+        }
         let cues = crate::whisper_stt::last_cues();
         let timeout =
             std::time::Duration::from_millis(self.settings.postprocess_timeout_ms.max(1_000));
@@ -326,7 +340,8 @@ impl AppEngine {
         let formatted_text = if skip_llm {
             backtrack_text.clone()
         } else {
-            let smart = crate::phrases::recover(&crate::format::format_smart(mode, &backtrack_text));
+            let smart =
+                crate::phrases::recover(&crate::format::format_smart(mode, &backtrack_text));
             crate::format::normalize_spoken_values(
                 &smart,
                 mode,

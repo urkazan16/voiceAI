@@ -96,9 +96,12 @@ fn raised_hold_threshold_is_500ms() {
 #[test]
 fn pipeline_empty_transcript_stays_idle_after_reset() {
     let (_dir, mut eng) = engine();
-    let out = eng.run_scripted("").unwrap();
-    assert_eq!(out.final_text, "");
-    assert_eq!(eng.snapshot.state, PipelineState::Idle);
+    let err = eng.run_scripted("").unwrap_err();
+    assert!(
+        err.to_string().contains("No mic signal"),
+        "{err}"
+    );
+    assert_eq!(eng.snapshot.state, PipelineState::Failed);
 }
 
 #[test]

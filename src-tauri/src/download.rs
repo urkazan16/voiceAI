@@ -88,6 +88,23 @@ pub fn inspect_install(record: &ModelRecord, dest: &Path) -> ModelInstallStatus 
     }
 }
 
+/// Exact catalog size only. A larger or smaller partial must not skip the download.
+pub(crate) fn existing_partial_is_complete(existing: u64, catalog_size: u64) -> bool {
+    catalog_size > 0 && existing == catalog_size
+}
+
+pub(crate) fn should_resume_partial(existing: u64, catalog_size: u64) -> bool {
+    existing > 0 && (catalog_size == 0 || existing < catalog_size)
+}
+
+pub(crate) fn downloaded_size_ok(downloaded: u64, catalog_size: u64) -> bool {
+    catalog_size == 0 || downloaded == catalog_size
+}
+
+pub(crate) fn digest_matches_catalog(actual: &str, expected: &str) -> bool {
+    !expected.is_empty() && actual.eq_ignore_ascii_case(expected)
+}
+
 pub async fn download_and_install(
     record: &ModelRecord,
     dest: &Path,
@@ -134,7 +151,7 @@ pub async fn download_and_install(
         total_bytes: record.size,
     });
 
-    if !digest.eq_ignore_ascii_case(&record.sha256) {
+    if !digest_matches_catalog(&digest, &record.sha256) {
         return Err(LfError::ModelChecksumMismatch {
             expected: record.sha256.to_ascii_lowercase(),
             actual: digest,
@@ -185,7 +202,7 @@ async fn fetch_to_file(
         .ok()
         .map(|m| m.len())
         .unwrap_or(0);
-    if existing > 0 && record.size > 0 && existing == record.size {
+    if existing_partial_is_complete(existing, record.size) {
         let dest = dest.to_path_buf();
         return tokio::task::spawn_blocking(move || sha256_file(&dest))
             .await
@@ -194,7 +211,7 @@ async fn fetch_to_file(
     let mut request = client
         .get(url)
         .header(reqwest::header::ACCEPT, "application/octet-stream");
-    if existing > 0 && (record.size == 0 || existing < record.size) {
+    if should_resume_partial(existing, record.size) {
         request = request.header(reqwest::header::RANGE, format!("bytes={existing}-"));
     }
 
@@ -270,7 +287,7 @@ async fn fetch_to_file(
     file.flush().await?;
     drop(file);
 
-    if record.size > 0 && downloaded != record.size {
+    if !downloaded_size_ok(downloaded, record.size) {
         return Err(LfError::Other(format!(
             "download incomplete for {}: {} of {} bytes — resume from Model Manager",
             record.model_id, downloaded, record.size
@@ -421,5 +438,82 @@ mod tests {
             .await
             .unwrap_err();
         assert_eq!(err.code(), "NETWORK_OPERATION_REQUIRED");
+    }
+
+    #[test]
+    fn complete_partial_requires_exact_catalog_size() {
+        assert!(existing_partial_is_complete(100, 100));
+        assert!(!existing_partial_is_complete(99, 100));
+        assert!(!existing_partial_is_complete(101, 100));
+        assert!(!existing_partial_is_complete(0, 100));
+        assert!(!existing_partial_is_complete(100, 0));
+        assert!(!existing_partial_is_complete(0, 0));
+    }
+
+    #[test]
+    fn resume_only_when_bytes_are_missing() {
+        assert!(should_resume_partial(50, 100));
+        assert!(!should_resume_partial(100, 100));
+        assert!(!should_resume_partial(0, 100));
+        assert!(should_resume_partial(10, 0));
+        assert!(!should_resume_partial(0, 0));
+    }
+
+    #[test]
+    fn downloaded_size_must_match_catalog_when_known() {
+        assert!(downloaded_size_ok(100, 100));
+        assert!(!downloaded_size_ok(99, 100));
+        assert!(!downloaded_size_ok(101, 100));
+        assert!(downloaded_size_ok(7, 0));
+    }
+
+    #[test]
+    fn catalog_digest_match_is_case_insensitive_and_rejects_empty_expected() {
+        let sha = "6c14d5adee5f86394037b4e4e8b59f1673b6cee10e3cf0b11bbdbee79c156208";
+        assert!(digest_matches_catalog(sha, sha));
+        assert!(digest_matches_catalog(&sha.to_ascii_uppercase(), sha));
+        assert!(!digest_matches_catalog(sha, "00".repeat(32).as_str()));
+        assert!(!digest_matches_catalog(sha, ""));
+        assert!(!digest_matches_catalog("", sha));
+    }
+
+    #[tokio::test]
+    async fn complete_partial_skips_network_and_still_checks_sha256() {
+        let body: &'static [u8] = b"GGUFoffline";
+        let record = record_for(
+            body,
+            "http://127.0.0.1:1/must-not-be-hit".into(),
+            "model.gguf",
+        );
+        let dir = tempdir().unwrap();
+        let dest = dir.path().join("model.gguf");
+        let partial = partial_path(&dest);
+        std::fs::write(&partial, body).unwrap();
+        download_and_install(&record, &dest, |_| {}).await.unwrap();
+        assert_eq!(std::fs::read(&dest).unwrap(), body);
+        assert!(digest_matches_catalog(
+            &sha256_file(&dest).unwrap(),
+            &record.sha256
+        ));
+    }
+
+    #[tokio::test]
+    async fn complete_partial_with_wrong_hash_fails_checksum_without_network() {
+        let expected: &'static [u8] = b"GGUFgoodxx";
+        let poisoned: &'static [u8] = b"GGUFbadxxx";
+        assert_eq!(expected.len(), poisoned.len());
+        let record = record_for(
+            expected,
+            "http://127.0.0.1:1/must-not-be-hit".into(),
+            "model.gguf",
+        );
+        let dir = tempdir().unwrap();
+        let dest = dir.path().join("model.gguf");
+        std::fs::write(partial_path(&dest), poisoned).unwrap();
+        let err = download_and_install(&record, &dest, |_| {})
+            .await
+            .unwrap_err();
+        assert_eq!(err.code(), "MODEL_CHECKSUM_MISMATCH");
+        assert!(!dest.exists());
     }
 }

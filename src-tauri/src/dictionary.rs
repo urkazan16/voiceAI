@@ -340,7 +340,8 @@ mod tests {
 
     #[test]
     fn replaces_technical_terms() {
-        let dict = Dictionary::from_entries(vec![DictionaryEntry::rule("1", "пострес", "Postgres")]);
+        let dict =
+            Dictionary::from_entries(vec![DictionaryEntry::rule("1", "пострес", "Postgres")]);
         assert_eq!(
             dict.apply("Подними пострес локально"),
             "Подними Postgres локально"
@@ -350,18 +351,18 @@ mod tests {
     #[test]
     fn prefers_longer_matches() {
         let dict = Dictionary::from_entries(vec![
-                DictionaryEntry::rule("1", "junit", "JUnit"),
-                DictionaryEntry::rule("2", "junit 5", "JUnit 5"),
-            ]);
+            DictionaryEntry::rule("1", "junit", "JUnit"),
+            DictionaryEntry::rule("2", "junit 5", "JUnit 5"),
+        ]);
         assert_eq!(dict.apply("use junit 5"), "use JUnit 5");
     }
 
     #[test]
     fn qa_and_sql_terms() {
         let dict = Dictionary::from_entries(vec![
-                DictionaryEntry::rule("1", "ресташуред", "RestAssured"),
-                DictionaryEntry::rule("2", "селект", "SELECT"),
-            ]);
+            DictionaryEntry::rule("1", "ресташуред", "RestAssured"),
+            DictionaryEntry::rule("2", "селект", "SELECT"),
+        ]);
         let out = dict.apply("напиши селект в ресташуред");
         assert!(out.contains("SELECT"));
         assert!(out.contains("RestAssured"));

@@ -402,7 +402,9 @@ pub fn privacy_summary() -> PrivacySummary {
 }
 
 #[tauri::command]
-pub fn disk_usage(engine: tauri::State<SharedEngine>) -> Result<crate::disk::DiskUsage, CommandError> {
+pub fn disk_usage(
+    engine: tauri::State<SharedEngine>,
+) -> Result<crate::disk::DiskUsage, CommandError> {
     let eng = lock(&engine)?;
     let _ = eng.paths.ensure();
     let stt = eng.settings.active_stt_model.as_deref().and_then(|id| {
@@ -421,16 +423,9 @@ pub fn disk_usage(engine: tauri::State<SharedEngine>) -> Result<crate::disk::Dis
         .iter()
         .filter_map(|m| eng.model_status(&m.model_id).ok())
         .collect();
-    let stt_ref = stt
-        .as_ref()
-        .map(|(r, s)| (r, s));
+    let stt_ref = stt.as_ref().map(|(r, s)| (r, s));
     let llm_ref = llm.as_ref().map(|(r, s)| (r, s));
-    Ok(crate::disk::report(
-        &eng.paths.root,
-        stt_ref,
-        llm_ref,
-        &all,
-    ))
+    Ok(crate::disk::report(&eng.paths.root, stt_ref, llm_ref, &all))
 }
 
 #[derive(Serialize)]
@@ -611,13 +606,15 @@ pub async fn set_active_model(
     };
     if crate::integrity::looks_installed(&path, &record) {
         let verify_path = path.clone();
-        tokio::task::spawn_blocking(move || crate::integrity::activate_model(&verify_path, &record))
-            .await
-            .map_err(|err| CommandError {
-                code: "ERROR".into(),
-                message: err.to_string(),
-            })?
-            .map_err(CommandError::from)?;
+        tokio::task::spawn_blocking(move || {
+            crate::integrity::activate_model(&verify_path, &record)
+        })
+        .await
+        .map_err(|err| CommandError {
+            code: "ERROR".into(),
+            message: err.to_string(),
+        })?
+        .map_err(CommandError::from)?;
     }
     lock(&engine)?.mark_active(&model_id)?;
     Ok(path.display().to_string())
@@ -664,6 +661,7 @@ pub struct StatsSnapshot {
     pub wpm_avg_all: f64,
     pub wpm_best: f64,
     pub last_wpm: f64,
+    pub wpm_by_application: Vec<crate::uttlog::AppWpm>,
 }
 
 #[tauri::command]
@@ -708,6 +706,7 @@ pub fn get_stats(engine: tauri::State<SharedEngine>) -> Result<StatsSnapshot, Co
         wpm_avg_all: avg(&wpm_all),
         wpm_best: wpm_all.iter().copied().fold(0.0, f64::max),
         last_wpm: rows.last().map(|r| r.wpm).unwrap_or(0.0),
+        wpm_by_application: crate::uttlog::wpm_by_application(&rows),
     })
 }
 

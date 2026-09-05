@@ -88,6 +88,9 @@ pub fn user_guidance(err: &LfError) -> String {
         LfError::ModelChecksumMismatch { .. } => {
             "Model file is corrupted or incomplete. Delete it in Models and download again.".into()
         }
+        LfError::PermissionDenied(msg) if msg.to_lowercase().contains("secure") => {
+            "This looks like a password field. Dictation is ready — Copy last / Paste last after leaving the field.".into()
+        }
         LfError::PermissionDenied(msg) if msg.to_lowercase().contains("accessib") => {
             "macOS blocked paste. System Settings → Privacy & Security → Accessibility → enable LocalFlow, then Paste last.".into()
         }

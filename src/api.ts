@@ -44,6 +44,7 @@ export interface AppSettings {
   insert_delay_ms: number;
   postprocess_timeout_ms: number;
   sound_cues: boolean;
+  sound_cue_volume: number;
   log_max_bytes: number;
   autostart: boolean;
   history_enabled: boolean;
@@ -232,6 +233,12 @@ export interface AudioDevice {
   is_default: boolean;
 }
 
+export interface AppWpm {
+  application: string;
+  wpm_avg: number;
+  utterances: number;
+}
+
 export interface StatsSnapshot {
   recordings: number;
   words_today: number;
@@ -240,6 +247,7 @@ export interface StatsSnapshot {
   wpm_avg_all: number;
   wpm_best: number;
   last_wpm: number;
+  wpm_by_application: AppWpm[];
 }
 
 export interface HotkeyStatus {

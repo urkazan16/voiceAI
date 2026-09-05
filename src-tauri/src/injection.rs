@@ -252,6 +252,11 @@ mod macos {
         target_app: Option<&str>,
         insert_delay_ms: u64,
     ) -> LfResult<()> {
+        if secure_event_input_enabled() {
+            return Err(LfError::PermissionDenied(
+                "secure input blocked paste".into(),
+            ));
+        }
         prepare_keyboard();
         focus_pid(target_pid);
         let delay = insert_delay_ms.max(40);
@@ -263,29 +268,96 @@ mod macos {
         std::thread::sleep(Duration::from_millis(extra));
 
         let previous = if restore_clipboard {
-            std::process::Command::new("pbpaste")
-                .output()
-                .ok()
-                .and_then(|o| String::from_utf8(o.stdout).ok())
-                .or(Some(String::new()))
+            Some(snapshot_pasteboard())
         } else {
             None
         };
         if let Some(prev) = &previous {
-            let _ = super::persist_clipboard_backup(prev);
+            if let Some(plain) = prev.plain_text() {
+                let _ = super::persist_clipboard_backup(plain);
+            }
         }
 
-        super::write_pasteboard(text)?;
+        write_pasteboard_string(text)?;
         let paste_result = post_paste();
         release_stuck_modifiers();
 
         if let Some(prev) = previous {
             std::thread::sleep(Duration::from_millis(100));
-            let _ = super::write_pasteboard(&prev);
+            restore_pasteboard(&prev);
             let path = super::clipboard_backup_path();
             let _ = std::fs::remove_file(path);
         }
         paste_result
+    }
+
+    pub(crate) fn secure_event_input_enabled() -> bool {
+        #[link(name = "Carbon", kind = "framework")]
+        extern "C" {
+            fn IsSecureEventInputEnabled() -> u8;
+        }
+        unsafe { IsSecureEventInputEnabled() != 0 }
+    }
+
+    struct PasteboardSnapshot {
+        items: Vec<(String, Vec<u8>)>,
+    }
+
+    impl PasteboardSnapshot {
+        fn plain_text(&self) -> Option<&str> {
+            self.items.iter().find_map(|(ty, bytes)| {
+                if ty == "public.utf8-plain-text" || ty == "NSStringPboardType" {
+                    std::str::from_utf8(bytes).ok()
+                } else {
+                    None
+                }
+            })
+        }
+    }
+
+    fn snapshot_pasteboard() -> PasteboardSnapshot {
+        use objc2_app_kit::NSPasteboard;
+        let pb = NSPasteboard::generalPasteboard();
+        let mut items = Vec::new();
+        let mut total = 0usize;
+        if let Some(types) = pb.types() {
+            for ty in types.iter() {
+                let Some(data) = pb.dataForType(&ty) else {
+                    continue;
+                };
+                let bytes = unsafe { data.as_bytes_unchecked() }.to_vec();
+                total = total.saturating_add(bytes.len());
+                if total > 16 * 1024 * 1024 {
+                    break;
+                }
+                items.push((ty.to_string(), bytes));
+            }
+        }
+        PasteboardSnapshot { items }
+    }
+
+    fn restore_pasteboard(snapshot: &PasteboardSnapshot) {
+        use objc2_app_kit::NSPasteboard;
+        use objc2_foundation::{NSData, NSString};
+        let pb = NSPasteboard::generalPasteboard();
+        pb.clearContents();
+        for (ty, bytes) in &snapshot.items {
+            let ns_ty = NSString::from_str(ty);
+            let data = NSData::with_bytes(bytes);
+            let _ = pb.setData_forType(Some(&data), &ns_ty);
+        }
+    }
+
+    fn write_pasteboard_string(text: &str) -> LfResult<()> {
+        use objc2_app_kit::{NSPasteboard, NSPasteboardTypeString};
+        use objc2_foundation::NSString;
+        let pb = NSPasteboard::generalPasteboard();
+        pb.clearContents();
+        if pb.setString_forType(&NSString::from_str(text), unsafe { NSPasteboardTypeString }) {
+            Ok(())
+        } else {
+            super::write_pasteboard(text)
+        }
     }
 
     fn is_editor_or_terminal(app: Option<&str>) -> bool {
@@ -445,5 +517,11 @@ mod tests {
         persist_clipboard_backup("keep me").unwrap();
         assert_eq!(take_clipboard_backup().as_deref(), Some("keep me"));
         assert!(take_clipboard_backup().is_none());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn secure_event_input_query_does_not_panic() {
+        let _ = macos::secure_event_input_enabled();
     }
 }

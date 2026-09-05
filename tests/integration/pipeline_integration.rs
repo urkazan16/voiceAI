@@ -61,8 +61,34 @@ fn integration_scripted_stt_history_and_clear() {
 }
 
 #[test]
-fn integration_runtime_is_whisper_rs() {
-    let id = localflow_lib::runtime::runtime_id();
-    assert!(id.starts_with("whisper-rs/"));
-    assert!(!id.contains("stub"));
+fn integration_dictation_pipeline_values_tags_and_spacing() {
+    let dir = tempdir().unwrap();
+    let mut engine = AppEngine::open(DataPaths::from_override(dir.path().to_path_buf())).unwrap();
+    engine.settings.digits_from_speech = true;
+    engine.settings.date_format = "DMY".into();
+    engine.settings.mode = localflow_lib::pipeline::PipelineMode::Normal;
+
+    let tagged = engine
+        .run_scripted("[BLANK_AUDIO] встреча двадцать пять в 15 часов 30 минут 5.3.26")
+        .unwrap();
+    assert!(
+        !tagged.final_text.contains("BLANK"),
+        "{}",
+        tagged.final_text
+    );
+    assert!(tagged.final_text.contains("25"), "{}", tagged.final_text);
+    assert!(tagged.final_text.contains("15:30"), "{}", tagged.final_text);
+    assert!(
+        tagged.final_text.contains("05.03.2026"),
+        "{}",
+        tagged.final_text
+    );
+
+    engine.run_scripted("Привет").unwrap();
+    engine.run_scripted("мир").unwrap();
+    assert!(
+        engine.session_text.contains("Привет. Мир"),
+        "consecutive utterances need a space; got {}",
+        engine.session_text
+    );
 }

@@ -22,6 +22,7 @@ static VAD_BITS: AtomicU32 = AtomicU32::new(0);
 static LAST_RMS_BITS: AtomicU32 = AtomicU32::new(0);
 static HANDS_FREE: AtomicBool = AtomicBool::new(false);
 static TRAY_MARK: Mutex<String> = Mutex::new(String::new());
+static TRAY_TIP: Mutex<String> = Mutex::new(String::new());
 
 /// Holds shorter than this are discarded. A 320 ms tap used to enter hands-free
 /// and leave the microphone open.
@@ -79,7 +80,10 @@ pub fn remember_microphone(name: Option<String>) {
 }
 
 pub fn remember_vad(threshold: f32) {
-    VAD_BITS.store(crate::vad::clamp_threshold(threshold).to_bits(), Ordering::Relaxed);
+    VAD_BITS.store(
+        crate::vad::clamp_threshold(threshold).to_bits(),
+        Ordering::Relaxed,
+    );
 }
 
 pub fn remember_hands_free(enabled: bool) {
@@ -243,14 +247,20 @@ fn sync_tray(app: &AppHandle, phase: &str) {
         } else {
             "LocalFlow"
         };
-        let _ = tray.set_tooltip(Some(tooltip));
-        if let Ok(mut last) = TRAY_MARK.lock() {
-            if last.as_str() == mark {
-                return;
+        let mut same = false;
+        if let (Ok(mut last_mark), Ok(mut last_tip)) = (TRAY_MARK.lock(), TRAY_TIP.lock()) {
+            same = last_mark.as_str() == mark && last_tip.as_str() == tooltip;
+            if !same {
+                last_mark.clear();
+                last_mark.push_str(mark);
+                last_tip.clear();
+                last_tip.push_str(tooltip);
             }
-            last.clear();
-            last.push_str(mark);
         }
+        if same {
+            return;
+        }
+        let _ = tray.set_tooltip(Some(tooltip));
         let _ = tray.set_title(Some(mark));
     }
 }
@@ -338,12 +348,10 @@ pub fn on_hotkey_pressed(app: &AppHandle, engine: &SharedEngine, capture: &Share
     match capture.start(mic) {
         Ok(()) => {
             crate::journal::log("record_start", "microphone on");
-            if engine
-                .try_lock()
-                .map(|eng| eng.settings.sound_cues)
-                .unwrap_or(true)
-            {
-                crate::cues::play_start();
+            if let Ok(eng) = engine.try_lock() {
+                if eng.settings.sound_cues {
+                    crate::cues::play_start(eng.settings.sound_cue_volume);
+                }
             }
             show_bar(app, engine);
             spawn_streaming_preview(app, engine, capture);
@@ -460,9 +468,7 @@ fn spawn_level_meter(app: &AppHandle, capture: &SharedCapture) {
         let message = if warn {
             "No mic signal — check the input device.".into()
         } else {
-            partial
-                .clone()
-                .unwrap_or_else(|| "Listening…".into())
+            partial.clone().unwrap_or_else(|| "Listening…".into())
         };
         emit_state(
             &app,
@@ -586,11 +592,8 @@ fn finish_recording(app: &AppHandle, engine: &SharedEngine, capture: &SharedCapt
             return;
         }
         let duration_ms = audio::duration_ms(&captured);
-        let mut pcm = crate::vad::trim_silence_at(
-            &audio::to_whisper_pcm(&captured),
-            16_000,
-            cached_vad(),
-        );
+        let mut pcm =
+            crate::vad::trim_silence_at(&audio::to_whisper_pcm(&captured), 16_000, cached_vad());
         // Keep the onset so the first phoneme/letter is not trimmed away.
         let mut onset = vec![0.0; 2_400];
         onset.append(&mut pcm);
@@ -604,7 +607,16 @@ fn finish_recording(app: &AppHandle, engine: &SharedEngine, capture: &SharedCapt
             );
             return;
         }
-        let (stt_path, lang, pid, app_name, delay_ms, timeout_ms, sounds, last_wav) =
+        if !crate::vad::had_speech_at(&pcm, 16_000, cached_vad()) {
+            fail(
+                &app,
+                &engine,
+                "No mic signal — check the input device.",
+                duration_ms,
+            );
+            return;
+        }
+        let (stt_path, lang, pid, app_name, delay_ms, timeout_ms, sounds, cue_vol, last_wav) =
             match engine.lock() {
                 Ok(eng) => (
                     eng.ready_model_path("stt"),
@@ -614,6 +626,7 @@ fn finish_recording(app: &AppHandle, engine: &SharedEngine, capture: &SharedCapt
                     eng.settings.insert_delay_ms,
                     eng.settings.postprocess_timeout_ms,
                     eng.settings.sound_cues,
+                    eng.settings.sound_cue_volume,
                     eng.paths.last_utterance(),
                 ),
                 Err(_) => {
@@ -622,8 +635,16 @@ fn finish_recording(app: &AppHandle, engine: &SharedEngine, capture: &SharedCapt
                 }
             };
         let _ = crate::macos_stt::write_wav_s16le_mono(&last_wav, 16_000, &pcm);
-        let whisper_ready = stt_path.is_some();
-        let raw = match NativeStt.transcribe(&pcm, stt_path.as_deref(), &lang) {
+        let Some(stt_path) = stt_path else {
+            fail(
+                &app,
+                &engine,
+                &crate::error::user_guidance(&LfError::ModelMissing("whisper-medium".into())),
+                duration_ms,
+            );
+            return;
+        };
+        let raw = match NativeStt.transcribe(&pcm, Some(&stt_path), &lang) {
             Ok(text) => crate::sanitize::strip_model_tags(&text),
             Err(err) => {
                 fail(
@@ -681,7 +702,7 @@ fn finish_recording(app: &AppHandle, engine: &SharedEngine, capture: &SharedCapt
         match result {
             Ok(output) => {
                 if sounds {
-                    crate::cues::play_end();
+                    crate::cues::play_end(cue_vol);
                 }
                 crate::journal::log(
                     "processed",
@@ -716,16 +737,10 @@ fn finish_recording(app: &AppHandle, engine: &SharedEngine, capture: &SharedCapt
                         message: if empty {
                             format!("Processed {duration_ms} ms of audio. No text to insert.")
                         } else if inserted {
-                            let mut msg = format!("Inserted: {}", output.final_text);
-                            if !whisper_ready {
-                                msg.push_str(
-                                    " · Whisper is not installed — download it in Models for offline dictation.",
-                                );
-                            }
-                            msg
+                            format!("Inserted: {}", output.final_text)
                         } else {
                             format!(
-                                "Text ready but insert failed. Copy from Last Transcript: {}",
+                                "Text ready but insert failed. Copy last / Paste last: {}",
                                 output.final_text
                             )
                         },

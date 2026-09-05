@@ -1,9 +1,11 @@
 use crate::error::{LfError, LfResult};
 use crate::pipeline::TranscriptCue;
+use std::ffi::c_void;
+use std::os::raw::c_char;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Sender};
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Mutex, Once, OnceLock};
 use whisper_rs::{FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters};
 
 static SKIP_PARTIAL: AtomicBool = AtomicBool::new(false);
@@ -110,6 +112,7 @@ pub fn transcribe(
 
 fn worker() -> Sender<TranscribeJob> {
     JOBS.get_or_init(|| {
+        silence_whisper_logs();
         let (tx, rx) = mpsc::channel::<TranscribeJob>();
         std::thread::Builder::new()
             .name("localflow-whisper".into())
@@ -187,7 +190,10 @@ fn decode(ctx: &WhisperContext, pcm: &[f32], language: &str) -> LfResult<String>
     params.set_print_progress(false);
     params.set_print_realtime(false);
     params.set_print_timestamps(false);
+    params.set_no_timestamps(true);
     params.set_suppress_blank(true);
+    params.set_suppress_non_speech_tokens(true);
+    params.set_no_speech_thold(0.6);
     params.set_no_context(true);
     params.set_abort_callback_safe(crate::dictation::is_cancelled);
     state
@@ -223,7 +229,25 @@ fn decode(ctx: &WhisperContext, pcm: &[f32], language: &str) -> LfResult<String>
     if let Ok(mut slot) = cues_slot().lock() {
         *slot = cues;
     }
-    Ok(crate::sanitize::strip_model_tags(&out))
+    let cleaned = crate::sanitize::strip_model_tags(&out);
+    if crate::sanitize::is_likely_hallucination(&cleaned) {
+        return Ok(String::new());
+    }
+    Ok(cleaned)
+}
+
+fn silence_whisper_logs() {
+    static ONCE: Once = Once::new();
+    ONCE.call_once(|| unsafe {
+        whisper_rs::set_log_callback(Some(quiet_whisper_log), std::ptr::null_mut());
+    });
+}
+
+unsafe extern "C" fn quiet_whisper_log(
+    _level: std::os::raw::c_uint,
+    _text: *const c_char,
+    _user_data: *mut c_void,
+) {
 }
 
 fn num_threads() -> std::ffi::c_int {

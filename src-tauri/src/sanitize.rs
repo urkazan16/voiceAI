@@ -30,6 +30,46 @@ pub fn strip_model_tags(text: &str) -> String {
         .to_string()
 }
 
+/// Whisper often invents podcast outros on silence. Do not insert those.
+pub fn is_likely_hallucination(text: &str) -> bool {
+    let t = text
+        .to_lowercase()
+        .chars()
+        .map(|c| {
+            if c.is_alphanumeric() || c.is_whitespace() {
+                c
+            } else {
+                ' '
+            }
+        })
+        .collect::<String>();
+    let t = t.split_whitespace().collect::<Vec<_>>().join(" ");
+    if t.is_empty() {
+        return true;
+    }
+    const EXACT: &[&str] = &["music", "applause"];
+    if EXACT.iter().any(|p| t == *p) {
+        return true;
+    }
+    const PREFIXES: &[&str] = &[
+        "с вами был",
+        "с вами была",
+        "thank you for watching",
+        "thanks for watching",
+        "thanks for listening",
+        "please subscribe",
+        "like and subscribe",
+        "subtitles by",
+        "transcript by",
+        "продолжение следует",
+        "подписывайтесь",
+        "ставьте лайки",
+    ];
+    PREFIXES
+        .iter()
+        .any(|p| t == *p || t.starts_with(&format!("{p} ")))
+}
+
 fn is_service_tag(inner: &str) -> bool {
     let t = inner.trim();
     if t.is_empty() {
@@ -66,5 +106,15 @@ mod tests {
     #[test]
     fn does_not_drop_first_letter() {
         assert_eq!(strip_model_tags("Привет"), "Привет");
+    }
+
+    #[test]
+    fn flags_silence_hallucination() {
+        assert!(is_likely_hallucination("С вами был Игорь Негода."));
+        assert!(is_likely_hallucination("Thank you for watching!"));
+        assert!(!is_likely_hallucination("Привет это проверка диктовки."));
+        assert!(!is_likely_hallucination(
+            "подпишись на канал новостей завтра"
+        ));
     }
 }

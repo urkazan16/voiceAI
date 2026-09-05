@@ -27,13 +27,15 @@ impl SpeechToText for NativeStt {
                 language,
             ) {
                 Ok(text) if !text.trim().is_empty() => Ok(text),
-                Ok(_) => Err(LfError::RuntimeUnsupported(
-                    "whisper.cpp produced empty text".into(),
+                Ok(_) => Err(LfError::Other(
+                    "No speech detected. Nothing was inserted.".into(),
                 )),
                 Err(err) => Err(err),
             }
         } else {
-            crate::macos_stt::transcribe_pcm_16k(pcm)
+            Err(LfError::ModelMissing(
+                "Whisper is not installed. Open Models and download the speech model.".into(),
+            ))
         }
     }
 }
@@ -73,5 +75,11 @@ mod tests {
         assert_eq!(err.code(), "MODEL_MISSING");
         assert!(!err.to_string().contains("localflow-native-stub"));
         assert!(!err.to_string().contains("build-native-runtime"));
+    }
+
+    #[test]
+    fn native_stt_without_model_path_does_not_use_macos_speech() {
+        let err = NativeStt.transcribe(&[0.1; 800], None, "ru").unwrap_err();
+        assert_eq!(err.code(), "MODEL_MISSING");
     }
 }

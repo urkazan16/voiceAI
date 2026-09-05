@@ -56,6 +56,23 @@ regex = "1.11.1"
 libc = "0.2"
 whisper-rs = { version = "0.13.2", default-features = false }
 
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6.4"
+objc2-foundation = { version = "0.3.2", default-features = false, features = [
+    "std",
+    "NSArray",
+    "NSData",
+    "NSDictionary",
+    "NSError",
+    "NSSet",
+    "NSString",
+    "NSURL",
+] }
+objc2-app-kit = { version = "0.3.2", default-features = false, features = [
+    "std",
+    "NSPasteboard",
+] }
+
 [dev-dependencies]
 tempfile = "3.16.0"
 

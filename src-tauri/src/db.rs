@@ -110,7 +110,9 @@ impl Store {
                 timecodes: row.get(9)?,
             })
         })?;
-        let q = query.map(|s| s.trim().to_lowercase()).filter(|s| !s.is_empty());
+        let q = query
+            .map(|s| s.trim().to_lowercase())
+            .filter(|s| !s.is_empty());
         let app = application
             .map(|s| s.trim().to_lowercase())
             .filter(|s| !s.is_empty());
@@ -232,7 +234,13 @@ mod tests {
         store
             .insert_history(&item("2", "2026-08-01T00:00:00Z", "Safari", "search rust"))
             .unwrap();
-        assert_eq!(store.query_history(Some("invoice"), None, None).unwrap().len(), 1);
+        assert_eq!(
+            store
+                .query_history(Some("invoice"), None, None)
+                .unwrap()
+                .len(),
+            1
+        );
         assert_eq!(
             store
                 .query_history(None, Some("Safari"), None)

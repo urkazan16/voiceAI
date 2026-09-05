@@ -32,6 +32,8 @@ pub struct AppSettings {
     pub postprocess_timeout_ms: u64,
     #[serde(default = "default_true")]
     pub sound_cues: bool,
+    #[serde(default = "default_cue_volume")]
+    pub sound_cue_volume: f32,
     #[serde(default = "default_log_max")]
     pub log_max_bytes: u64,
     #[serde(default)]
@@ -84,6 +86,17 @@ fn default_date_format() -> String {
     "DMY".into()
 }
 
+fn default_cue_volume() -> f32 {
+    0.25
+}
+
+pub fn clamp_cue_volume(volume: f32) -> f32 {
+    if !volume.is_finite() {
+        return default_cue_volume();
+    }
+    volume.clamp(0.05, 1.0)
+}
+
 impl AppSettings {
     pub fn normalize(&mut self) {
         self.vad_threshold = crate::vad::clamp_threshold(self.vad_threshold);
@@ -98,6 +111,7 @@ impl AppSettings {
         if self.insert_delay_ms < 40 {
             self.insert_delay_ms = 40;
         }
+        self.sound_cue_volume = clamp_cue_volume(self.sound_cue_volume);
     }
 
     /// First install / first launch: speech model is Medium unless the user already picked Turbo or another catalog id.
@@ -134,6 +148,7 @@ impl Default for AppSettings {
             insert_delay_ms: default_insert_delay(),
             postprocess_timeout_ms: default_postprocess_timeout(),
             sound_cues: true,
+            sound_cue_volume: default_cue_volume(),
             log_max_bytes: default_log_max(),
             autostart: false,
             history_enabled: true,

@@ -286,7 +286,13 @@ fn tidy_spacing(text: &str) -> String {
             }
             out.push(*ch);
             let next = chars.get(i + 1).copied();
-            if next.is_some_and(|n| !n.is_whitespace() && n != '\n' && !matches!(n, ')' | ']')) {
+            let prev = if i > 0 { chars[i - 1] } else { ' ' };
+            let keep_numeric = matches!(*ch, '.' | ':')
+                && prev.is_ascii_digit()
+                && next.is_some_and(|n| n.is_ascii_digit());
+            if next.is_some_and(|n| !n.is_whitespace() && n != '\n' && !matches!(n, ')' | ']'))
+                && !keep_numeric
+            {
                 out.push(' ');
             }
             continue;
@@ -532,7 +538,9 @@ fn normalize_clock(text: &str) -> String {
         let h: u32 = caps[1].parse().unwrap_or(0);
         let m: u32 = caps[2].parse().unwrap_or(0);
         if h > 23 || m > 59 {
-            caps.get(0).map(|m| m.as_str().to_string()).unwrap_or_default()
+            caps.get(0)
+                .map(|m| m.as_str().to_string())
+                .unwrap_or_default()
         } else {
             format!("{h:02}:{m:02}")
         }
@@ -541,7 +549,7 @@ fn normalize_clock(text: &str) -> String {
 }
 
 fn normalize_dates(text: &str, date_format: &str) -> String {
-    let re = regex::Regex::new(r"\b(\d{1,2})[./-](\d{1,2})[./-](\d{2,4})\b");
+    let re = regex::Regex::new(r"\b(\d{1,2})\s*[./-]\s*(\d{1,2})\s*[./-]\s*(\d{2,4})\b");
     let Ok(re) = re else {
         return text.to_string();
     };
@@ -553,14 +561,32 @@ fn normalize_dates(text: &str, date_format: &str) -> String {
         if y < 100 {
             y += 2000;
         }
-        let (d, m) = if a > 12 { (a, b) } else { (a, b) };
+        let Some((year, month, day)) = order_day_month(a, b, y) else {
+            return caps
+                .get(0)
+                .map(|m| m.as_str().to_string())
+                .unwrap_or_default();
+        };
         if iso {
-            format!("{y:04}-{m:02}-{d:02}")
+            format!("{year:04}-{month:02}-{day:02}")
         } else {
-            format!("{d:02}.{m:02}.{y:04}")
+            format!("{day:02}.{month:02}.{year:04}")
         }
     })
     .into_owned()
+}
+
+fn order_day_month(a: u32, b: u32, year: u32) -> Option<(u32, u32, u32)> {
+    let ok = |day: u32, month: u32| (1..=31).contains(&day) && (1..=12).contains(&month);
+    if a > 12 && ok(a, b) {
+        Some((year, b, a))
+    } else if b > 12 && ok(b, a) {
+        Some((year, a, b))
+    } else if ok(a, b) {
+        Some((year, b, a))
+    } else {
+        None
+    }
 }
 
 #[cfg(test)]
@@ -625,17 +651,52 @@ mod tests {
 
     #[test]
     fn digits_dates_and_clock_follow_config() {
-        let text = normalize_spoken_values(
-            "встреча двадцать пять 15 часов 30 минут 5.3.26",
-            PipelineMode::Normal,
-            true,
-            "DMY",
+        assert_eq!(
+            normalize_spoken_values(
+                "встреча двадцать пять 15 часов 30 минут 5.3.26",
+                PipelineMode::Normal,
+                true,
+                "DMY",
+            ),
+            "встреча 25 15:30 05.03.2026"
         );
-        assert!(text.contains("25"), "{text}");
-        assert!(text.contains("15:30"), "{text}");
-        assert!(text.contains("05.03.2026"), "{text}");
-        let iso = normalize_spoken_values("5.3.26", PipelineMode::Normal, true, "ISO");
-        assert!(iso.contains("2026-03-05"), "{iso}");
+        assert_eq!(
+            normalize_spoken_values(
+                "пятнадцать часов тридцать минут",
+                PipelineMode::Normal,
+                true,
+                "DMY",
+            ),
+            "15:30"
+        );
+        assert_eq!(
+            normalize_spoken_values("пять часов три минуты", PipelineMode::Normal, true, "DMY"),
+            "05:03"
+        );
+        assert_eq!(
+            normalize_spoken_values("9 часов 5 минут", PipelineMode::Normal, true, "DMY"),
+            "09:05"
+        );
+        assert_eq!(
+            normalize_spoken_values("25.12.24", PipelineMode::Normal, true, "DMY"),
+            "25.12.2024"
+        );
+        assert_eq!(
+            normalize_spoken_values("5.3.26", PipelineMode::Normal, true, "ISO"),
+            "2026-03-05"
+        );
+        assert_eq!(
+            normalize_spoken_values("двадцать пять", PipelineMode::Normal, false, "DMY"),
+            "двадцать пять"
+        );
+        assert_eq!(
+            normalize_spoken_values("двадцать пять", PipelineMode::Raw, true, "DMY"),
+            "двадцать пять"
+        );
+        assert_eq!(
+            format_smart(PipelineMode::Normal, "встреча 5.3.26 в 9:05"),
+            "Встреча 5.3.26 в 9:05."
+        );
     }
 
     #[test]

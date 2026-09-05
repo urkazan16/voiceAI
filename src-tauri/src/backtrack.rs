@@ -68,6 +68,7 @@ fn split_correction(text: &str) -> Option<(String, String)> {
         ", нет,",
         ", нет ",
         " нет, ",
+        " нет ",
         ", точнее ",
         " точнее ",
         ", вернее ",
@@ -115,7 +116,13 @@ fn split_correction(text: &str) -> Option<(String, String)> {
 fn is_weak_marker(marker: &str) -> bool {
     matches!(
         marker,
-        " точнее " | " вернее " | " actually " | " rather " | ", то есть " | " я хотел сказать "
+        " нет "
+            | " точнее "
+            | " вернее "
+            | " actually "
+            | " rather "
+            | ", то есть "
+            | " я хотел сказать "
     )
 }
 
@@ -267,6 +274,10 @@ mod tests {
         assert_eq!(
             apply("Давай встретимся в пять, нет, в шесть.", ""),
             "Давай встретимся в шесть."
+        );
+        assert_eq!(
+            apply("Давай встретимся в 5 нет в 6.", ""),
+            "Давай встретимся в 6."
         );
     }
 
