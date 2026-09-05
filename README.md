@@ -27,6 +27,16 @@ No cloud account is required. Core dictation does not call a backend.
 
 Tauri CLI is installed via `npm install` (`@tauri-apps/cli@2.2.7`). Do not use a globally installed `latest` CLI.
 
+After installing Rust, add Cargo to your shell (or open a new terminal):
+
+```bash
+source "$HOME/.cargo/env"
+```
+
+`npm run check` and `npm run tauri` also look in `~/.cargo/bin` so they work if rustup is installed but not sourced.
+
+Microphone / Accessibility strings live in `src-tauri/Info.plist` (merged by Tauri). Do not put `infoPlist` under `bundle.macOS` — CLI 2.2 rejects that key.
+
 There are no secret environment variables and no absolute developer paths in the build.
 
 ## Commands

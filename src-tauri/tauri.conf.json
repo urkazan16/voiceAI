@@ -48,8 +48,7 @@
     ],
     "resources": ["resources/model-catalog.json"],
     "macOS": {
-      "minimumSystemVersion": "12.0",
-      "infoPlist": "Info.plist"
+      "minimumSystemVersion": "12.0"
     }
   }
 }

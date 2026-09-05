@@ -15,4 +15,6 @@ npm test
 npm run tauri dev
 ```
 
+Rust must be on `PATH` (`source "$HOME/.cargo/env"`). npm scripts prepend `~/.cargo/bin` automatically.
+
 Clean-machine rule: if a dependency is required to build, it is listed in the README. No local binaries, no `.env` secrets, no absolute paths.
