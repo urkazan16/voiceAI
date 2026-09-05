@@ -21,6 +21,7 @@ pub fn invoked(args: &[String]) -> bool {
                 | "check"
                 | "devices"
                 | "paste-smoke"
+                | "download"
                 | "--help"
                 | "-h"
                 | "--version"
@@ -61,6 +62,7 @@ enum Command {
     Check,
     Devices,
     PasteSmoke,
+    Download,
     Help,
     Version,
 }
@@ -84,6 +86,7 @@ fn parse(args: &[String]) -> Result<Opts, String> {
             "check" => opts.command = Command::Check,
             "devices" => opts.command = Command::Devices,
             "paste-smoke" => opts.command = Command::PasteSmoke,
+            "download" => opts.command = Command::Download,
             "--help" | "-h" => opts.command = Command::Help,
             "--version" | "-V" => opts.command = Command::Version,
             "--json" => opts.json = true,
@@ -139,6 +142,7 @@ fn run_inner(args: &[String]) -> Result<i32, String> {
             }
         }
         Command::PasteSmoke => paste_smoke(),
+        Command::Download => download_required(opts),
         Command::Transcribe => transcribe(opts),
     }
 }
@@ -153,6 +157,7 @@ Usage:
                        [--model MODEL_ID] [--device NAME] [--dir DIR] [--stdin] [FILE...]
   localflow devices
   localflow check [--json]
+  localflow download [--model MODEL_ID]
   localflow paste-smoke
   localflow --version
   localflow --help
@@ -243,6 +248,42 @@ struct CliRow {
 
 fn run_pcm(engine: &mut AppEngine, pcm: &[f32]) -> LfResult<PipelineOutput> {
     engine.run_text_pipeline("", &NativeStt, &NativeLlm, &MemoryInjector::default(), pcm)
+}
+
+fn download_required(opts: Opts) -> Result<i32, String> {
+    let mut engine = AppEngine::open(DataPaths::detect()).map_err(|e| e.to_string())?;
+    let id = opts
+        .model
+        .or_else(|| engine.settings.active_stt_model.clone())
+        .unwrap_or_else(|| "whisper-small".into());
+    let record = engine.catalog.get(&id).map_err(|e| e.to_string())?.clone();
+    let dest = engine.model_path(&record);
+    eprintln!(
+        "Downloading {} ({}, {:.0} MB) from Hugging Face. SHA-256 is checked before activation.",
+        record.display_name,
+        record.model_id,
+        record.size as f64 / 1_000_000.0
+    );
+    let rec = record.clone();
+    let dest_for_dl = dest.clone();
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|e| e.to_string())?;
+    rt.block_on(async move {
+        crate::download::download_and_install(&rec, &dest_for_dl, |p| {
+            if p.total_bytes > 0 {
+                let pct = (p.bytes_downloaded.saturating_mul(100)) / p.total_bytes.max(1);
+                eprint!("\r{:<12} {pct:3}%", p.phase);
+            }
+        })
+        .await
+    })
+    .map_err(|e| e.to_string())?;
+    eprintln!();
+    engine.mark_active(&id).map_err(|e| e.to_string())?;
+    println!("{}", dest.display());
+    Ok(0)
 }
 
 fn local_check() -> Vec<String> {
@@ -401,5 +442,18 @@ mod tests {
     fn paste_smoke_command_parses() {
         let opts = parse(&["lf".into(), "paste-smoke".into()]).unwrap();
         assert!(matches!(opts.command, Command::PasteSmoke));
+    }
+
+    #[test]
+    fn download_command_parses_model() {
+        let opts = parse(&[
+            "lf".into(),
+            "download".into(),
+            "--model".into(),
+            "whisper-small".into(),
+        ])
+        .unwrap();
+        assert!(matches!(opts.command, Command::Download));
+        assert_eq!(opts.model.as_deref(), Some("whisper-small"));
     }
 }

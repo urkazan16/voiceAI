@@ -20,6 +20,8 @@ static BOUND_HOTKEYS: Mutex<(String, String, String)> =
 static MICROPHONE: Mutex<Option<String>> = Mutex::new(None);
 static VAD_BITS: AtomicU32 = AtomicU32::new(0);
 static LAST_RMS_BITS: AtomicU32 = AtomicU32::new(0);
+static HANDS_FREE: AtomicBool = AtomicBool::new(false);
+static TRAY_MARK: Mutex<String> = Mutex::new(String::new());
 
 /// Holds shorter than this are discarded. A 320 ms tap used to enter hands-free
 /// and leave the microphone open.
@@ -30,10 +32,17 @@ pub const REPEAT_PRESS_GUARD: Duration = Duration::from_millis(250);
 pub enum ReleaseAction {
     DiscardTooShort,
     Process,
+    StayRecording,
 }
 
 pub fn classify_release(held: Duration, is_recording: bool) -> ReleaseAction {
-    if is_recording && held < MIN_PTT_HOLD {
+    classify_release_ex(held, is_recording, false)
+}
+
+pub fn classify_release_ex(held: Duration, is_recording: bool, hands_free: bool) -> ReleaseAction {
+    if hands_free && is_recording {
+        ReleaseAction::StayRecording
+    } else if is_recording && held < MIN_PTT_HOLD {
         ReleaseAction::DiscardTooShort
     } else {
         ReleaseAction::Process
@@ -71,6 +80,14 @@ pub fn remember_microphone(name: Option<String>) {
 
 pub fn remember_vad(threshold: f32) {
     VAD_BITS.store(crate::vad::clamp_threshold(threshold).to_bits(), Ordering::Relaxed);
+}
+
+pub fn remember_hands_free(enabled: bool) {
+    HANDS_FREE.store(enabled, Ordering::Relaxed);
+}
+
+fn cached_hands_free() -> bool {
+    HANDS_FREE.load(Ordering::Relaxed)
 }
 
 fn cached_vad() -> f32 {
@@ -217,18 +234,23 @@ pub fn notify_hotkey(app: &AppHandle, edge: &str) {
 
 fn sync_tray(app: &AppHandle, phase: &str) {
     if let Some(tray) = app.tray_by_id("localflow") {
-        let tooltip = match phase {
-            "recording" => "LocalFlow — recording",
-            "processing" => "LocalFlow — processing",
-            "pressed" => "LocalFlow — recording",
-            _ => "LocalFlow",
+        let recording = phase == "recording" || phase == "pressed";
+        let mark = if recording { "●" } else { "" };
+        let tooltip = if recording {
+            "LocalFlow — recording"
+        } else if phase == "processing" {
+            "LocalFlow — processing"
+        } else {
+            "LocalFlow"
         };
         let _ = tray.set_tooltip(Some(tooltip));
-        let mark = if phase == "recording" || phase == "pressed" {
-            "●"
-        } else {
-            ""
-        };
+        if let Ok(mut last) = TRAY_MARK.lock() {
+            if last.as_str() == mark {
+                return;
+            }
+            last.clear();
+            last.push_str(mark);
+        }
         let _ = tray.set_title(Some(mark));
     }
 }
@@ -298,6 +320,7 @@ pub fn on_hotkey_pressed(app: &AppHandle, engine: &SharedEngine, capture: &Share
         Ok(mut eng) => {
             remember_microphone(eng.settings.microphone_name.clone());
             remember_vad(eng.settings.vad_threshold);
+            remember_hands_free(eng.settings.hands_free);
             eng.snapshot.reset();
             let _ = eng.snapshot.transition(PipelineState::Recording);
             eng.settings.microphone_name.clone()
@@ -367,9 +390,10 @@ pub fn on_hotkey_released(app: &AppHandle, engine: &SharedEngine, capture: &Shar
         .and_then(|g| *g)
         .map(|t| t.elapsed())
         .unwrap_or(Duration::from_secs(1));
-    match classify_release(held, capture.is_recording()) {
+    match classify_release_ex(held, capture.is_recording(), cached_hands_free()) {
         ReleaseAction::DiscardTooShort => discard_short_hold(app, engine, capture),
         ReleaseAction::Process => finish_recording(app, engine, capture),
+        ReleaseAction::StayRecording => {}
     }
 }
 
@@ -819,6 +843,22 @@ mod tests {
         assert_eq!(
             classify_release(Duration::from_millis(10), false),
             ReleaseAction::Process
+        );
+    }
+
+    #[test]
+    fn hands_free_release_keeps_the_mic_open() {
+        assert_eq!(
+            classify_release_ex(Duration::from_millis(80), true, true),
+            ReleaseAction::StayRecording
+        );
+        assert_eq!(
+            classify_release_ex(Duration::from_millis(800), true, true),
+            ReleaseAction::StayRecording
+        );
+        assert_eq!(
+            classify_release_ex(Duration::from_millis(80), true, false),
+            ReleaseAction::DiscardTooShort
         );
     }
 

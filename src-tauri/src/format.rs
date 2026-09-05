@@ -371,6 +371,198 @@ fn eq_ci(a: &str, b: &str) -> bool {
     a.eq_ignore_ascii_case(b) || a.to_lowercase() == b.to_lowercase()
 }
 
+pub fn space_between_utterances(previous: &str, next: &str) -> String {
+    let next = next.trim();
+    if next.is_empty() {
+        return String::new();
+    }
+    let Some(last) = previous.chars().last() else {
+        return next.to_string();
+    };
+    let first = next.chars().next().unwrap();
+    if last.is_whitespace() || first.is_whitespace() {
+        return next.to_string();
+    }
+    if matches!(first, '.' | ',' | ';' | ':' | '?' | '!' | ')' | ']') {
+        return next.to_string();
+    }
+    format!(" {next}")
+}
+
+pub fn normalize_spoken_values(
+    text: &str,
+    mode: PipelineMode,
+    digits: bool,
+    date_format: &str,
+) -> String {
+    if mode == PipelineMode::Raw || text.is_empty() {
+        return text.to_string();
+    }
+    let mut out = text.to_string();
+    if digits {
+        out = spoken_numbers_to_digits(&out);
+    }
+    out = normalize_clock(&out);
+    out = normalize_dates(&out, date_format);
+    out
+}
+
+fn spoken_numbers_to_digits(text: &str) -> String {
+    let mut rules: Vec<(&str, &str)> = vec![
+        ("девятнадцать", "19"),
+        ("восемнадцать", "18"),
+        ("семнадцать", "17"),
+        ("шестнадцать", "16"),
+        ("пятнадцать", "15"),
+        ("четырнадцать", "14"),
+        ("тринадцать", "13"),
+        ("двенадцать", "12"),
+        ("одиннадцать", "11"),
+        ("девяносто", "90"),
+        ("восемьдесят", "80"),
+        ("семьдесят", "70"),
+        ("шестьдесят", "60"),
+        ("пятьдесят", "50"),
+        ("сорок", "40"),
+        ("тридцать", "30"),
+        ("двадцать", "20"),
+        ("десять", "10"),
+        ("девять", "9"),
+        ("восемь", "8"),
+        ("семь", "7"),
+        ("шесть", "6"),
+        ("четыре", "4"),
+        ("три", "3"),
+        ("два", "2"),
+        ("две", "2"),
+        ("один", "1"),
+        ("одна", "1"),
+        ("одно", "1"),
+        ("ноль", "0"),
+        ("пять", "5"),
+        ("nineteen", "19"),
+        ("eighteen", "18"),
+        ("seventeen", "17"),
+        ("sixteen", "16"),
+        ("fifteen", "15"),
+        ("fourteen", "14"),
+        ("thirteen", "13"),
+        ("twelve", "12"),
+        ("eleven", "11"),
+        ("ten", "10"),
+        ("nine", "9"),
+        ("eight", "8"),
+        ("seven", "7"),
+        ("six", "6"),
+        ("five", "5"),
+        ("four", "4"),
+        ("three", "3"),
+        ("two", "2"),
+        ("one", "1"),
+        ("zero", "0"),
+    ];
+    rules.sort_by(|a, b| b.0.len().cmp(&a.0.len()));
+    let mut out = text.to_string();
+    for (phrase, digit) in rules {
+        out = replace_phrase_ci(&out, phrase, digit);
+    }
+    collapse_split_digits(&out)
+}
+
+fn collapse_split_digits(text: &str) -> String {
+    text.split('\n')
+        .map(collapse_split_digits_line)
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn collapse_split_digits_line(text: &str) -> String {
+    let mut out = String::new();
+    let mut pending: Option<u32> = None;
+    let tokens: Vec<&str> = text.split_whitespace().collect();
+    for token in tokens {
+        let core = trim_punct(token);
+        if let Ok(n) = core.parse::<u32>() {
+            let mut value = n;
+            if let Some(prev) = pending.take() {
+                if prev >= 20 && prev % 10 == 0 && n < 10 {
+                    value = prev + n;
+                } else {
+                    push_pending(&mut out, prev);
+                }
+            }
+            let suffix: String = token.chars().skip_while(|c| c.is_ascii_digit()).collect();
+            if suffix.is_empty() {
+                pending = Some(value);
+            } else {
+                push_pending(&mut out, value);
+                out.push_str(&suffix);
+            }
+            continue;
+        }
+        if let Some(prev) = pending.take() {
+            push_pending(&mut out, prev);
+        }
+        if !out.is_empty() {
+            out.push(' ');
+        }
+        out.push_str(token);
+    }
+    if let Some(prev) = pending {
+        push_pending(&mut out, prev);
+    }
+    out
+}
+
+fn push_pending(out: &mut String, n: u32) {
+    if !out.is_empty() {
+        out.push(' ');
+    }
+    out.push_str(&n.to_string());
+}
+
+fn normalize_clock(text: &str) -> String {
+    let re = regex::Regex::new(
+        r"(?i)\b(\d{1,2})\s*(?:часов|часа|час|hours|hour|h|:)\s*(\d{1,2})\s*(?:минут[аы]?|мин|minutes|minute|m)?\b",
+    );
+    let Ok(re) = re else {
+        return text.to_string();
+    };
+    re.replace_all(text, |caps: &regex::Captures| {
+        let h: u32 = caps[1].parse().unwrap_or(0);
+        let m: u32 = caps[2].parse().unwrap_or(0);
+        if h > 23 || m > 59 {
+            caps.get(0).map(|m| m.as_str().to_string()).unwrap_or_default()
+        } else {
+            format!("{h:02}:{m:02}")
+        }
+    })
+    .into_owned()
+}
+
+fn normalize_dates(text: &str, date_format: &str) -> String {
+    let re = regex::Regex::new(r"\b(\d{1,2})[./-](\d{1,2})[./-](\d{2,4})\b");
+    let Ok(re) = re else {
+        return text.to_string();
+    };
+    let iso = date_format.eq_ignore_ascii_case("ISO");
+    re.replace_all(text, |caps: &regex::Captures| {
+        let a: u32 = caps[1].parse().unwrap_or(0);
+        let b: u32 = caps[2].parse().unwrap_or(0);
+        let mut y: u32 = caps[3].parse().unwrap_or(0);
+        if y < 100 {
+            y += 2000;
+        }
+        let (d, m) = if a > 12 { (a, b) } else { (a, b) };
+        if iso {
+            format!("{y:04}-{m:02}-{d:02}")
+        } else {
+            format!("{d:02}.{m:02}.{y:04}")
+        }
+    })
+    .into_owned()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -429,5 +621,27 @@ mod tests {
     fn spoken_punctuation_period() {
         let out = format_smart(PipelineMode::Normal, "готово точка");
         assert!(out.contains('.') || out.to_lowercase().contains("готов"));
+    }
+
+    #[test]
+    fn digits_dates_and_clock_follow_config() {
+        let text = normalize_spoken_values(
+            "встреча двадцать пять 15 часов 30 минут 5.3.26",
+            PipelineMode::Normal,
+            true,
+            "DMY",
+        );
+        assert!(text.contains("25"), "{text}");
+        assert!(text.contains("15:30"), "{text}");
+        assert!(text.contains("05.03.2026"), "{text}");
+        let iso = normalize_spoken_values("5.3.26", PipelineMode::Normal, true, "ISO");
+        assert!(iso.contains("2026-03-05"), "{iso}");
+    }
+
+    #[test]
+    fn consecutive_utterances_get_a_space() {
+        assert_eq!(space_between_utterances("Привет", "мир"), " мир");
+        assert_eq!(space_between_utterances("Привет ", "мир"), "мир");
+        assert_eq!(space_between_utterances("Привет", ","), ",");
     }
 }

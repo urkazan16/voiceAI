@@ -315,7 +315,13 @@ impl AppEngine {
         let formatted_text = if skip_llm {
             backtrack_text.clone()
         } else {
-            crate::phrases::recover(&crate::format::format_smart(mode, &backtrack_text))
+            let smart = crate::phrases::recover(&crate::format::format_smart(mode, &backtrack_text));
+            crate::format::normalize_spoken_values(
+                &smart,
+                mode,
+                self.settings.digits_from_speech,
+                &self.settings.date_format,
+            )
         };
         self.snapshot.transition(PipelineState::Personalization)?;
         let personalized_text = if self.settings.personalization_enabled && !skip_llm {
@@ -359,8 +365,9 @@ impl AppEngine {
             "none"
         };
         crate::journal::log("insert", insert_method);
-        if self.inject_enabled && !final_text.is_empty() && !crate::dictation::is_cancelled() {
-            if let Err(err) = injector.insert_text(&final_text, self.settings.restore_clipboard) {
+        let inject_text = crate::format::space_between_utterances(&self.session_text, &final_text);
+        if self.inject_enabled && !inject_text.is_empty() && !crate::dictation::is_cancelled() {
+            if let Err(err) = injector.insert_text(&inject_text, self.settings.restore_clipboard) {
                 insert_ok = false;
                 insert_err = Some(err);
             }
@@ -382,7 +389,7 @@ impl AppEngine {
         };
         self.last_output = Some(output.clone());
         if !final_text.is_empty() {
-            self.session_text = final_text.clone();
+            self.session_text.push_str(&inject_text);
         }
         let _ = self.store.put_kv(
             "last_transcript",
@@ -629,7 +636,7 @@ mod tests {
             eng.run_scripted("Давай встретимся в пять, нет, в шесть.")
                 .unwrap()
                 .final_text,
-            "Давай встретимся в шесть."
+            "Давай встретимся в 6."
         );
         assert_eq!(
             eng.run_scripted("Ну короче э-э давай завтра созвонимся.")

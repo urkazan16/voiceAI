@@ -45,6 +45,10 @@ pub fn redact(input: &str) -> String {
         "authorization:",
         "password=",
         "secret=",
+        "access_key=",
+        "secret_key=",
+        "aws_secret",
+        "private_key=",
     ] {
         if let Some(idx) = out.to_ascii_lowercase().find(&key.to_ascii_lowercase()) {
             let rest = idx + key.len();
@@ -75,5 +79,6 @@ mod tests {
         assert!(redact("Authorization: Bearer sk-abc123xyz").contains("[redacted]"));
         assert!(redact("token=secretvalue rest").contains("[redacted]"));
         assert!(!redact("token=secretvalue").contains("secretvalue"));
+        assert!(!redact("access_key=AKIAEXAMPLE").contains("AKIAEXAMPLE"));
     }
 }

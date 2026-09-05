@@ -78,6 +78,10 @@ Settings live in `~/Library/Application Support/LocalFlow/config/settings.json` 
 | `history_enabled`                       | SQLite history + JSONL journal                                |
 | `sound_cues`                            | Start/end beeps                                               |
 | `insert_delay_ms`                       | Pause before paste                                            |
+| `hands_free`                            | Press-to-toggle listen; off = hold-to-talk                    |
+| `digits_from_speech`                    | Spoken numbers become digits                                  |
+| `date_format`                           | `DMY` (DD.MM.YYYY) or `ISO`                                   |
+| `compute_device`                        | Inference device; this build is CPU only                      |
 | `postprocess_timeout_ms`                | Cap on formatting                                             |
 | `restore_clipboard`                     | Restore clipboard after paste                                 |
 | `vad_threshold`                         | Silence trim sensitivity (default 0.012)                      |
@@ -91,7 +95,11 @@ First Cargo fetch needs network. After `src-tauri/Cargo.lock` is present, crates
 
 ## Models
 
-Installer does **not** ship multi-gigabyte weights. Download is an explicit, labeled network action in Model Manager. Before activation:
+Weights are **not** inside the `.app`. On `./install.sh` and on first GUI launch LocalFlow downloads the **active speech model** (default Whisper Small, ~488 MB) from Hugging Face, then verifies SHA-256 and ggml magic before activation. Qwen formatting models stay optional in Model Manager.
+
+Skip the network step with `LOCALFLOW_SKIP_MODEL_DOWNLOAD=1`. Retry anytime: `npm run download:stt` or `localflow download --model whisper-medium`.
+
+Before a model is used:
 
 1. SHA-256 verification
 2. Format validation (GGUF / ggml)

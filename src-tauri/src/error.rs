@@ -83,7 +83,7 @@ pub fn path_buf_error(path: PathBuf) -> String {
 pub fn user_guidance(err: &LfError) -> String {
     match err {
         LfError::ModelMissing(_) | LfError::ModelFormatInvalid(_) | LfError::ModelNotPinned(_) => {
-            "No usable Whisper model. Open Models, download Whisper Medium (or Small), then Set as active.".into()
+            "Whisper is not ready yet. LocalFlow downloads it on first launch — wait for the progress on Home or Models, then try again.".into()
         }
         LfError::ModelChecksumMismatch { .. } => {
             "Model file is corrupted or incomplete. Delete it in Models and download again.".into()

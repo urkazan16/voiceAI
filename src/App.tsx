@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   api,
   bundledCatalog,
@@ -48,6 +48,10 @@ const fallbackSettings = (): AppSettings => ({
   history_enabled: true,
   vad_threshold: 0.012,
   history_max_items: 500,
+  hands_free: false,
+  digits_from_speech: true,
+  date_format: "DMY",
+  compute_device: "cpu",
 });
 
 function isToday(iso: string): boolean {
@@ -130,6 +134,7 @@ export function App() {
   const [historyQuery, setHistoryQuery] = useState("");
   const [historyApp, setHistoryApp] = useState("");
   const [historyRange, setHistoryRange] = useState<"all" | "today" | "7d">("all");
+  const autoSttDownload = useRef(false);
 
   async function refresh() {
     try {
@@ -256,7 +261,10 @@ export function App() {
   }, []);
 
   useEffect(() => {
-    if (view !== "models" || !isTauriRuntime()) {
+    if (
+      (view !== "models" && view !== "onboarding" && view !== "home") ||
+      !isTauriRuntime()
+    ) {
       return;
     }
     let cancelled = false;
@@ -277,6 +285,26 @@ export function App() {
       window.clearInterval(timer);
     };
   }, [view]);
+
+  useEffect(() => {
+    if (!isTauriRuntime() || autoSttDownload.current || modelStatus.length === 0) {
+      return;
+    }
+    const id = settings.active_stt_model;
+    if (!id) {
+      return;
+    }
+    const status = modelStatus.find((item) => item.model_id === id);
+    if (status?.verified || status?.installed || status?.state === "downloading") {
+      autoSttDownload.current = true;
+      return;
+    }
+    autoSttDownload.current = true;
+    void api.downloadModel(id).catch((error) => {
+      autoSttDownload.current = false;
+      setModelMessage(error instanceof Error ? error.message : String(error));
+    });
+  }, [settings.active_stt_model, modelStatus]);
 
   useEffect(() => {
     if ((view !== "settings" && view !== "onboarding") || !isTauriRuntime()) {
@@ -303,10 +331,24 @@ export function App() {
   }
 
   if (view === "onboarding") {
-    const sttReady = modelStatus.some((item) => {
-      const record = models.find((model) => model.model_id === item.model_id);
-      return record?.kind === "stt" && item.active && item.verified;
-    });
+    const sttId = settings.active_stt_model;
+    const sttRecord = models.find((model) => model.model_id === sttId);
+    const sttStatus = modelStatus.find((item) => item.model_id === sttId);
+    const sttProgress = sttId ? downloadProgress[sttId] : undefined;
+    const sttReady = Boolean(
+      sttStatus &&
+        (sttStatus.verified || sttStatus.state === "verified" || sttStatus.state === "installed") &&
+        sttStatus.active,
+    );
+    const sttBusy =
+      sttStatus?.state === "downloading" ||
+      sttStatus?.state === "incomplete" ||
+      sttProgress?.phase === "downloading" ||
+      sttProgress?.phase === "verifying" ||
+      sttProgress?.phase === "installing";
+    const bytes = Math.max(sttStatus?.bytes_on_disk ?? 0, sttProgress?.bytes_downloaded ?? 0);
+    const total = sttStatus?.expected_bytes || sttRecord?.size || sttProgress?.total_bytes || 0;
+    const percent = total > 0 ? Math.min(100, Math.round((bytes / total) * 100)) : 0;
     return (
       <div className="min-h-screen bg-ink px-10 py-12 text-paper">
         <p className="text-copper tracking-[0.3em] text-xs uppercase">LocalFlow</p>
@@ -315,7 +357,7 @@ export function App() {
         </h1>
         <ol className="mt-8 max-w-xl space-y-3 text-lg text-paper/80">
           <li>1. Allow Microphone and Accessibility (paste into other apps).</li>
-          <li>2. Download Whisper in Models, then Set as active.</li>
+          <li>2. Whisper downloads automatically on this screen (Hugging Face, checksum checked).</li>
           <li>3. Hold Control+Shift+Space over a text field, talk, release.</li>
         </ol>
         <div className="mt-8 flex flex-wrap gap-3">
@@ -355,12 +397,21 @@ export function App() {
         </label>
         <p className="mt-3 max-w-xl text-sm text-paper/50">
           {sttReady
-            ? "Whisper is installed and active."
-            : "No verified Whisper model yet. Continue, then open Models — dictation will prompt you."}
+            ? `${sttRecord?.display_name ?? "Whisper"} is installed and will be used for dictation.`
+            : sttBusy
+              ? `Downloading ${sttRecord?.display_name ?? "Whisper"} from Hugging Face… ${percent}%`
+              : "Whisper will download automatically. You can continue and let it finish in the background."}
           {permissions
             ? ` Accessibility: ${permissions.accessibility_trusted ? "trusted" : "not trusted yet"}.`
             : ""}
         </p>
+        {sttBusy && (
+          <div className="mt-3 max-w-xl">
+            <div className="h-2 overflow-hidden rounded-full bg-paper/10">
+              <div className="h-full bg-copper" style={{ width: `${percent}%` }} />
+            </div>
+          </div>
+        )}
         <button
           className="mt-10 rounded-full bg-copper px-6 py-3 text-ink"
           onClick={async () => {
@@ -408,17 +459,33 @@ export function App() {
           <section>
             <h1 className="text-4xl">Dictation pipeline</h1>
             {(() => {
-              const sttReady = modelStatus.some((item) => {
-                const record = models.find((model) => model.model_id === item.model_id);
-                return record?.kind === "stt" && item.active && item.verified;
-              });
+              const sttId = settings.active_stt_model;
+              const sttRecord = models.find((model) => model.model_id === sttId);
+              const sttStatus = modelStatus.find((item) => item.model_id === sttId);
+              const sttProgress = sttId ? downloadProgress[sttId] : undefined;
+              const sttReady =
+                sttStatus &&
+                (sttStatus.verified || sttStatus.state === "installed") &&
+                sttStatus.active;
               if (sttReady) {
                 return null;
               }
+              const bytes = Math.max(
+                sttStatus?.bytes_on_disk ?? 0,
+                sttProgress?.bytes_downloaded ?? 0,
+              );
+              const total =
+                sttStatus?.expected_bytes || sttRecord?.size || sttProgress?.total_bytes || 0;
+              const percent = total > 0 ? Math.min(100, Math.round((bytes / total) * 100)) : 0;
+              const busy =
+                sttStatus?.state === "downloading" ||
+                sttStatus?.state === "incomplete" ||
+                sttProgress?.phase === "downloading";
               return (
                 <p className="mt-3 rounded-xl border border-copper/40 bg-copper/10 px-4 py-3 text-sm">
-                  Whisper is not ready. Open Models, download Medium or Small, then Set as active.
-                  Until then, dictation may fall back to macOS Speech Recognition.
+                  {busy
+                    ? `Downloading ${sttRecord?.display_name ?? "Whisper"} (${percent}%). Dictation starts when the checksum passes.`
+                    : "Whisper is not ready. LocalFlow downloads it automatically — stay online, or open Models to retry."}
                   <button className="ml-3 underline" onClick={() => setView("models")}>
                     Open Models
                   </button>
@@ -728,6 +795,44 @@ export function App() {
                   void save({ ...settings, insert_delay_ms: Number(e.target.value) || 120 })
                 }
               />
+            </label>
+            <label className="flex items-center gap-2 text-sm">
+              <input
+                type="checkbox"
+                checked={settings.hands_free}
+                onChange={(e) => void save({ ...settings, hands_free: e.target.checked })}
+              />
+              Hands-free (press to start, press again to stop). Hold-to-talk stays the default when
+              this is off.
+            </label>
+            <label className="flex items-center gap-2 text-sm">
+              <input
+                type="checkbox"
+                checked={settings.digits_from_speech}
+                onChange={(e) => void save({ ...settings, digits_from_speech: e.target.checked })}
+              />
+              Write spoken numbers as digits
+            </label>
+            <label className="block text-sm text-paper/70">
+              Date format
+              <select
+                className="mt-1 w-full rounded-lg bg-paper/10 p-2"
+                value={settings.date_format}
+                onChange={(e) => void save({ ...settings, date_format: e.target.value })}
+              >
+                <option value="DMY">DD.MM.YYYY</option>
+                <option value="ISO">YYYY-MM-DD</option>
+              </select>
+            </label>
+            <label className="block text-sm text-paper/70">
+              Acceleration device
+              <select
+                className="mt-1 w-full rounded-lg bg-paper/10 p-2"
+                value={settings.compute_device}
+                disabled
+              >
+                <option value="cpu">CPU (this build)</option>
+              </select>
             </label>
             <label className="block text-sm text-paper/70">
               Post-processing timeout (ms)

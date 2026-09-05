@@ -40,6 +40,14 @@ pub struct AppSettings {
     pub vad_threshold: f32,
     #[serde(default = "default_history_max")]
     pub history_max_items: u32,
+    #[serde(default)]
+    pub hands_free: bool,
+    #[serde(default = "default_true")]
+    pub digits_from_speech: bool,
+    #[serde(default = "default_date_format")]
+    pub date_format: String,
+    #[serde(default = "default_compute")]
+    pub compute_device: String,
 }
 
 fn default_true() -> bool {
@@ -66,12 +74,27 @@ fn default_vad() -> f32 {
     crate::vad::default_threshold()
 }
 
+fn default_compute() -> String {
+    "cpu".into()
+}
+
+fn default_date_format() -> String {
+    "DMY".into()
+}
+
 impl AppSettings {
     pub fn normalize(&mut self) {
         self.vad_threshold = crate::vad::clamp_threshold(self.vad_threshold);
         self.history_max_items = self.history_max_items.clamp(50, 10_000);
         if self.history_max_items == 0 {
             self.history_max_items = default_history_max();
+        }
+        if self.date_format != "ISO" {
+            self.date_format = default_date_format();
+        }
+        self.compute_device = default_compute();
+        if self.insert_delay_ms < 40 {
+            self.insert_delay_ms = 40;
         }
     }
 }
@@ -101,6 +124,10 @@ impl Default for AppSettings {
             history_enabled: true,
             vad_threshold: default_vad(),
             history_max_items: default_history_max(),
+            hands_free: false,
+            digits_from_speech: true,
+            date_format: default_date_format(),
+            compute_device: default_compute(),
         }
     }
 }

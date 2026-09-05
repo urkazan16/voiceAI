@@ -1,3 +1,7 @@
+//! Microphone capture. The input stream exists only while recording: `start` on hotkey
+//! down, `stop` drops the CPAL stream after the utterance, a short hold, or cancel.
+//! `list_input_devices` enumerates Bluetooth and virtual sources without opening a stream.
+
 use crate::error::{LfError, LfResult};
 use serde::{Deserialize, Serialize};
 use std::sync::{Arc, Mutex};

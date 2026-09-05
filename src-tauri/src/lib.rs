@@ -202,6 +202,7 @@ pub fn run() {
             }
 
             dictation::start_worker(app.handle().clone(), shared.clone(), capture.clone());
+            commands::spawn_required_stt_download(app.handle().clone(), shared.clone());
 
             app.handle().plugin(
                 tauri_plugin_global_shortcut::Builder::new()

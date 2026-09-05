@@ -49,6 +49,10 @@ export interface AppSettings {
   history_enabled: boolean;
   vad_threshold: number;
   history_max_items: number;
+  hands_free: boolean;
+  digits_from_speech: boolean;
+  date_format: string;
+  compute_device: string;
 }
 
 export interface ModelRecord {

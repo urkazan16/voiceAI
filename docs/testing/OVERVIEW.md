@@ -6,12 +6,13 @@
 | `npm run test:all`    | Adds UI, pipeline, dictionary, personalization                       |
 | `npm run test:ai`     | AI catalog / future inference bench                                  |
 | `npm run check:local` | Offline checker: WER identity + VAD at SNR 15 dB (`localflow check`) |
-| `npm run measure:block0` | Host gate: OS, mics, single-instance, TTS WER → `docs/evaluation/BLOCK0.md` |
+| `npm run download:stt` | Fetch the active Whisper model (Hugging Face, SHA-256)            |
 
 CLI (no GUI):
 
 ```bash
 cargo run --manifest-path src-tauri/Cargo.toml -- check
+cargo run --manifest-path src-tauri/Cargo.toml -- download --model whisper-small
 cargo run --manifest-path src-tauri/Cargo.toml -- transcribe --json --language ru file.wav
 ```
 

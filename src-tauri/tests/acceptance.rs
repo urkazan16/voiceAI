@@ -255,9 +255,7 @@ fn format_helpers_match_pipeline_wrapper() {
 fn dictionary_disabled_entry_is_skipped() {
     let mut entry = DictionaryEntry::rule("1", "пострес", "Postgres");
     entry.enabled = false;
-    let dict = Dictionary {
-        entries: vec![entry],
-    };
+    let dict = Dictionary::from_entries(vec![entry]);
     assert_eq!(dict.apply("подними пострес"), "подними пострес");
 }
 

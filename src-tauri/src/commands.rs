@@ -393,7 +393,8 @@ pub fn privacy_summary() -> PrivacySummary {
         history_local: true,
         cloud_account_required: false,
         network_operations: vec![
-            "model download (user initiated)".into(),
+            "first-launch Whisper download from Hugging Face (checksum-pinned)".into(),
+            "optional extra models from Model Manager".into(),
             "optional application update (user initiated)".into(),
         ],
         data_root: "~/Library/Application Support/LocalFlow/".into(),
@@ -468,20 +469,57 @@ pub async fn download_model(
     engine: tauri::State<'_, SharedEngine>,
     model_id: String,
 ) -> Result<String, CommandError> {
+    download_model_guarded(app, engine.inner().clone(), model_id).await
+}
+
+pub fn skip_auto_model_download() -> bool {
+    matches!(
+        std::env::var("LOCALFLOW_SKIP_MODEL_DOWNLOAD")
+            .unwrap_or_default()
+            .to_ascii_lowercase()
+            .as_str(),
+        "1" | "true" | "yes"
+    )
+}
+
+pub fn spawn_required_stt_download(app: AppHandle, engine: SharedEngine) {
+    if skip_auto_model_download() {
+        return;
+    }
+    tauri::async_runtime::spawn(async move {
+        let id = {
+            let Ok(eng) = engine.lock() else {
+                return;
+            };
+            if eng.ready_model_path("stt").is_some() {
+                return;
+            }
+            eng.settings
+                .active_stt_model
+                .clone()
+                .unwrap_or_else(|| "whisper-small".into())
+        };
+        crate::journal::log("model_download", &format!("auto {id}"));
+        let _ = download_model_guarded(app, engine, id).await;
+    });
+}
+
+async fn download_model_guarded(
+    app: AppHandle,
+    engine: SharedEngine,
+    model_id: String,
+) -> Result<String, CommandError> {
     {
         let mut inflight = inflight_downloads().lock().map_err(|_| CommandError {
             code: "ERROR".into(),
             message: "download lock poisoned".into(),
         })?;
         if !inflight.insert(model_id.clone()) {
-            return Err(CommandError {
-                code: "ERROR".into(),
-                message: format!("{model_id} is already downloading"),
-            });
+            return Ok(format!("{model_id} already downloading"));
         }
     }
 
-    let result = download_model_inner(app, engine.inner().clone(), model_id.clone()).await;
+    let result = download_model_inner(app, engine, model_id.clone()).await;
 
     if let Ok(mut inflight) = inflight_downloads().lock() {
         inflight.remove(&model_id);
