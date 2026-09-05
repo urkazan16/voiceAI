@@ -80,6 +80,10 @@ impl DataPaths {
         self.logs().join("utterances.jsonl")
     }
 
+    pub fn last_utterance(&self) -> PathBuf {
+        self.audio().join("last-utterance.wav")
+    }
+
     pub fn model_file(&self, kind: &str, filename: &str) -> PathBuf {
         match kind {
             "llm" => self.models_llm().join(filename),

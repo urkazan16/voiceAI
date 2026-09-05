@@ -1,10 +1,10 @@
 {
-  "catalog_version": "0.1.0",
+  "catalog_version": "0.2.0",
   "models": [
     {
       "model_id": "whisper-base",
       "display_name": "Whisper Base",
-      "version": "1.0.0",
+      "version": "ggml-base.bin F16",
       "filename": "ggml-base.bin",
       "format": "ggml",
       "quantization": "F16",
@@ -23,7 +23,7 @@
     {
       "model_id": "whisper-small",
       "display_name": "Whisper Small",
-      "version": "1.0.0",
+      "version": "ggml-small.bin F16",
       "filename": "ggml-small.bin",
       "format": "ggml",
       "quantization": "F16",
@@ -42,7 +42,7 @@
     {
       "model_id": "whisper-medium",
       "display_name": "Whisper Medium",
-      "version": "1.0.0",
+      "version": "ggml-medium.bin F16",
       "filename": "ggml-medium.bin",
       "format": "ggml",
       "quantization": "F16",
@@ -61,7 +61,7 @@
     {
       "model_id": "whisper-large-v3-turbo",
       "display_name": "Whisper Large v3 Turbo",
-      "version": "1.0.0",
+      "version": "ggml-large-v3-turbo.bin F16",
       "filename": "ggml-large-v3-turbo.bin",
       "format": "ggml",
       "quantization": "F16",

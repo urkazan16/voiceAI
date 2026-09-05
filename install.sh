@@ -16,8 +16,8 @@ if ! command -v npm >/dev/null; then
 fi
 npm install
 if [[ "${LOCALFLOW_SKIP_MODEL_DOWNLOAD:-}" != "1" ]]; then
-  echo "Downloading Whisper Small (~488 MB) from Hugging Face (SHA-256 verified)…"
-  bash scripts/run-with-toolchain.sh cargo run --manifest-path src-tauri/Cargo.toml --quiet -- download --model whisper-small \
+  echo "Downloading Whisper Medium (~1.5 GB) from Hugging Face (SHA-256 verified)…"
+  bash scripts/run-with-toolchain.sh cargo run --manifest-path src-tauri/Cargo.toml --quiet -- download --model whisper-medium \
     || echo "Whisper download skipped (offline?). LocalFlow will retry on first launch."
 fi
 echo "LocalFlow is ready. Run: npm run tauri dev"

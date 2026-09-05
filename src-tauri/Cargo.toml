@@ -53,6 +53,7 @@ tokio = { version = "1.43.0", features = ["macros", "rt-multi-thread", "fs", "io
 reqwest = { version = "0.12.12", default-features = false, features = ["rustls-tls", "stream"] }
 futures-util = "0.3.31"
 regex = "1.11.1"
+libc = "0.2"
 whisper-rs = { version = "0.13.2", default-features = false }
 
 [dev-dependencies]

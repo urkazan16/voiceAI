@@ -65,6 +65,7 @@ impl AppEngine {
             settings_mtime: None,
         };
         engine.load_persisted();
+        engine.apply_install_defaults();
         crate::injection::set_clipboard_backup_path(engine.paths.clipboard_backup());
         crate::injection::restore_orphaned_clipboard();
         engine.dictionary.ensure_builtins();
@@ -89,6 +90,16 @@ impl AppEngine {
         }
         self.load_settings_file(true);
         let _ = self.write_settings_file();
+    }
+
+    fn apply_install_defaults(&mut self) {
+        let marker = self.paths.config_dir().join("applied-defaults-medium-stt");
+        if marker.exists() {
+            return;
+        }
+        self.settings.apply_shipped_stt_default();
+        let _ = fs::write(&marker, "whisper-medium\n");
+        let _ = self.persist();
     }
 
     pub fn reload_settings_file(&mut self) {

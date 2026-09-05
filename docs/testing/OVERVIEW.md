@@ -12,7 +12,7 @@ CLI (no GUI):
 
 ```bash
 cargo run --manifest-path src-tauri/Cargo.toml -- check
-cargo run --manifest-path src-tauri/Cargo.toml -- download --model whisper-small
+cargo run --manifest-path src-tauri/Cargo.toml -- download --model whisper-medium
 cargo run --manifest-path src-tauri/Cargo.toml -- transcribe --json --language ru file.wav
 ```
 

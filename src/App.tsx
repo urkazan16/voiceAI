@@ -20,6 +20,7 @@ import {
   type PipelineOutput,
   type PrivacySummary,
   type PermissionStatus,
+  type DiskUsage,
   type ViewId,
 } from "./api";
 import { formatBytes, NAV } from "./ui";
@@ -29,7 +30,7 @@ const fallbackSettings = (): AppSettings => ({
   hotkey: "Control+Shift+Space",
   mode: "normal",
   microphone_name: null,
-  active_stt_model: "whisper-small",
+  active_stt_model: "whisper-medium",
   active_llm_model: "Qwen3-4B-Instruct-2507",
   restore_clipboard: true,
   onboarding_complete: false,
@@ -75,24 +76,33 @@ function describeSelectedModel(
   id: string | null | undefined,
   models: ModelRecord[],
   statuses: ModelInstallStatus[],
-): { id: string | null; name: string; ready: boolean; detail: string } {
+): { id: string | null; name: string; ready: boolean; detail: string; version: string } {
   if (!id) {
-    return { id: null, name: "Not selected", ready: false, detail: "Choose a model below." };
+    return {
+      id: null,
+      name: "Not selected",
+      ready: false,
+      detail: "Choose a model below.",
+      version: "",
+    };
   }
   const record = models.find((model) => model.model_id === id);
   const status = statuses.find((item) => item.model_id === id);
   const name = record?.display_name ?? id;
+  const version = record
+    ? `${record.version} · ${record.filename}`
+    : "";
   const ready = status?.state === "verified" || status?.state === "installed";
   if (ready) {
-    return { id, name, ready: true, detail: "Ready on this Mac." };
+    return { id, name, ready: true, detail: "Ready on this Mac.", version };
   }
   if (status?.state === "downloading" || status?.state === "incomplete") {
-    return { id, name, ready: false, detail: "Download in progress — not used yet." };
+    return { id, name, ready: false, detail: "Download in progress — not used yet.", version };
   }
   if (status?.state === "unverified") {
-    return { id, name, ready: false, detail: "File failed checksum — not used." };
+    return { id, name, ready: false, detail: "File failed checksum — not used.", version };
   }
-  return { id, name, ready: false, detail: "Selected but not installed." };
+  return { id, name, ready: false, detail: "Selected but not installed.", version };
 }
 
 export function App() {
@@ -134,6 +144,8 @@ export function App() {
   const [historyQuery, setHistoryQuery] = useState("");
   const [historyApp, setHistoryApp] = useState("");
   const [historyRange, setHistoryRange] = useState<"all" | "today" | "7d">("all");
+  const [diskUsage, setDiskUsage] = useState<DiskUsage | null>(null);
+  const [lastUtteranceReady, setLastUtteranceReady] = useState(false);
   const autoSttDownload = useRef(false);
 
   async function refresh() {
@@ -180,6 +192,8 @@ export function App() {
         setMicrophones(await api.listMicrophones());
         setStats(await api.getStats());
         setPermissions(await api.permissionStatus());
+        setDiskUsage(await api.diskUsage());
+        setLastUtteranceReady(await api.lastUtteranceReady().catch(() => false));
         const last = await api.getLastTranscript();
         if (last) {
           setPipelineOut(last);
@@ -274,6 +288,12 @@ export function App() {
         if (!cancelled) {
           setModelStatus(next);
         }
+        if (view === "models") {
+          const ready = await api.lastUtteranceReady().catch(() => false);
+          if (!cancelled) {
+            setLastUtteranceReady(ready);
+          }
+        }
       } catch {
         /* status poll is best-effort */
       }
@@ -321,6 +341,29 @@ export function App() {
     return () => window.clearInterval(timer);
   }, [view]);
 
+  useEffect(() => {
+    if (view !== "settings" || !isTauriRuntime()) {
+      return;
+    }
+    let cancelled = false;
+    async function pullDisk() {
+      try {
+        const next = await api.diskUsage();
+        if (!cancelled) {
+          setDiskUsage(next);
+        }
+      } catch {
+        /* disk probe is best-effort */
+      }
+    }
+    void pullDisk();
+    const timer = window.setInterval(() => void pullDisk(), 4000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [view, settings.active_stt_model, settings.active_llm_model]);
+
   async function save(next: AppSettings) {
     setSettings(next);
     try {
@@ -357,7 +400,7 @@ export function App() {
         </h1>
         <ol className="mt-8 max-w-xl space-y-3 text-lg text-paper/80">
           <li>1. Allow Microphone and Accessibility (paste into other apps).</li>
-          <li>2. Whisper downloads automatically on this screen (Hugging Face, checksum checked).</li>
+          <li>2. Whisper Medium (~1.5 GB) downloads automatically on this screen (Hugging Face, checksum checked).</li>
           <li>3. Hold Control+Shift+Space over a text field, talk, release.</li>
         </ol>
         <div className="mt-8 flex flex-wrap gap-3">
@@ -588,6 +631,30 @@ export function App() {
         {view === "settings" && (
           <section className="max-w-xl space-y-4">
             <h1 className="text-4xl">Settings</h1>
+            {diskUsage && (
+              <div
+                className={`rounded-2xl border p-4 text-sm ${
+                  diskUsage.enough_for_speech
+                    ? "border-paper/15 bg-paper/5"
+                    : "border-copper/50 bg-copper/10"
+                }`}
+              >
+                <p className="text-xs uppercase tracking-[0.2em] text-copper">Disk space</p>
+                {diskUsage.free_bytes != null && (
+                  <p className="mt-2 text-lg tabular-nums">
+                    {formatBytes(diskUsage.free_bytes)} free
+                    {diskUsage.stt_still_needed_bytes > 0
+                      ? ` · speech still needs ${formatBytes(diskUsage.stt_still_needed_bytes)}`
+                      : " · speech model fits"}
+                  </p>
+                )}
+                <ul className="mt-2 space-y-1 text-paper/80">
+                  {diskUsage.messages.map((line) => (
+                    <li key={line}>{line}</li>
+                  ))}
+                </ul>
+              </div>
+            )}
             <label className="block text-sm text-paper/70">
               Hotkey (Tauri syntax, e.g. Control+Shift+Space)
               <input
@@ -931,9 +998,9 @@ export function App() {
           <section>
             <h1 className="text-4xl">Model Manager</h1>
             <p className="mt-2 max-w-2xl text-paper/70">
-              For Russian dictation download Whisper Medium, then Set as active. Small is faster but
-              weaker. Large v3 Turbo is a similar download to Medium and usually quicker, with a bit
-              less precision. Qwen models are only for text formatting, not speech.
+              Speech default is Whisper Medium. Download it (or pick another Whisper), then Use this
+              for speech. Repeat re-runs the last recording through the speech model in use — it is
+              not a separate download. Qwen models are only for text formatting, not speech.
             </p>
             {(() => {
               const speech = describeSelectedModel(
@@ -953,18 +1020,50 @@ export function App() {
                       Currently in use · speech
                     </p>
                     <p className="mt-1 text-lg">{speech.name}</p>
+                    {speech.version && (
+                      <p className="mt-1 font-mono text-xs text-paper/50">{speech.version}</p>
+                    )}
                     <p className={`mt-1 text-sm ${speech.ready ? "text-moss" : "text-copper"}`}>
                       {speech.detail}
                     </p>
                     {speech.id && (
                       <p className="mt-1 font-mono text-xs text-paper/50">{speech.id}</p>
                     )}
+                    <button
+                      className="mt-3 rounded-full bg-copper px-4 py-1 text-ink disabled:opacity-40"
+                      disabled={!lastUtteranceReady || !speech.ready}
+                      onClick={async () => {
+                        try {
+                          const output = await api.repeatLastUtterance();
+                          setPipelineOut(output);
+                          setLastUtteranceReady(true);
+                          setModelMessage(
+                            `Repeat finished with ${speech.name}: ${output.final_text || output.raw_transcript}`,
+                          );
+                          await refresh();
+                        } catch (error) {
+                          setModelMessage(
+                            error instanceof Error ? error.message : String(error),
+                          );
+                        }
+                      }}
+                    >
+                      Repeat last dictation
+                    </button>
+                    <p className="mt-2 text-xs text-paper/50">
+                      {lastUtteranceReady
+                        ? "Uses the last held-hotkey recording and the speech model currently in use."
+                        : "Dictate once (hold the hotkey) to enable Repeat."}
+                    </p>
                   </div>
                   <div>
                     <p className="text-xs uppercase tracking-[0.2em] text-copper">
                       Currently in use · formatting
                     </p>
                     <p className="mt-1 text-lg">{formatting.name}</p>
+                    {formatting.version && (
+                      <p className="mt-1 font-mono text-xs text-paper/50">{formatting.version}</p>
+                    )}
                     <p className={`mt-1 text-sm ${formatting.ready ? "text-moss" : "text-paper/60"}`}>
                       {formatting.ready
                         ? formatting.detail
@@ -1038,7 +1137,9 @@ export function App() {
                       </span>
                     </div>
                     <p className="mt-2 text-sm text-paper/70">
+                      {model.kind === "stt" ? "Speech" : "Formatting"} · {model.version} ·{" "}
                       {model.format} {model.quantization} · {formatBytes(model.size)}
+                      {model.model_id === "whisper-medium" ? " · recommended default" : ""}
                     </p>
                     {(state === "downloading" || state === "incomplete") && (
                       <div className="mt-3">
@@ -1129,7 +1230,7 @@ export function App() {
                           Currently in use
                         </button>
                       )}
-                      {ready && !isActive && (
+                      {!isActive && (
                         <button
                           className="rounded-full border border-paper/30 px-4 py-1"
                           onClick={async () => {
@@ -1138,7 +1239,7 @@ export function App() {
                               setModelMessage(
                                 `${model.display_name} is now the ${
                                   model.kind === "llm" ? "formatting" : "speech"
-                                } model in use.`,
+                                } model in use.${ready ? "" : " Download it to start dictation."}`,
                               );
                               await refresh();
                             } catch (error) {

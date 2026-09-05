@@ -20,6 +20,7 @@ pub mod cues;
 pub mod db;
 pub mod dictation;
 pub mod dictionary;
+pub mod disk;
 pub mod download;
 pub mod engine;
 pub mod error;
@@ -94,10 +95,13 @@ pub fn run() {
             commands::process_transcript,
             commands::complete_onboarding,
             commands::privacy_summary,
+            commands::disk_usage,
             commands::verify_model,
             commands::download_model,
             commands::list_model_status,
             commands::set_active_model,
+            commands::last_utterance_ready,
+            commands::repeat_last_utterance,
             commands::get_hotkey_status,
             commands::dictation_stop,
             commands::dictation_cancel,

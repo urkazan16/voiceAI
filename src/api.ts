@@ -180,6 +180,24 @@ export interface PrivacySummary {
   data_root: string;
 }
 
+export interface DiskUsage {
+  data_root: string;
+  free_bytes: number | null;
+  used_models_bytes: number;
+  overhead_bytes: number;
+  stt_name: string;
+  stt_required_bytes: number;
+  stt_on_disk_bytes: number;
+  stt_still_needed_bytes: number;
+  llm_name: string;
+  llm_required_bytes: number;
+  llm_on_disk_bytes: number;
+  llm_still_needed_bytes: number;
+  enough_for_speech: boolean;
+  enough_for_speech_and_formatting: boolean;
+  messages: string[];
+}
+
 type TauriWindow = Window & {
   __TAURI_INTERNALS__?: { invoke?: unknown };
 };
@@ -324,10 +342,13 @@ export const api = {
   pasteLastTranscript: () => call<string>("paste_last_transcript"),
   clearLastTranscript: () => call<void>("clear_last_transcript"),
   privacySummary: () => call<PrivacySummary>("privacy_summary"),
+  diskUsage: () => call<DiskUsage>("disk_usage"),
   verifyModel: (modelId: string) => call<string>("verify_model", { modelId }),
   downloadModel: (modelId: string) => call<string>("download_model", { modelId }),
   listModelStatus: () => call<ModelInstallStatus[]>("list_model_status"),
   setActiveModel: (modelId: string) => call<string>("set_active_model", { modelId }),
+  lastUtteranceReady: () => call<boolean>("last_utterance_ready"),
+  repeatLastUtterance: () => call<PipelineOutput>("repeat_last_utterance"),
   getHotkeyStatus: () => call<HotkeyStatus>("get_hotkey_status"),
   getStats: () => call<StatsSnapshot>("get_stats"),
   resetStats: () => call<void>("reset_stats"),

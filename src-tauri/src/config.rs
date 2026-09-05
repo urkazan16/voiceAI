@@ -7,6 +7,8 @@ use crate::profiles::Profile;
 use crate::snippets::SnippetBook;
 use serde::{Deserialize, Serialize};
 
+pub const DEFAULT_STT_MODEL: &str = "whisper-medium";
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct AppSettings {
@@ -97,6 +99,19 @@ impl AppSettings {
             self.insert_delay_ms = 40;
         }
     }
+
+    /// First install / first launch: speech model is Medium unless the user already picked Turbo or another catalog id.
+    pub fn apply_shipped_stt_default(&mut self) {
+        match self.active_stt_model.as_deref() {
+            None | Some("") | Some("whisper-small") | Some("whisper-base") => {
+                self.active_stt_model = Some(DEFAULT_STT_MODEL.to_string());
+            }
+            _ => {}
+        }
+        if self.stt_language.eq_ignore_ascii_case("auto") {
+            self.stt_language = "ru".into();
+        }
+    }
 }
 
 impl Default for AppSettings {
@@ -105,7 +120,7 @@ impl Default for AppSettings {
             hotkey: "Control+Shift+Space".into(),
             mode: PipelineMode::Normal,
             microphone_name: None,
-            active_stt_model: Some("whisper-small".into()),
+            active_stt_model: Some(DEFAULT_STT_MODEL.into()),
             active_llm_model: Some("Qwen3-4B-Instruct-2507".into()),
             restore_clipboard: true,
             onboarding_complete: false,
@@ -214,6 +229,28 @@ mod tests {
         let imported = import_config(&json, &catalog).unwrap();
         assert_eq!(imported.settings.hotkey, "Control+Shift+Space");
         assert_eq!(imported.settings.stt_language, "ru");
+        assert_eq!(
+            imported.settings.active_stt_model.as_deref(),
+            Some(DEFAULT_STT_MODEL)
+        );
+    }
+
+    #[test]
+    fn shipped_default_upgrades_legacy_base_and_small() {
+        let mut settings = AppSettings {
+            active_stt_model: Some("whisper-base".into()),
+            stt_language: "auto".into(),
+            ..AppSettings::default()
+        };
+        settings.apply_shipped_stt_default();
+        assert_eq!(settings.active_stt_model.as_deref(), Some("whisper-medium"));
+        assert_eq!(settings.stt_language, "ru");
+        settings.active_stt_model = Some("whisper-large-v3-turbo".into());
+        settings.apply_shipped_stt_default();
+        assert_eq!(
+            settings.active_stt_model.as_deref(),
+            Some("whisper-large-v3-turbo")
+        );
     }
 
     #[test]

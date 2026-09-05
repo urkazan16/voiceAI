@@ -95,7 +95,7 @@ First Cargo fetch needs network. After `src-tauri/Cargo.lock` is present, crates
 
 ## Models
 
-Weights are **not** inside the `.app`. On `./install.sh` and on first GUI launch LocalFlow downloads the **active speech model** (default Whisper Small, ~488 MB) from Hugging Face, then verifies SHA-256 and ggml magic before activation. Qwen formatting models stay optional in Model Manager.
+Weights are **not** inside the `.app`. On `./install.sh` and on first GUI launch LocalFlow downloads the **active speech model** (default Whisper Medium, ~1.5 GB, `ggml-medium.bin`) from Hugging Face, then verifies SHA-256 and ggml magic before activation. Qwen formatting models stay optional in Model Manager.
 
 Skip the network step with `LOCALFLOW_SKIP_MODEL_DOWNLOAD=1`. Retry anytime: `npm run download:stt` or `localflow download --model whisper-medium`.
 

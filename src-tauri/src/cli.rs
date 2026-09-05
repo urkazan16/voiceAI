@@ -1,6 +1,6 @@
 //! Headless CLI: transcribe files, batch a directory, local checker.
 
-use crate::config::AppSettings;
+use crate::config::{AppSettings, DEFAULT_STT_MODEL};
 use crate::engine::AppEngine;
 use crate::error::LfResult;
 use crate::eval;
@@ -255,7 +255,7 @@ fn download_required(opts: Opts) -> Result<i32, String> {
     let id = opts
         .model
         .or_else(|| engine.settings.active_stt_model.clone())
-        .unwrap_or_else(|| "whisper-small".into());
+        .unwrap_or_else(|| DEFAULT_STT_MODEL.into());
     let record = engine.catalog.get(&id).map_err(|e| e.to_string())?.clone();
     let dest = engine.model_path(&record);
     eprintln!(

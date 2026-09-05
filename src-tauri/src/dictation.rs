@@ -604,21 +604,24 @@ fn finish_recording(app: &AppHandle, engine: &SharedEngine, capture: &SharedCapt
             );
             return;
         }
-        let (stt_path, lang, pid, app_name, delay_ms, timeout_ms, sounds) = match engine.lock() {
-            Ok(eng) => (
-                eng.ready_model_path("stt"),
-                eng.settings.stt_language.clone(),
-                eng.insert_target_pid,
-                eng.insert_target_app.clone(),
-                eng.settings.insert_delay_ms,
-                eng.settings.postprocess_timeout_ms,
-                eng.settings.sound_cues,
-            ),
-            Err(_) => {
-                fail(&app, &engine, "engine lock poisoned", duration_ms);
-                return;
-            }
-        };
+        let (stt_path, lang, pid, app_name, delay_ms, timeout_ms, sounds, last_wav) =
+            match engine.lock() {
+                Ok(eng) => (
+                    eng.ready_model_path("stt"),
+                    eng.settings.stt_language.clone(),
+                    eng.insert_target_pid,
+                    eng.insert_target_app.clone(),
+                    eng.settings.insert_delay_ms,
+                    eng.settings.postprocess_timeout_ms,
+                    eng.settings.sound_cues,
+                    eng.paths.last_utterance(),
+                ),
+                Err(_) => {
+                    fail(&app, &engine, "engine lock poisoned", duration_ms);
+                    return;
+                }
+            };
+        let _ = crate::macos_stt::write_wav_s16le_mono(&last_wav, 16_000, &pcm);
         let whisper_ready = stt_path.is_some();
         let raw = match NativeStt.transcribe(&pcm, stt_path.as_deref(), &lang) {
             Ok(text) => crate::sanitize::strip_model_tags(&text),

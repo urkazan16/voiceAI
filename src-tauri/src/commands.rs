@@ -1,7 +1,7 @@
 use crate::audio::{self, AudioDevice};
 use crate::build_info::{self, BuildInfo};
 use crate::catalog::ModelRecord;
-use crate::config::AppSettings;
+use crate::config::{AppSettings, DEFAULT_STT_MODEL};
 use crate::dictionary::DictionaryEntry;
 use crate::download::{self, ModelDownloadProgress, ModelInstallStatus};
 use crate::engine::SharedEngine;
@@ -401,6 +401,38 @@ pub fn privacy_summary() -> PrivacySummary {
     }
 }
 
+#[tauri::command]
+pub fn disk_usage(engine: tauri::State<SharedEngine>) -> Result<crate::disk::DiskUsage, CommandError> {
+    let eng = lock(&engine)?;
+    let _ = eng.paths.ensure();
+    let stt = eng.settings.active_stt_model.as_deref().and_then(|id| {
+        let rec = eng.catalog.get(id).ok()?;
+        let status = eng.model_status(id).ok()?;
+        Some((rec.clone(), status))
+    });
+    let llm = eng.settings.active_llm_model.as_deref().and_then(|id| {
+        let rec = eng.catalog.get(id).ok()?;
+        let status = eng.model_status(id).ok()?;
+        Some((rec.clone(), status))
+    });
+    let all: Vec<_> = eng
+        .catalog
+        .models
+        .iter()
+        .filter_map(|m| eng.model_status(&m.model_id).ok())
+        .collect();
+    let stt_ref = stt
+        .as_ref()
+        .map(|(r, s)| (r, s));
+    let llm_ref = llm.as_ref().map(|(r, s)| (r, s));
+    Ok(crate::disk::report(
+        &eng.paths.root,
+        stt_ref,
+        llm_ref,
+        &all,
+    ))
+}
+
 #[derive(Serialize)]
 pub struct PrivacySummary {
     pub audio_local: bool,
@@ -497,7 +529,7 @@ pub fn spawn_required_stt_download(app: AppHandle, engine: SharedEngine) {
             eng.settings
                 .active_stt_model
                 .clone()
-                .unwrap_or_else(|| "whisper-small".into())
+                .unwrap_or_else(|| DEFAULT_STT_MODEL.into())
         };
         crate::journal::log("model_download", &format!("auto {id}"));
         let _ = download_model_guarded(app, engine, id).await;
@@ -577,16 +609,33 @@ pub async fn set_active_model(
         let record = eng.catalog.get(&model_id)?.clone();
         (eng.model_path(&record), record)
     };
-    let verify_path = path.clone();
-    tokio::task::spawn_blocking(move || crate::integrity::activate_model(&verify_path, &record))
-        .await
-        .map_err(|err| CommandError {
-            code: "ERROR".into(),
-            message: err.to_string(),
-        })?
-        .map_err(CommandError::from)?;
+    if crate::integrity::looks_installed(&path, &record) {
+        let verify_path = path.clone();
+        tokio::task::spawn_blocking(move || crate::integrity::activate_model(&verify_path, &record))
+            .await
+            .map_err(|err| CommandError {
+                code: "ERROR".into(),
+                message: err.to_string(),
+            })?
+            .map_err(CommandError::from)?;
+    }
     lock(&engine)?.mark_active(&model_id)?;
     Ok(path.display().to_string())
+}
+
+#[tauri::command]
+pub fn last_utterance_ready(engine: tauri::State<SharedEngine>) -> Result<bool, CommandError> {
+    let path = lock(&engine)?.paths.last_utterance();
+    Ok(path.is_file() && path.metadata().map(|m| m.len() > 44).unwrap_or(false))
+}
+
+#[tauri::command]
+pub fn repeat_last_utterance(
+    engine: tauri::State<SharedEngine>,
+) -> Result<PipelineOutput, CommandError> {
+    let path = lock(&engine)?.paths.last_utterance();
+    let pcm = crate::media::load_pcm_16k_mono(&path)?;
+    Ok(lock(&engine)?.process_captured_audio(&pcm)?)
 }
 
 #[derive(Serialize)]
