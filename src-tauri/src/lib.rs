@@ -1,11 +1,10 @@
 use crate::engine::SharedEngine;
 use crate::paths::DataPaths;
-use crate::pipeline::PipelineState;
 use std::sync::{Arc, Mutex};
 use tauri::{
     menu::{Menu, MenuItem},
     tray::TrayIconBuilder,
-    Emitter, Manager,
+    Manager,
 };
 use tauri_plugin_global_shortcut::GlobalShortcutExt;
 
@@ -15,6 +14,7 @@ pub mod catalog;
 pub mod commands;
 pub mod config;
 pub mod db;
+pub mod dictation;
 pub mod dictionary;
 pub mod download;
 pub mod engine;
@@ -34,10 +34,12 @@ pub fn run() {
     let paths = DataPaths::detect();
     let engine = engine::AppEngine::open(paths).expect("open LocalFlow data directory");
     let shared: SharedEngine = Arc::new(Mutex::new(engine));
+    let capture = audio::CaptureHub::spawn();
 
     tauri::Builder::default()
         .plugin(tauri_plugin_clipboard_manager::init())
         .manage(shared.clone())
+        .manage(capture.clone())
         .invoke_handler(tauri::generate_handler![
             commands::get_build_info,
             commands::get_snapshot,
@@ -85,23 +87,23 @@ pub fn run() {
             tray.build(app)?;
 
             let engine_for_hotkey = shared.clone();
+            let capture_for_hotkey = capture.clone();
             app.handle().plugin(
                 tauri_plugin_global_shortcut::Builder::new()
                     .with_handler(move |app, _shortcut, event| {
                         if event.state == tauri_plugin_global_shortcut::ShortcutState::Pressed {
-                            if let Ok(mut eng) = engine_for_hotkey.lock() {
-                                let _ = eng.snapshot.transition(PipelineState::Recording);
-                            }
-                            if let Some(window) = app.get_webview_window("main") {
-                                let _ = window.show();
-                                let _ = window.set_focus();
-                                let _ = window.emit("hotkey-pressed", ());
-                            }
+                            dictation::on_hotkey_pressed(
+                                app,
+                                &engine_for_hotkey,
+                                &capture_for_hotkey,
+                            );
                         }
                         if event.state == tauri_plugin_global_shortcut::ShortcutState::Released {
-                            if let Some(window) = app.get_webview_window("main") {
-                                let _ = window.emit("hotkey-released", ());
-                            }
+                            dictation::on_hotkey_released(
+                                app,
+                                &engine_for_hotkey,
+                                &capture_for_hotkey,
+                            );
                         }
                     })
                     .build(),

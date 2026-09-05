@@ -4,15 +4,15 @@ use crate::db::Store;
 use crate::dictionary::Dictionary;
 use crate::error::{LfError, LfResult};
 use crate::history::HistoryItem;
-use crate::injection::{MemoryInjector, TextInjector};
+use crate::injection::{ClipboardInjector, MemoryInjector, TextInjector};
 use crate::integrity::activate_model;
-use crate::llm::{LanguageModel, ScriptedLlm};
+use crate::llm::{LanguageModel, NativeLlm, ScriptedLlm};
 use crate::paths::DataPaths;
 use crate::personalization::PersonalizationState;
 use crate::pipeline::{
     format_without_remote_llm, PipelineMode, PipelineOutput, PipelineSnapshot, PipelineState,
 };
-use crate::stt::{ScriptedStt, SpeechToText};
+use crate::stt::{NativeStt, ScriptedStt, SpeechToText};
 use chrono::Utc;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -127,15 +127,24 @@ impl AppEngine {
         Ok(status)
     }
 
-    pub fn activate_installed(&mut self, model_id: &str) -> LfResult<PathBuf> {
-        let path = self.verified_model(model_id)?;
+    pub fn mark_active(&mut self, model_id: &str) -> LfResult<()> {
         let kind = self.catalog.get(model_id)?.kind.clone();
         match kind.as_str() {
             "llm" => self.settings.active_llm_model = Some(model_id.to_string()),
             _ => self.settings.active_stt_model = Some(model_id.to_string()),
         }
         self.persist()?;
+        Ok(())
+    }
+
+    pub fn activate_installed(&mut self, model_id: &str) -> LfResult<PathBuf> {
+        let path = self.verified_model(model_id)?;
+        self.mark_active(model_id)?;
         Ok(path)
+    }
+
+    pub fn process_captured_audio(&mut self, pcm_16k: &[f32]) -> LfResult<PipelineOutput> {
+        self.run_text_pipeline("", &NativeStt, &NativeLlm, &ClipboardInjector, pcm_16k)
     }
 
     pub fn run_text_pipeline(
@@ -182,7 +191,9 @@ impl AppEngine {
             debug_assert!(crate::llm::assert_non_execution_policy());
         }
         self.snapshot.transition(PipelineState::Injecting)?;
-        injector.insert_text(&final_text, self.settings.restore_clipboard)?;
+        if !final_text.is_empty() {
+            injector.insert_text(&final_text, self.settings.restore_clipboard)?;
+        }
         self.snapshot.transition(PipelineState::Completed)?;
         let output = PipelineOutput {
             raw_transcript: raw.clone(),

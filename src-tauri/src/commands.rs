@@ -187,11 +187,23 @@ pub struct PrivacySummary {
 }
 
 #[tauri::command]
-pub fn verify_model(
-    engine: tauri::State<SharedEngine>,
+pub async fn verify_model(
+    engine: tauri::State<'_, SharedEngine>,
     model_id: String,
 ) -> Result<String, CommandError> {
-    let path = lock(&engine)?.verified_model(&model_id)?;
+    let (path, record) = {
+        let eng = lock(&engine)?;
+        let record = eng.catalog.get(&model_id)?.clone();
+        (eng.model_path(&record), record)
+    };
+    let verify_path = path.clone();
+    tokio::task::spawn_blocking(move || crate::integrity::activate_model(&verify_path, &record))
+        .await
+        .map_err(|err| CommandError {
+            code: "ERROR".into(),
+            message: err.to_string(),
+        })?
+        .map_err(CommandError::from)?;
     Ok(path.display().to_string())
 }
 
@@ -281,16 +293,34 @@ async fn download_model_inner(
         CommandError::from(err)
     })?;
 
-    let path = lock(&engine)?.activate_installed(&model_id)?;
+    let path = {
+        let mut eng = lock(&engine)?;
+        eng.mark_active(&model_id)?;
+        let record = eng.catalog.get(&model_id)?.clone();
+        eng.model_path(&record)
+    };
     Ok(path.display().to_string())
 }
 
 #[tauri::command]
-pub fn set_active_model(
-    engine: tauri::State<SharedEngine>,
+pub async fn set_active_model(
+    engine: tauri::State<'_, SharedEngine>,
     model_id: String,
 ) -> Result<String, CommandError> {
-    let path = lock(&engine)?.activate_installed(&model_id)?;
+    let (path, record) = {
+        let eng = lock(&engine)?;
+        let record = eng.catalog.get(&model_id)?.clone();
+        (eng.model_path(&record), record)
+    };
+    let verify_path = path.clone();
+    tokio::task::spawn_blocking(move || crate::integrity::activate_model(&verify_path, &record))
+        .await
+        .map_err(|err| CommandError {
+            code: "ERROR".into(),
+            message: err.to_string(),
+        })?
+        .map_err(CommandError::from)?;
+    lock(&engine)?.mark_active(&model_id)?;
     Ok(path.display().to_string())
 }
 

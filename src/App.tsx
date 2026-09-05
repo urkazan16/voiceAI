@@ -5,6 +5,7 @@ import {
   isTauriRuntime,
   type AppSettings,
   type BuildInfo,
+  type DictationState,
   type DictionaryEntry,
   type HistoryItem,
   type ModelDownloadProgress,
@@ -105,15 +106,12 @@ export function App() {
     let unpressed: (() => void) | undefined;
     let unreleased: (() => void) | undefined;
     void listen("hotkey-pressed", () => {
-      setStatus("Hotkey received — recording (release keys to finish).");
-      setView("home");
+      setStatus("Recording… keep holding, then release to process.");
     }).then((fn) => {
       unpressed = fn;
     });
     void listen("hotkey-released", () => {
-      setStatus(
-        "Hotkey released. Voice STT needs a verified local model. Type a phrase and click Process locally to test the pipeline.",
-      );
+      setStatus("Processing recording…");
     }).then((fn) => {
       unreleased = fn;
     });
@@ -124,10 +122,21 @@ export function App() {
     }).then((fn) => {
       unprogress = fn;
     });
+    let undictation: (() => void) | undefined;
+    void listen<DictationState>("dictation-state", (event) => {
+      const payload = event.payload;
+      setStatus(payload.message);
+      if (payload.transcript) {
+        setDraft(payload.transcript);
+      }
+    }).then((fn) => {
+      undictation = fn;
+    });
     return () => {
       unpressed?.();
       unreleased?.();
       unprogress?.();
+      undictation?.();
     };
   }, []);
 
@@ -174,7 +183,8 @@ export function App() {
           <li>1. Grant Microphone and Accessibility permissions.</li>
           <li>2. Download Whisper and Qwen models in Model Manager (network, user-initiated).</li>
           <li>
-            3. Hold Control+Shift+Space, talk, release. Typed Process locally works without models.
+            3. Hold Control+Shift+Space, talk, release to process the recording. Typed Process
+            locally still works without models.
           </li>
         </ol>
         <button
@@ -198,6 +208,7 @@ export function App() {
     <div className="flex min-h-screen bg-ink text-paper">
       <aside className="w-56 border-r border-paper/10 px-5 py-8">
         <p className="text-copper text-xs tracking-[0.25em] uppercase">LocalFlow</p>
+        <p className="mt-3 text-xs leading-relaxed text-paper/70">{status}</p>
         {!isTauriRuntime() && (
           <p className="mt-4 rounded-lg bg-copper/20 p-3 text-xs leading-relaxed text-paper">
             This browser tab cannot talk to Rust. Keep <code>npm run tauri dev</code> running and
@@ -223,6 +234,9 @@ export function App() {
           <section>
             <h1 className="text-4xl">Dictation pipeline</h1>
             <p className="mt-2 text-paper/70">{status}</p>
+            <p className="mt-1 text-sm text-paper/50">
+              Hold the hotkey to record. Release to process the recording and insert text.
+            </p>
             <textarea
               className="mt-6 h-32 w-full rounded-2xl border border-paper/15 bg-paper/5 p-4"
               placeholder="Preview a transcript without the microphone"
@@ -329,32 +343,35 @@ export function App() {
                 const status = modelStatus.find((item) => item.model_id === model.model_id);
                 const progress = downloadProgress[model.model_id];
                 const state = status?.state ?? "missing";
-                const busy = state === "downloading" || progress?.phase === "downloading";
+                const ready = state === "verified" || state === "installed";
+                const busy =
+                  state === "downloading" ||
+                  progress?.phase === "downloading" ||
+                  progress?.phase === "verifying" ||
+                  progress?.phase === "installing";
                 const bytes = Math.max(status?.bytes_on_disk ?? 0, progress?.bytes_downloaded ?? 0);
                 const total = status?.expected_bytes || model.size || progress?.total_bytes || 0;
                 const percent = total > 0 ? Math.min(100, Math.round((bytes / total) * 100)) : 0;
-                const badge =
-                  state === "verified"
-                    ? {
-                        label: status?.active ? "Installed · Active" : "Installed",
-                        className: "bg-moss text-ink",
-                      }
-                    : state === "downloading"
-                      ? { label: `Downloading ${percent}%`, className: "bg-copper text-ink" }
-                      : state === "incomplete"
-                        ? {
-                            label: `Incomplete ${percent}%`,
-                            className: "bg-copper/30 text-copper",
-                          }
-                        : state === "unverified"
-                          ? { label: "Checksum failed", className: "bg-red-900 text-paper" }
-                          : { label: "Not installed", className: "bg-paper/15 text-paper/70" };
-                const buttonLabel =
-                  state === "verified"
-                    ? "Re-download & verify"
-                    : state === "incomplete" || state === "downloading"
-                      ? "Resume download"
-                      : "Download & install";
+                const badge = ready
+                  ? {
+                      label: status?.active ? "Installed · Active" : "Installed",
+                      className: "bg-moss text-ink",
+                    }
+                  : state === "downloading"
+                    ? { label: `Downloading ${percent}%`, className: "bg-copper text-ink" }
+                    : state === "incomplete"
+                      ? {
+                          label: `Incomplete ${percent}%`,
+                          className: "bg-copper/30 text-copper",
+                        }
+                      : state === "unverified"
+                        ? { label: "Checksum failed", className: "bg-red-900 text-paper" }
+                        : { label: "Not installed", className: "bg-paper/15 text-paper/70" };
+                const buttonLabel = ready
+                  ? "Re-download & verify"
+                  : state === "incomplete" || state === "downloading"
+                    ? "Resume download"
+                    : "Download & install";
                 return (
                   <article key={model.model_id} className="rounded-2xl border border-paper/10 p-5">
                     <div className="flex items-baseline justify-between gap-4">
@@ -378,13 +395,13 @@ export function App() {
                         </p>
                       </div>
                     )}
-                    {state === "verified" && (
+                    {ready && (
                       <p className="mt-2 text-sm text-moss">
                         {status?.active ? "Active model. " : ""}
                         Ready at {status?.local_path}
                       </p>
                     )}
-                    {status?.local_path && state !== "verified" && (
+                    {status?.local_path && !ready && (
                       <p className="mt-1 break-all font-mono text-xs text-paper/50">
                         {status.local_path}
                       </p>
@@ -438,7 +455,7 @@ export function App() {
                       >
                         Verify local file
                       </button>
-                      {state === "verified" && !status?.active && (
+                      {ready && !status?.active && (
                         <button
                           className="text-paper/80 underline"
                           onClick={async () => {
@@ -457,7 +474,7 @@ export function App() {
                         </button>
                       )}
                     </div>
-                    {model.network_required_to_obtain && state !== "verified" && (
+                    {model.network_required_to_obtain && !ready && (
                       <p className="mt-3 text-xs uppercase tracking-wide text-copper">
                         Network required to download (Hugging Face)
                       </p>

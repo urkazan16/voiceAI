@@ -1,9 +1,90 @@
 use crate::catalog::ModelRecord;
 use crate::error::{LfError, LfResult};
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::time::UNIX_EPOCH;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct VerifySidecar {
+    sha256: String,
+    size: u64,
+    mtime: u64,
+}
+
+pub fn sidecar_path(model_path: &Path) -> PathBuf {
+    let mut raw = model_path.as_os_str().to_os_string();
+    raw.push(".verified.json");
+    PathBuf::from(raw)
+}
+
+fn file_mtime(path: &Path) -> u64 {
+    std::fs::metadata(path)
+        .and_then(|meta| meta.modified())
+        .ok()
+        .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+pub fn write_sidecar(path: &Path, sha256: &str) -> LfResult<()> {
+    let payload = VerifySidecar {
+        sha256: sha256.to_ascii_lowercase(),
+        size: std::fs::metadata(path)?.len(),
+        mtime: file_mtime(path),
+    };
+    std::fs::write(sidecar_path(path), serde_json::to_vec_pretty(&payload)?)?;
+    Ok(())
+}
+
+pub fn sidecar_matches(path: &Path, record: &ModelRecord) -> bool {
+    let Ok(raw) = std::fs::read_to_string(sidecar_path(path)) else {
+        return false;
+    };
+    let Ok(side) = serde_json::from_str::<VerifySidecar>(&raw) else {
+        return false;
+    };
+    let Ok(meta) = std::fs::metadata(path) else {
+        return false;
+    };
+    side.size == meta.len()
+        && (record.size == 0 || side.size == record.size)
+        && side.mtime == file_mtime(path)
+        && side.sha256.eq_ignore_ascii_case(&record.sha256)
+}
+
+pub fn peek_magic(path: &Path) -> LfResult<[u8; 4]> {
+    let mut file = File::open(path)?;
+    let mut magic = [0_u8; 4];
+    file.read_exact(&mut magic)?;
+    Ok(magic)
+}
+
+pub fn magic_matches_format(magic: &[u8; 4], format: &str) -> bool {
+    match format.to_ascii_uppercase().as_str() {
+        "GGUF" => magic == b"GGUF",
+        "GGML" => matches!(
+            magic,
+            b"ggml" | b"ggmf" | b"ggjt" | b"lmgg" | b"fmgg" | b"tjgg" | b"GGUF"
+        ),
+        _ => false,
+    }
+}
+
+pub fn looks_installed(path: &Path, record: &ModelRecord) -> bool {
+    let Ok(meta) = std::fs::metadata(path) else {
+        return false;
+    };
+    if record.size > 0 && meta.len() != record.size {
+        return false;
+    }
+    let Ok(magic) = peek_magic(path) else {
+        return false;
+    };
+    magic_matches_format(&magic, &record.format)
+}
 
 pub fn sha256_file(path: &Path) -> LfResult<String> {
     let mut file = File::open(path)?;
@@ -46,11 +127,7 @@ pub fn validate_format(path: &Path, format: &str) -> LfResult<()> {
             }
         }
         "GGML" => {
-            // whisper.cpp writes fourcc little-endian, so 'ggml' appears on disk as 'lmgg'.
-            if !matches!(
-                &magic,
-                b"ggml" | b"ggmf" | b"ggjt" | b"lmgg" | b"fmgg" | b"tjgg" | b"GGUF"
-            ) {
+            if !magic_matches_format(&magic, "GGML") {
                 return Err(LfError::ModelFormatInvalid(format!(
                     "{} is not a ggml/whisper artifact",
                     path.display()
@@ -71,6 +148,9 @@ pub fn activate_model(path: &Path, record: &ModelRecord) -> LfResult<()> {
     if !path.exists() {
         return Err(LfError::ModelMissing(record.model_id.clone()));
     }
+    if sidecar_matches(path, record) {
+        return Ok(());
+    }
     verify_checksum(path, &record.sha256)?;
     validate_format(path, &record.format)?;
     let meta = std::fs::metadata(path)?;
@@ -81,6 +161,7 @@ pub fn activate_model(path: &Path, record: &ModelRecord) -> LfResult<()> {
             meta.len()
         )));
     }
+    write_sidecar(path, &record.sha256)?;
     Ok(())
 }
 
@@ -142,6 +223,8 @@ mod tests {
         std::fs::write(&path, bytes).unwrap();
         let sha = sha256_file(&path).unwrap();
         let rec = record(&sha, "ggml", "ggml-base.bin");
+        activate_model(&path, &rec).unwrap();
+        assert!(sidecar_matches(&path, &rec));
         activate_model(&path, &rec).unwrap();
     }
 }

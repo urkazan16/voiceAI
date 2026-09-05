@@ -1,8 +1,11 @@
 use crate::catalog::ModelRecord;
 use crate::error::{LfError, LfResult};
-use crate::integrity::activate_model;
+use crate::integrity::{
+    looks_installed, magic_matches_format, peek_magic, sha256_file, sidecar_matches, write_sidecar,
+};
 use futures_util::StreamExt;
 use serde::Serialize;
+use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 use tokio::io::AsyncWriteExt;
@@ -36,15 +39,19 @@ pub fn partial_path(dest: &Path) -> PathBuf {
 pub fn inspect_install(record: &ModelRecord, dest: &Path) -> ModelInstallStatus {
     if dest.exists() {
         let bytes_on_disk = std::fs::metadata(dest).map(|m| m.len()).unwrap_or(0);
-        let verified = activate_model(dest, record).is_ok();
+        let verified = sidecar_matches(dest, record);
+        let installed = verified || looks_installed(dest, record);
+        let state = if verified {
+            "verified"
+        } else if installed {
+            "installed"
+        } else {
+            "unverified"
+        };
         return ModelInstallStatus {
             model_id: record.model_id.clone(),
-            state: if verified {
-                "verified".into()
-            } else {
-                "unverified".into()
-            },
-            installed: true,
+            state: state.into(),
+            installed,
             verified,
             local_path: Some(dest.display().to_string()),
             bytes_on_disk,
@@ -92,7 +99,7 @@ pub async fn download_and_install(
             record.model_id
         )));
     }
-    if dest.exists() && activate_model(dest, record).is_ok() {
+    if dest.exists() && (sidecar_matches(dest, record) || looks_installed(dest, record)) {
         on_progress(ModelDownloadProgress {
             model_id: record.model_id.clone(),
             phase: "complete".into(),
@@ -118,7 +125,7 @@ pub async fn download_and_install(
         total_bytes: record.size,
     });
 
-    fetch_to_file(&record.download_url, &partial, record, &mut on_progress).await?;
+    let digest = fetch_to_file(&record.download_url, &partial, record, &mut on_progress).await?;
 
     on_progress(ModelDownloadProgress {
         model_id: record.model_id.clone(),
@@ -127,7 +134,20 @@ pub async fn download_and_install(
         total_bytes: record.size,
     });
 
-    activate_model(&partial, record)?;
+    if !digest.eq_ignore_ascii_case(&record.sha256) {
+        return Err(LfError::ModelChecksumMismatch {
+            expected: record.sha256.to_ascii_lowercase(),
+            actual: digest,
+        });
+    }
+    let magic = peek_magic(&partial)?;
+    if !magic_matches_format(&magic, &record.format) {
+        return Err(LfError::ModelFormatInvalid(format!(
+            "{} is not a {} artifact",
+            partial.display(),
+            record.format
+        )));
+    }
 
     on_progress(ModelDownloadProgress {
         model_id: record.model_id.clone(),
@@ -136,9 +156,8 @@ pub async fn download_and_install(
         total_bytes: record.size,
     });
 
-    let _ = tokio::fs::remove_file(dest).await;
     tokio::fs::rename(&partial, dest).await?;
-    activate_model(dest, record)?;
+    write_sidecar(dest, &digest)?;
 
     on_progress(ModelDownloadProgress {
         model_id: record.model_id.clone(),
@@ -154,7 +173,7 @@ async fn fetch_to_file(
     dest: &Path,
     record: &ModelRecord,
     on_progress: &mut impl FnMut(ModelDownloadProgress),
-) -> LfResult<()> {
+) -> LfResult<String> {
     let client = reqwest::Client::builder()
         .user_agent("LocalFlow/0.1.0 (model-manager; https://github.com/urkazan16/voiceAI)")
         .redirect(reqwest::redirect::Policy::limited(16))
@@ -166,6 +185,12 @@ async fn fetch_to_file(
         .ok()
         .map(|m| m.len())
         .unwrap_or(0);
+    if existing > 0 && record.size > 0 && existing == record.size {
+        let dest = dest.to_path_buf();
+        return tokio::task::spawn_blocking(move || sha256_file(&dest))
+            .await
+            .map_err(|err| LfError::Other(err.to_string()))?;
+    }
     let mut request = client
         .get(url)
         .header(reqwest::header::ACCEPT, "application/octet-stream");
@@ -202,6 +227,14 @@ async fn fetch_to_file(
     } else {
         downloaded + response.content_length().unwrap_or(0)
     };
+    let dest_for_hash = dest.to_path_buf();
+    let mut hasher = if resume && existing > 0 {
+        tokio::task::spawn_blocking(move || hash_existing_file(&dest_for_hash))
+            .await
+            .map_err(|err| LfError::Other(err.to_string()))??
+    } else {
+        Sha256::new()
+    };
     let mut last_emit = Instant::now();
     let mut stream = response.bytes_stream();
 
@@ -214,11 +247,11 @@ async fn fetch_to_file(
 
     while let Some(chunk) = stream.next().await {
         let chunk = chunk.map_err(|err| LfError::Other(format!("download stream: {err}")))?;
+        hasher.update(&chunk);
         file.write_all(&chunk).await?;
         downloaded += chunk.len() as u64;
         if record.size > 0 && downloaded > record.size.saturating_mul(2) {
             drop(file);
-            let _ = tokio::fs::remove_file(dest).await;
             return Err(LfError::ModelFormatInvalid(format!(
                 "{} grew larger than twice the catalog size",
                 record.model_id
@@ -243,13 +276,27 @@ async fn fetch_to_file(
             record.model_id, downloaded, record.size
         )));
     }
-    Ok(())
+    Ok(hex::encode(hasher.finalize()))
+}
+
+fn hash_existing_file(path: &Path) -> LfResult<Sha256> {
+    let mut file = std::fs::File::open(path)?;
+    let mut hasher = Sha256::new();
+    let mut buf = [0_u8; 65536];
+    loop {
+        let read = std::io::Read::read(&mut file, &mut buf)?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buf[..read]);
+    }
+    Ok(hasher)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::integrity::sha256_file;
+    use crate::integrity::{activate_model, sha256_file};
     use std::io::{Read, Write};
     use std::net::TcpListener;
     use tempfile::tempdir;
@@ -330,6 +377,38 @@ mod tests {
         let status = inspect_install(&record, &dest);
         assert_eq!(status.state, "verified");
         assert!(status.installed && status.verified);
+    }
+
+    #[test]
+    fn inspect_treats_matching_file_as_installed_without_hashing() {
+        let dir = tempdir().unwrap();
+        let dest = dir.path().join("model.gguf");
+        let body = b"GGUFtestdata";
+        std::fs::write(&dest, body).unwrap();
+        let record = record_for(body, "http://example".into(), "model.gguf");
+        let status = inspect_install(&record, &dest);
+        assert_eq!(status.state, "installed");
+        assert!(status.installed);
+        assert!(!status.verified);
+    }
+
+    #[tokio::test]
+    async fn checksum_failure_keeps_previously_installed_file() {
+        let previous: &'static [u8] = b"GGUFold";
+        let expected: &'static [u8] = b"GGUFnewvalue";
+        let poisoned: &'static [u8] = b"GGUFbadvalue";
+        assert_eq!(expected.len(), poisoned.len());
+        assert_ne!(previous.len(), expected.len());
+        let url = serve_bytes(poisoned);
+        let record = record_for(expected, url, "model.gguf");
+        let dir = tempdir().unwrap();
+        let dest = dir.path().join("model.gguf");
+        std::fs::write(&dest, previous).unwrap();
+        let err = download_and_install(&record, &dest, |_| {})
+            .await
+            .unwrap_err();
+        assert_eq!(err.code(), "MODEL_CHECKSUM_MISMATCH");
+        assert_eq!(std::fs::read(&dest).unwrap(), previous);
     }
 
     #[tokio::test]

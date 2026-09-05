@@ -113,6 +113,13 @@ export function isTauriRuntime(): boolean {
 
 export const bundledCatalog: ModelRecord[] = catalogJson.models as ModelRecord[];
 
+export interface DictationState {
+  phase: string;
+  message: string;
+  transcript: string | null;
+  duration_ms: number;
+}
+
 export interface HotkeyStatus {
   requested: string;
   registered: string | null;
