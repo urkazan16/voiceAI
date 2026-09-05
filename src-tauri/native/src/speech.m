@@ -34,7 +34,7 @@ static int recognize_url(NSURL *url, BOOL on_device, NSLocale *locale, char *out
 
       SFSpeechURLRecognitionRequest *request = [[SFSpeechURLRecognitionRequest alloc] initWithURL:url];
       request.shouldReportPartialResults = NO;
-      if (@available(macOS 13.0, *)) {
+      if ([request respondsToSelector:@selector(setRequiresOnDeviceRecognition:)]) {
           request.requiresOnDeviceRecognition = on_device;
       }
 

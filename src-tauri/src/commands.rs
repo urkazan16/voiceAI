@@ -1,4 +1,4 @@
-use crate::audio::{self, AudioDevice};
+use crate::audio::{self, AudioDevice, SharedCapture};
 use crate::build_info::{self, BuildInfo};
 use crate::catalog::ModelRecord;
 use crate::config::AppSettings;
@@ -145,6 +145,49 @@ pub fn process_transcript(
     transcript: String,
 ) -> Result<PipelineOutput, CommandError> {
     Ok(lock(&engine)?.run_scripted(&transcript)?)
+}
+
+#[tauri::command]
+pub fn dictation_stop(
+    app: tauri::AppHandle,
+    engine: tauri::State<SharedEngine>,
+    capture: tauri::State<SharedCapture>,
+) -> Result<(), CommandError> {
+    crate::dictation::stop_and_process(&app, &engine, &capture);
+    Ok(())
+}
+
+#[tauri::command]
+pub fn dictation_cancel(
+    app: tauri::AppHandle,
+    engine: tauri::State<SharedEngine>,
+    capture: tauri::State<SharedCapture>,
+) -> Result<(), CommandError> {
+    crate::dictation::cancel(&app, &engine, &capture);
+    Ok(())
+}
+
+#[tauri::command]
+pub fn get_last_transcript(
+    engine: tauri::State<SharedEngine>,
+) -> Result<Option<PipelineOutput>, CommandError> {
+    Ok(lock(&engine)?.last_output.clone())
+}
+
+#[tauri::command]
+pub fn copy_last_transcript(engine: tauri::State<SharedEngine>) -> Result<String, CommandError> {
+    Ok(lock(&engine)?.copy_last_transcript()?)
+}
+
+#[tauri::command]
+pub fn paste_last_transcript(engine: tauri::State<SharedEngine>) -> Result<String, CommandError> {
+    Ok(lock(&engine)?.paste_last_transcript()?)
+}
+
+#[tauri::command]
+pub fn clear_last_transcript(engine: tauri::State<SharedEngine>) -> Result<(), CommandError> {
+    lock(&engine)?.clear_last_transcript()?;
+    Ok(())
 }
 
 #[tauri::command]

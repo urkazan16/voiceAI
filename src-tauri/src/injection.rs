@@ -26,14 +26,9 @@ impl TextInjector for MemoryInjector {
     }
 }
 
+#[derive(Default)]
 pub struct ClipboardInjector {
     pub target_pid: Option<i32>,
-}
-
-impl Default for ClipboardInjector {
-    fn default() -> Self {
-        Self { target_pid: None }
-    }
 }
 
 impl TextInjector for ClipboardInjector {
@@ -55,11 +50,7 @@ pub fn frontmost_unix_id() -> Option<i32> {
         if !output.status.success() {
             return None;
         }
-        String::from_utf8(output.stdout)
-            .ok()?
-            .trim()
-            .parse()
-            .ok()
+        String::from_utf8(output.stdout).ok()?.trim().parse().ok()
     }
     #[cfg(not(target_os = "macos"))]
     {
@@ -130,7 +121,11 @@ mod macos {
         release_stuck_modifiers();
     }
 
-    pub fn insert_text(text: &str, restore_clipboard: bool, target_pid: Option<i32>) -> LfResult<()> {
+    pub fn insert_text(
+        text: &str,
+        restore_clipboard: bool,
+        target_pid: Option<i32>,
+    ) -> LfResult<()> {
         prepare_keyboard();
         focus_pid(target_pid);
         std::thread::sleep(Duration::from_millis(40));

@@ -6,6 +6,7 @@ use crate::pipeline::PipelineMode;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default)]
 pub struct AppSettings {
     pub hotkey: String,
     pub mode: PipelineMode,
@@ -14,6 +15,9 @@ pub struct AppSettings {
     pub active_llm_model: Option<String>,
     pub restore_clipboard: bool,
     pub onboarding_complete: bool,
+    pub copy_last_hotkey: String,
+    pub paste_last_hotkey: String,
+    pub show_flow_bar: bool,
 }
 
 impl Default for AppSettings {
@@ -26,6 +30,9 @@ impl Default for AppSettings {
             active_llm_model: Some("Qwen3-4B-Instruct-2507".into()),
             restore_clipboard: true,
             onboarding_complete: false,
+            copy_last_hotkey: "Command+Control+C".into(),
+            paste_last_hotkey: "Command+Control+V".into(),
+            show_flow_bar: true,
         }
     }
 }

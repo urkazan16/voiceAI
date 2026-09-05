@@ -26,6 +26,9 @@ const fallbackSettings = (): AppSettings => ({
   active_llm_model: "Qwen3-4B-Instruct-2507",
   restore_clipboard: true,
   onboarding_complete: false,
+  copy_last_hotkey: "Command+Control+C",
+  paste_last_hotkey: "Command+Control+V",
+  show_flow_bar: true,
 });
 
 export function App() {
@@ -238,9 +241,9 @@ export function App() {
             <h1 className="text-4xl">Dictation pipeline</h1>
             <p className="mt-2 text-paper/70">{status}</p>
             <p className="mt-1 text-sm text-paper/50">
-              Type a sample below and click Process locally to form text (dictionary, punctuation,
-              history). Or click a browser field, hold the hotkey, speak, and release — macOS Speech
-              Recognition is used until whisper.cpp is linked. Allow Speech Recognition if asked.
+              Type a sample and click Process locally, or hold the hotkey over a field. Whisper.cpp
+              transcribes when the model is installed. Escape cancels. Cmd+Ctrl+C/V copy or paste
+              the last transcript.
             </p>
             <textarea
               className="mt-6 h-32 w-full rounded-2xl border border-paper/15 bg-paper/5 p-4"
@@ -327,6 +330,56 @@ export function App() {
               />
               Restore clipboard after insert
             </label>
+            <label className="flex items-center gap-2 text-sm">
+              <input
+                type="checkbox"
+                checked={settings.show_flow_bar}
+                onChange={(e) => void save({ ...settings, show_flow_bar: e.target.checked })}
+              />
+              Show LocalFlow Bar while listening
+            </label>
+            <label className="block text-sm text-paper/70">
+              Copy last transcript
+              <input
+                className="mt-1 w-full rounded-lg bg-paper/10 p-2"
+                value={settings.copy_last_hotkey}
+                onChange={(e) => void save({ ...settings, copy_last_hotkey: e.target.value })}
+              />
+            </label>
+            <label className="block text-sm text-paper/70">
+              Paste last transcript
+              <input
+                className="mt-1 w-full rounded-lg bg-paper/10 p-2"
+                value={settings.paste_last_hotkey}
+                onChange={(e) => void save({ ...settings, paste_last_hotkey: e.target.value })}
+              />
+            </label>
+            <div className="flex gap-3">
+              <button
+                className="rounded-full border border-paper/30 px-4 py-2"
+                onClick={async () => {
+                  try {
+                    setStatus(`Copied: ${await api.copyLastTranscript()}`);
+                  } catch (error) {
+                    setStatus(error instanceof Error ? error.message : String(error));
+                  }
+                }}
+              >
+                Copy last
+              </button>
+              <button
+                className="rounded-full border border-paper/30 px-4 py-2"
+                onClick={async () => {
+                  try {
+                    setStatus(`Pasted: ${await api.pasteLastTranscript()}`);
+                  } catch (error) {
+                    setStatus(error instanceof Error ? error.message : String(error));
+                  }
+                }}
+              >
+                Paste last
+              </button>
+            </div>
             <div className="flex gap-3">
               <button
                 className="rounded-full border border-paper/30 px-4 py-2"

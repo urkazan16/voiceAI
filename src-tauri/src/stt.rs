@@ -1,4 +1,4 @@
-use crate::error::LfResult;
+use crate::error::{LfError, LfResult};
 use crate::runtime;
 use std::path::Path;
 
@@ -11,15 +11,20 @@ pub struct NativeStt;
 impl SpeechToText for NativeStt {
     fn transcribe(&self, pcm: &[f32], model_path: Option<&Path>) -> LfResult<String> {
         if let Some(path) = model_path {
-            match runtime::native_transcribe(&path.to_string_lossy(), pcm) {
+            match crate::whisper_stt::transcribe(path, pcm, crate::dictation::cancel_flag()) {
                 Ok(text) if !text.trim().is_empty() => return Ok(text),
-                Ok(_) => {}
-                Err(crate::error::LfError::RuntimeUnsupported(_))
-                | Err(crate::error::LfError::ModelMissing(_)) => {}
-                Err(other) => return Err(other),
+                Ok(_) => {
+                    return Err(LfError::RuntimeUnsupported(
+                        "whisper.cpp produced empty text".into(),
+                    ))
+                }
+                Err(err) => return Err(err),
             }
         }
-        crate::macos_stt::transcribe_pcm_16k(pcm)
+        match runtime::native_transcribe("", pcm) {
+            Ok(text) if !text.trim().is_empty() => Ok(text),
+            _ => crate::macos_stt::transcribe_pcm_16k(pcm),
+        }
     }
 }
 

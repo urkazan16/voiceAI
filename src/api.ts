@@ -33,6 +33,9 @@ export interface AppSettings {
   active_llm_model: string | null;
   restore_clipboard: boolean;
   onboarding_complete: boolean;
+  copy_last_hotkey: string;
+  paste_last_hotkey: string;
+  show_flow_bar: boolean;
 }
 
 export interface ModelRecord {
@@ -83,9 +86,12 @@ export interface DictionaryEntry {
 export interface PipelineOutput {
   raw_transcript: string;
   dictionary_text: string;
+  backtrack_text: string;
+  formatted_text: string;
   personalized_text: string;
   final_text: string;
   mode: AppSettings["mode"];
+  insert_ok: boolean;
 }
 
 export interface HistoryItem {
@@ -125,6 +131,7 @@ export interface DictationState {
   phase: string;
   message: string;
   transcript: string | null;
+  raw_transcript: string | null;
   duration_ms: number;
 }
 
@@ -198,6 +205,12 @@ export const api = {
   resetPersonalization: () => call<void>("reset_personalization"),
   processTranscript: (transcript: string) => call<PipelineOutput>("process_transcript", { transcript }),
   completeOnboarding: () => call<void>("complete_onboarding"),
+  dictationStop: () => call<void>("dictation_stop"),
+  dictationCancel: () => call<void>("dictation_cancel"),
+  getLastTranscript: () => call<PipelineOutput | null>("get_last_transcript"),
+  copyLastTranscript: () => call<string>("copy_last_transcript"),
+  pasteLastTranscript: () => call<string>("paste_last_transcript"),
+  clearLastTranscript: () => call<void>("clear_last_transcript"),
   privacySummary: () => call<PrivacySummary>("privacy_summary"),
   verifyModel: (modelId: string) => call<string>("verify_model", { modelId }),
   downloadModel: (modelId: string) => call<string>("download_model", { modelId }),

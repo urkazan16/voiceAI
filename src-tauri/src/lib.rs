@@ -9,6 +9,7 @@ use tauri::{
 use tauri_plugin_global_shortcut::GlobalShortcutExt;
 
 pub mod audio;
+pub mod backtrack;
 pub mod build_info;
 pub mod catalog;
 pub mod commands;
@@ -19,6 +20,7 @@ pub mod dictionary;
 pub mod download;
 pub mod engine;
 pub mod error;
+pub mod format;
 pub mod history;
 pub mod injection;
 pub mod integrity;
@@ -29,6 +31,8 @@ pub mod personalization;
 pub mod pipeline;
 pub mod runtime;
 pub mod stt;
+pub mod vad;
+pub mod whisper_stt;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -63,12 +67,35 @@ pub fn run() {
             commands::download_model,
             commands::list_model_status,
             commands::set_active_model,
-            commands::get_hotkey_status
+            commands::get_hotkey_status,
+            commands::dictation_stop,
+            commands::dictation_cancel,
+            commands::get_last_transcript,
+            commands::copy_last_transcript,
+            commands::paste_last_transcript,
+            commands::clear_last_transcript
         ])
         .setup(move |app| {
             let show = MenuItem::with_id(app, "show", "Open LocalFlow", true, None::<&str>)?;
+            let copy_last =
+                MenuItem::with_id(app, "copy-last", "Copy Last Transcript", true, None::<&str>)?;
+            let paste_last = MenuItem::with_id(
+                app,
+                "paste-last",
+                "Paste Last Transcript",
+                true,
+                None::<&str>,
+            )?;
+            let cancel_item = MenuItem::with_id(
+                app,
+                "cancel-dictation",
+                "Cancel Dictation",
+                true,
+                None::<&str>,
+            )?;
             let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
-            let menu = Menu::with_items(app, &[&show, &quit])?;
+            let menu =
+                Menu::with_items(app, &[&show, &copy_last, &paste_last, &cancel_item, &quit])?;
             let mut tray = TrayIconBuilder::new()
                 .menu(&menu)
                 .show_menu_on_left_click(true)
@@ -79,6 +106,25 @@ pub fn run() {
                             let _ = window.show();
                             let _ = window.set_focus();
                         }
+                    }
+                    "copy-last" => {
+                        let _ = app
+                            .state::<SharedEngine>()
+                            .lock()
+                            .ok()
+                            .and_then(|eng| eng.copy_last_transcript().ok());
+                    }
+                    "paste-last" => {
+                        let _ = app
+                            .state::<SharedEngine>()
+                            .lock()
+                            .ok()
+                            .and_then(|eng| eng.paste_last_transcript().ok());
+                    }
+                    "cancel-dictation" => {
+                        let engine = (*app.state::<SharedEngine>()).clone();
+                        let capture = (*app.state::<audio::SharedCapture>()).clone();
+                        dictation::cancel(app, &engine, &capture);
                     }
                     _ => {}
                 });
@@ -91,20 +137,57 @@ pub fn run() {
             let capture_for_hotkey = capture.clone();
             app.handle().plugin(
                 tauri_plugin_global_shortcut::Builder::new()
-                    .with_handler(move |app, _shortcut, event| {
-                        if event.state == tauri_plugin_global_shortcut::ShortcutState::Pressed {
-                            dictation::on_hotkey_pressed(
-                                app,
-                                &engine_for_hotkey,
-                                &capture_for_hotkey,
-                            );
+                    .with_handler(move |app, shortcut, event| {
+                        let name = shortcut.to_string();
+                        let pressed =
+                            event.state == tauri_plugin_global_shortcut::ShortcutState::Pressed;
+                        let released =
+                            event.state == tauri_plugin_global_shortcut::ShortcutState::Released;
+                        if shortcut_eq(&name, "Escape") && pressed {
+                            dictation::cancel(app, &engine_for_hotkey, &capture_for_hotkey);
+                            return;
                         }
-                        if event.state == tauri_plugin_global_shortcut::ShortcutState::Released {
-                            dictation::on_hotkey_released(
-                                app,
-                                &engine_for_hotkey,
-                                &capture_for_hotkey,
-                            );
+                        let keys = engine_for_hotkey.lock().ok().map(|eng| {
+                            (
+                                eng.hotkey_registered
+                                    .clone()
+                                    .unwrap_or_else(|| eng.settings.hotkey.clone()),
+                                eng.settings.copy_last_hotkey.clone(),
+                                eng.settings.paste_last_hotkey.clone(),
+                            )
+                        });
+                        let Some((talk, copy, paste)) = keys else {
+                            return;
+                        };
+                        if shortcut_eq(&name, &copy) && pressed {
+                            let _ = engine_for_hotkey
+                                .lock()
+                                .ok()
+                                .and_then(|eng| eng.copy_last_transcript().ok());
+                            return;
+                        }
+                        if shortcut_eq(&name, &paste) && pressed {
+                            let _ = engine_for_hotkey
+                                .lock()
+                                .ok()
+                                .and_then(|eng| eng.paste_last_transcript().ok());
+                            return;
+                        }
+                        if shortcut_eq(&name, &talk) {
+                            if pressed {
+                                dictation::on_hotkey_pressed(
+                                    app,
+                                    &engine_for_hotkey,
+                                    &capture_for_hotkey,
+                                );
+                            }
+                            if released {
+                                dictation::on_hotkey_released(
+                                    app,
+                                    &engine_for_hotkey,
+                                    &capture_for_hotkey,
+                                );
+                            }
                         }
                     })
                     .build(),
@@ -133,6 +216,14 @@ pub fn run() {
                 }
                 eng.hotkey_error = last_err;
             }
+            if let Ok(eng) = shared.lock() {
+                let _ = app
+                    .global_shortcut()
+                    .register(eng.settings.copy_last_hotkey.as_str());
+                let _ = app
+                    .global_shortcut()
+                    .register(eng.settings.paste_last_hotkey.as_str());
+            }
             if let Some(window) = app.get_webview_window("main") {
                 let _ = window.show();
                 let _ = window.set_focus();
@@ -141,4 +232,12 @@ pub fn run() {
         })
         .run(tauri::generate_context!())
         .expect("error while running LocalFlow");
+}
+
+fn shortcut_eq(left: &str, right: &str) -> bool {
+    normalize_shortcut(left) == normalize_shortcut(right)
+}
+
+fn normalize_shortcut(value: &str) -> String {
+    value.replace(' ', "").to_ascii_lowercase()
 }

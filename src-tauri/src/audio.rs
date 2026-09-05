@@ -33,6 +33,9 @@ enum CaptureCommand {
     Stop {
         reply: std::sync::mpsc::Sender<Option<CapturedAudio>>,
     },
+    Peek {
+        reply: std::sync::mpsc::Sender<Option<CapturedAudio>>,
+    },
     IsRecording {
         reply: std::sync::mpsc::Sender<bool>,
     },
@@ -65,6 +68,10 @@ impl CaptureHub {
                             let audio = live.take().map(LiveCapture::finish);
                             let _ = reply.send(audio);
                         }
+                        CaptureCommand::Peek { reply } => {
+                            let audio = live.as_ref().map(|cap| cap.peek());
+                            let _ = reply.send(audio);
+                        }
                         CaptureCommand::IsRecording { reply } => {
                             let _ = reply.send(live.is_some());
                         }
@@ -87,6 +94,12 @@ impl CaptureHub {
     pub fn stop(&self) -> Option<CapturedAudio> {
         let (reply, rx) = std::sync::mpsc::channel();
         self.tx.send(CaptureCommand::Stop { reply }).ok()?;
+        rx.recv().ok().flatten()
+    }
+
+    pub fn peek(&self) -> Option<CapturedAudio> {
+        let (reply, rx) = std::sync::mpsc::channel();
+        self.tx.send(CaptureCommand::Peek { reply }).ok()?;
         rx.recv().ok().flatten()
     }
 
@@ -175,6 +188,15 @@ pub fn start_capture(preferred_name: Option<&str>) -> LfResult<LiveCapture> {
 }
 
 impl LiveCapture {
+    pub fn peek(&self) -> CapturedAudio {
+        let samples = self.samples.lock().map(|g| g.clone()).unwrap_or_default();
+        CapturedAudio {
+            samples,
+            sample_rate: self.sample_rate,
+            channels: self.channels,
+        }
+    }
+
     pub fn finish(self) -> CapturedAudio {
         drop(self.stream);
         std::thread::sleep(Duration::from_millis(20));

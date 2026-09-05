@@ -2,7 +2,7 @@
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
   "description": "LocalFlow desktop capabilities",
-  "windows": ["main"],
+  "windows": ["main", "bar"],
   "permissions": [
     "core:default",
     "core:event:allow-listen",
@@ -10,6 +10,8 @@
     "core:window:allow-show",
     "core:window:allow-hide",
     "core:window:allow-set-focus",
+    "core:window:allow-start-dragging",
+    "core:window:allow-set-always-on-top",
     "core:app:allow-default-window-icon",
     "core:webview:allow-internal-toggle-devtools",
     "clipboard-manager:allow-read-text",

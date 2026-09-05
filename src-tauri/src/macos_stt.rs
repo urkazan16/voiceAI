@@ -64,7 +64,8 @@ mod macos {
         let c_path = std::ffi::CString::new(wav.to_string_lossy().as_bytes())
             .map_err(|_| LfError::Other("wav path contains NUL".into()))?;
         let mut out = vec![0_i8; 16 * 1024];
-        let rc = unsafe { lf_macos_transcribe(c_path.as_ptr(), out.as_mut_ptr(), out.len() as i32) };
+        let rc =
+            unsafe { lf_macos_transcribe(c_path.as_ptr(), out.as_mut_ptr(), out.len() as i32) };
         let _ = std::fs::remove_file(&wav);
         match rc {
             0 => {

@@ -14,6 +14,13 @@ body {
   color: #f3ead9;
 }
 
+html.flow-bar,
+html.flow-bar body {
+  background: transparent;
+  min-height: 0;
+  overflow: hidden;
+}
+
 button,
 input,
 textarea,

@@ -10,9 +10,7 @@ use crate::integrity::looks_installed;
 use crate::llm::{LanguageModel, NativeLlm, ScriptedLlm};
 use crate::paths::DataPaths;
 use crate::personalization::PersonalizationState;
-use crate::pipeline::{
-    format_without_remote_llm, PipelineMode, PipelineOutput, PipelineSnapshot, PipelineState,
-};
+use crate::pipeline::{PipelineMode, PipelineOutput, PipelineSnapshot, PipelineState};
 use crate::stt::{NativeStt, ScriptedStt, SpeechToText};
 use chrono::Utc;
 use std::path::PathBuf;
@@ -32,6 +30,7 @@ pub struct AppEngine {
     pub hotkey_registered: Option<String>,
     pub hotkey_error: Option<String>,
     pub insert_target_pid: Option<i32>,
+    pub session_text: String,
 }
 
 impl AppEngine {
@@ -57,8 +56,14 @@ impl AppEngine {
             hotkey_registered: None,
             hotkey_error: None,
             insert_target_pid: None,
+            session_text: String::new(),
         };
         engine.load_persisted();
+        if let Ok(Some(json)) = engine.store.get_kv("last_transcript") {
+            if let Ok(output) = serde_json::from_str::<PipelineOutput>(&json) {
+                engine.last_output = Some(output);
+            }
+        }
         Ok(engine)
     }
 
@@ -161,6 +166,7 @@ impl AppEngine {
     }
 
     pub fn process_captured_audio(&mut self, pcm_16k: &[f32]) -> LfResult<PipelineOutput> {
+        let pcm = crate::vad::trim_silence(pcm_16k, 16_000);
         self.run_text_pipeline(
             "",
             &NativeStt,
@@ -168,7 +174,7 @@ impl AppEngine {
             &ClipboardInjector {
                 target_pid: self.insert_target_pid,
             },
-            pcm_16k,
+            &pcm,
         )
     }
 
@@ -184,42 +190,82 @@ impl AppEngine {
         self.snapshot.mode = self.settings.mode;
         self.snapshot.transition(PipelineState::Recording)?;
         self.snapshot.transition(PipelineState::ProcessingStt)?;
+        if crate::dictation::is_cancelled() {
+            return Err(LfError::Other("cancelled".into()));
+        }
         let raw = if transcript.is_empty() {
             stt.transcribe(pcm, self.ready_model_path("stt").as_deref())?
         } else {
             transcript.to_string()
         };
+        if crate::dictation::is_cancelled() {
+            return Err(LfError::Other("cancelled".into()));
+        }
         self.snapshot.transition(PipelineState::Dictionary)?;
         let dictionary_text = self.dictionary.apply(&raw);
+        self.snapshot.transition(PipelineState::Backtrack)?;
+        let backtrack_text = if self.settings.mode == PipelineMode::Raw {
+            dictionary_text.clone()
+        } else {
+            crate::backtrack::apply(&dictionary_text, &self.session_text)
+        };
+        self.snapshot.transition(PipelineState::Formatting)?;
+        let formatted_text = crate::format::format_smart(self.settings.mode, &backtrack_text);
         self.snapshot.transition(PipelineState::Personalization)?;
-        let personalized_text = self.personalization.apply(&dictionary_text);
+        let personalized_text = self.personalization.apply(&formatted_text);
         self.snapshot.transition(PipelineState::Llm)?;
-        let llm_text =
-            match llm.generate(&personalized_text, self.settings.mode, self.ready_model_path("llm").as_deref()) {
-                Ok(text) => text,
-                Err(LfError::RuntimeUnsupported(_)) | Err(LfError::ModelMissing(_)) => {
-                    format_without_remote_llm(self.settings.mode, &personalized_text)
+        let llm_text = match self.settings.mode {
+            PipelineMode::Raw | PipelineMode::Normal => personalized_text.clone(),
+            PipelineMode::Professional | PipelineMode::Code => {
+                match llm.generate(
+                    &personalized_text,
+                    self.settings.mode,
+                    self.ready_model_path("llm").as_deref(),
+                ) {
+                    Ok(text) => text,
+                    Err(LfError::RuntimeUnsupported(_)) | Err(LfError::ModelMissing(_)) => {
+                        personalized_text.clone()
+                    }
+                    Err(other) => return Err(other),
                 }
-                Err(other) => return Err(other),
-            };
+            }
+        };
         self.snapshot.transition(PipelineState::Validate)?;
         let final_text = llm_text.trim().to_string();
         if self.settings.mode == PipelineMode::Code {
             debug_assert!(crate::llm::assert_non_execution_policy());
         }
         self.snapshot.transition(PipelineState::Injecting)?;
-        if !final_text.is_empty() {
-            injector.insert_text(&final_text, self.settings.restore_clipboard)?;
+        let mut insert_ok = true;
+        let mut insert_err = None;
+        if !final_text.is_empty() && !crate::dictation::is_cancelled() {
+            if let Err(err) = injector.insert_text(&final_text, self.settings.restore_clipboard) {
+                insert_ok = false;
+                insert_err = Some(err);
+            }
+        }
+        if crate::dictation::is_cancelled() {
+            return Err(LfError::Other("cancelled".into()));
         }
         self.snapshot.transition(PipelineState::Completed)?;
         let output = PipelineOutput {
             raw_transcript: raw.clone(),
             dictionary_text,
+            backtrack_text,
+            formatted_text,
             personalized_text,
             final_text: final_text.clone(),
             mode: self.settings.mode,
+            insert_ok,
         };
         self.last_output = Some(output.clone());
+        if !final_text.is_empty() {
+            self.session_text = final_text.clone();
+        }
+        let _ = self.store.put_kv(
+            "last_transcript",
+            &serde_json::to_string(&output).unwrap_or_default(),
+        );
         let item = HistoryItem {
             id: Uuid::new_v4().to_string(),
             created_at: Utc::now().to_rfc3339(),
@@ -229,6 +275,9 @@ impl AppEngine {
         };
         self.store.insert_history(&item)?;
         self.snapshot.transition(PipelineState::Idle)?;
+        if let Some(err) = insert_err {
+            return Err(err);
+        }
         Ok(output)
     }
 
@@ -248,6 +297,47 @@ impl AppEngine {
     pub fn reset_personalization(&mut self) -> LfResult<()> {
         self.personalization.reset();
         self.persist()
+    }
+
+    pub fn copy_last_transcript(&self) -> LfResult<String> {
+        let text = self
+            .last_output
+            .as_ref()
+            .map(|o| o.final_text.clone())
+            .filter(|t| !t.is_empty())
+            .ok_or_else(|| LfError::Other("no last transcript".into()))?;
+        let mut child = std::process::Command::new("pbcopy")
+            .stdin(std::process::Stdio::piped())
+            .spawn()
+            .map_err(|e| LfError::InjectionFailed(e.to_string()))?;
+        if let Some(stdin) = child.stdin.as_mut() {
+            use std::io::Write;
+            stdin
+                .write_all(text.as_bytes())
+                .map_err(|e| LfError::InjectionFailed(e.to_string()))?;
+        }
+        let _ = child.wait();
+        Ok(text)
+    }
+
+    pub fn paste_last_transcript(&self) -> LfResult<String> {
+        let text = self
+            .last_output
+            .as_ref()
+            .map(|o| o.final_text.clone())
+            .filter(|t| !t.is_empty())
+            .ok_or_else(|| LfError::Other("no last transcript".into()))?;
+        crate::injection::ClipboardInjector {
+            target_pid: crate::injection::frontmost_unix_id(),
+        }
+        .insert_text(&text, self.settings.restore_clipboard)?;
+        Ok(text)
+    }
+
+    pub fn clear_last_transcript(&mut self) -> LfResult<()> {
+        self.last_output = None;
+        self.store.put_kv("last_transcript", "")?;
+        Ok(())
     }
 }
 
@@ -285,5 +375,34 @@ mod tests {
         assert!(out.final_text.contains("JUnit 5"));
         assert!(out.final_text.contains("LocalFlow"));
         assert_eq!(eng.snapshot.state, PipelineState::Idle);
+    }
+
+    #[test]
+    fn smart_formatting_benchmarks_120_to_123() {
+        let (_dir, mut eng) = engine();
+        assert_eq!(
+            eng.run_scripted("Давай встретимся в пять, нет, в шесть.")
+                .unwrap()
+                .final_text,
+            "Давай встретимся в шесть."
+        );
+        assert_eq!(
+            eng.run_scripted("Ну короче э-э давай завтра созвонимся.")
+                .unwrap()
+                .final_text,
+            "Давай завтра созвонимся."
+        );
+        assert_eq!(
+            eng.run_scripted("один API тесты два UI тесты три SQL")
+                .unwrap()
+                .final_text,
+            "1. API тесты\n2. UI тесты\n3. SQL"
+        );
+        assert_eq!(
+            eng.run_scripted("Привет запятая как дела вопросительный знак")
+                .unwrap()
+                .final_text,
+            "Привет, как дела?"
+        );
     }
 }

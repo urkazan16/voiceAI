@@ -17,6 +17,8 @@ pub enum PipelineState {
     Recording,
     ProcessingStt,
     Dictionary,
+    Backtrack,
+    Formatting,
     Personalization,
     Llm,
     Validate,
@@ -76,7 +78,9 @@ fn is_allowed(from: PipelineState, to: PipelineState) -> bool {
             | (Recording, ProcessingStt)
             | (Recording, Idle)
             | (ProcessingStt, Dictionary)
-            | (Dictionary, Personalization)
+            | (Dictionary, Backtrack)
+            | (Backtrack, Formatting)
+            | (Formatting, Personalization)
             | (Personalization, Llm)
             | (Llm, Validate)
             | (Validate, Injecting)
@@ -91,38 +95,17 @@ fn is_allowed(from: PipelineState, to: PipelineState) -> bool {
 pub struct PipelineOutput {
     pub raw_transcript: String,
     pub dictionary_text: String,
+    pub backtrack_text: String,
+    pub formatted_text: String,
     pub personalized_text: String,
     pub final_text: String,
     pub mode: PipelineMode,
+    #[serde(default)]
+    pub insert_ok: bool,
 }
 
 pub fn format_without_remote_llm(mode: PipelineMode, text: &str) -> String {
-    match mode {
-        PipelineMode::Raw => text.to_string(),
-        PipelineMode::Normal => simple_punctuate(text),
-        PipelineMode::Professional => professional_shape(text),
-        PipelineMode::Code => text.trim().to_string(),
-    }
-}
-
-fn simple_punctuate(text: &str) -> String {
-    let trimmed = text.trim();
-    if trimmed.is_empty() {
-        return String::new();
-    }
-    let mut chars: Vec<char> = trimmed.chars().collect();
-    if let Some(first) = chars.first_mut() {
-        *first = first.to_uppercase().next().unwrap_or(*first);
-    }
-    let last = chars.last().copied().unwrap_or(' ');
-    if !matches!(last, '.' | '!' | '?') {
-        chars.push('.');
-    }
-    chars.into_iter().collect()
-}
-
-fn professional_shape(text: &str) -> String {
-    simple_punctuate(text)
+    crate::format::format_smart(mode, text)
 }
 
 #[cfg(test)]
@@ -135,6 +118,8 @@ mod tests {
         snap.transition(PipelineState::Recording).unwrap();
         snap.transition(PipelineState::ProcessingStt).unwrap();
         snap.transition(PipelineState::Dictionary).unwrap();
+        snap.transition(PipelineState::Backtrack).unwrap();
+        snap.transition(PipelineState::Formatting).unwrap();
         snap.transition(PipelineState::Personalization).unwrap();
         snap.transition(PipelineState::Llm).unwrap();
         snap.transition(PipelineState::Validate).unwrap();
