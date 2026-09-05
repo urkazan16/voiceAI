@@ -72,6 +72,10 @@ impl DataPaths {
         self.config_dir().join("settings.json")
     }
 
+    pub fn clipboard_backup(&self) -> PathBuf {
+        self.root.join("clipboard-restore.txt")
+    }
+
     pub fn utterances(&self) -> PathBuf {
         self.logs().join("utterances.jsonl")
     }

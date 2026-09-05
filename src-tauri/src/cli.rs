@@ -4,7 +4,7 @@ use crate::config::AppSettings;
 use crate::engine::AppEngine;
 use crate::error::LfResult;
 use crate::eval;
-use crate::injection::MemoryInjector;
+use crate::injection::{ClipboardInjector, MemoryInjector, TextInjector};
 use crate::llm::NativeLlm;
 use crate::media;
 use crate::paths::DataPaths;
@@ -17,7 +17,15 @@ pub fn invoked(args: &[String]) -> bool {
     args.iter().any(|a| {
         matches!(
             a.as_str(),
-            "transcribe" | "check" | "devices" | "--help" | "-h" | "--version" | "-V" | "--json"
+            "transcribe"
+                | "check"
+                | "devices"
+                | "paste-smoke"
+                | "--help"
+                | "-h"
+                | "--version"
+                | "-V"
+                | "--json"
         ) || a == "--"
             || Path::new(a)
                 .extension()
@@ -52,6 +60,7 @@ enum Command {
     Transcribe,
     Check,
     Devices,
+    PasteSmoke,
     Help,
     Version,
 }
@@ -74,6 +83,7 @@ fn parse(args: &[String]) -> Result<Opts, String> {
             "transcribe" => opts.command = Command::Transcribe,
             "check" => opts.command = Command::Check,
             "devices" => opts.command = Command::Devices,
+            "paste-smoke" => opts.command = Command::PasteSmoke,
             "--help" | "-h" => opts.command = Command::Help,
             "--version" | "-V" => opts.command = Command::Version,
             "--json" => opts.json = true,
@@ -128,6 +138,7 @@ fn run_inner(args: &[String]) -> Result<i32, String> {
                 Ok(0)
             }
         }
+        Command::PasteSmoke => paste_smoke(),
         Command::Transcribe => transcribe(opts),
     }
 }
@@ -142,6 +153,7 @@ Usage:
                        [--model MODEL_ID] [--device NAME] [--dir DIR] [--stdin] [FILE...]
   localflow devices
   localflow check [--json]
+  localflow paste-smoke
   localflow --version
   localflow --help
 
@@ -236,6 +248,60 @@ fn run_pcm(engine: &mut AppEngine, pcm: &[f32]) -> LfResult<PipelineOutput> {
 fn local_check() -> Vec<String> {
     let mut lines = Vec::new();
     lines.push(format!(
+        "os: {} {}",
+        std::env::consts::OS,
+        std::env::consts::ARCH
+    ));
+    #[cfg(target_os = "macos")]
+    {
+        if let Ok(out) = std::process::Command::new("sw_vers")
+            .arg("-productVersion")
+            .output()
+        {
+            lines.push(format!(
+                "macos: {}",
+                String::from_utf8_lossy(&out.stdout).trim()
+            ));
+        }
+    }
+    lines.push(format!(
+        "screen_locked: {}",
+        crate::screenlock::screen_is_locked()
+    ));
+    match crate::audio::list_input_devices() {
+        Ok(devs) => {
+            lines.push(format!("mic_count: {}", devs.len()));
+            if let Some(default) = devs.iter().find(|d| d.is_default) {
+                lines.push(format!("mic_default: {}", default.name));
+            }
+        }
+        Err(err) => lines.push(format!("mic_count: FAIL ({err})")),
+    }
+    let paths = crate::paths::DataPaths::detect();
+    let _ = paths.ensure();
+    lines.push(format!(
+        "settings_file: {} ({})",
+        paths.settings_file().display(),
+        if paths.settings_file().exists() {
+            "present"
+        } else {
+            "absent"
+        }
+    ));
+    if let Ok(eng) = AppEngine::open(paths.clone()) {
+        let ready = eng
+            .settings
+            .active_stt_model
+            .as_deref()
+            .and_then(|id| eng.ready_model_path("stt").map(|_| id.to_string()));
+        lines.push(format!(
+            "whisper_ready: {}",
+            ready.as_deref().unwrap_or("no")
+        ));
+    } else {
+        lines.push("whisper_ready: no".into());
+    }
+    lines.push(format!(
         "wer_identity: {}",
         pass(eval::wer("один два", "один два") == 0.0)
     ));
@@ -248,13 +314,49 @@ fn local_check() -> Vec<String> {
         "vad_snr_15db: {}",
         pass(vad::had_speech(&mixed, 16_000))
     ));
-    let settings = AppSettings::default();
     lines.push(format!(
         "settings_json: {}",
-        pass(serde_json::to_string(&settings).is_ok())
+        pass(serde_json::to_string(&AppSettings::default()).is_ok())
     ));
+    let dir = tempfile_lock_dir();
+    if let Some(root) = dir {
+        let p = crate::paths::DataPaths::from_override(root);
+        let first = crate::instance::acquire_gui_lock(&p);
+        let second = crate::instance::acquire_gui_lock(&p);
+        lines.push(format!(
+            "single_instance: {}",
+            pass(first.is_ok() && second.is_err())
+        ));
+    } else {
+        lines.push("single_instance: SKIP".into());
+    }
     lines.push("offline: PASS (checker uses no network)".into());
     lines
+}
+
+fn tempfile_lock_dir() -> Option<std::path::PathBuf> {
+    let root = std::env::temp_dir().join(format!("lf-block0-{}", std::process::id()));
+    std::fs::create_dir_all(&root).ok()?;
+    Some(root)
+}
+
+fn paste_smoke() -> Result<i32, String> {
+    let app = crate::injection::frontmost_app_name().unwrap_or_default();
+    if !app.to_ascii_lowercase().contains("textedit") {
+        eprintln!("paste-smoke skipped: frontmost is {app:?}, expected TextEdit");
+        return Ok(2);
+    }
+    let token = format!("LFBLK0-{}", std::process::id());
+    crate::injection::prepare_keyboard_for_insert();
+    ClipboardInjector {
+        target_pid: crate::injection::frontmost_unix_id(),
+        target_app: Some(app),
+        insert_delay_ms: 120,
+    }
+    .insert_text(&token, true)
+    .map_err(|e| e.to_string())?;
+    println!("{token}");
+    Ok(0)
 }
 
 fn pass(ok: bool) -> &'static str {
@@ -293,5 +395,11 @@ mod tests {
         assert!(opts.no_post);
         assert_eq!(opts.language.as_deref(), Some("en"));
         assert_eq!(opts.files.len(), 1);
+    }
+
+    #[test]
+    fn paste_smoke_command_parses() {
+        let opts = parse(&["lf".into(), "paste-smoke".into()]).unwrap();
+        assert!(matches!(opts.command, Command::PasteSmoke));
     }
 }

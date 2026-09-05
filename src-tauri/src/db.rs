@@ -80,6 +80,15 @@ impl Store {
     }
 
     pub fn list_history(&self) -> LfResult<Vec<HistoryItem>> {
+        self.query_history(None, None, None)
+    }
+
+    pub fn query_history(
+        &self,
+        query: Option<&str>,
+        application: Option<&str>,
+        since: Option<&str>,
+    ) -> LfResult<Vec<HistoryItem>> {
         let mut stmt = self.conn.prepare(
             "SELECT id, created_at, mode, transcript, output,
                     COALESCE(application, ''), COALESCE(profile, ''),
@@ -101,11 +110,48 @@ impl Store {
                 timecodes: row.get(9)?,
             })
         })?;
+        let q = query.map(|s| s.trim().to_lowercase()).filter(|s| !s.is_empty());
+        let app = application
+            .map(|s| s.trim().to_lowercase())
+            .filter(|s| !s.is_empty());
         let mut out = Vec::new();
         for row in rows {
-            out.push(row?);
+            let item = row?;
+            if let Some(since) = since {
+                if item.created_at.as_str() < since {
+                    continue;
+                }
+            }
+            if let Some(app) = &app {
+                if item.application.to_lowercase() != *app {
+                    continue;
+                }
+            }
+            if let Some(q) = &q {
+                let hay = format!(
+                    "{} {} {}",
+                    item.transcript.to_lowercase(),
+                    item.output.to_lowercase(),
+                    item.application.to_lowercase()
+                );
+                if !hay.contains(q) {
+                    continue;
+                }
+            }
+            out.push(item);
         }
         Ok(out)
+    }
+
+    pub fn prune_history(&self, max_items: u32) -> LfResult<usize> {
+        let keep = max_items.max(1) as i64;
+        let deleted = self.conn.execute(
+            "DELETE FROM history WHERE id NOT IN (
+                SELECT id FROM history ORDER BY created_at DESC LIMIT ?1
+             )",
+            params![keep],
+        )?;
+        Ok(deleted)
     }
 
     pub fn delete_history(&self) -> LfResult<()> {
@@ -159,5 +205,63 @@ mod tests {
         assert_eq!(store.list_history().unwrap().len(), 1);
         store.delete_history().unwrap();
         assert!(store.list_history().unwrap().is_empty());
+    }
+
+    fn item(id: &str, at: &str, app: &str, text: &str) -> HistoryItem {
+        HistoryItem {
+            id: id.into(),
+            created_at: at.into(),
+            mode: "normal".into(),
+            transcript: text.into(),
+            output: text.into(),
+            application: app.into(),
+            profile: "".into(),
+            model: "".into(),
+            processing_time_ms: 1,
+            timecodes: "".into(),
+        }
+    }
+
+    #[test]
+    fn query_filters_search_app_and_date() {
+        let dir = tempdir().unwrap();
+        let store = Store::open(&DataPaths::from_override(dir.path().to_path_buf())).unwrap();
+        store
+            .insert_history(&item("1", "2026-01-01T00:00:00Z", "Mail", "invoice paid"))
+            .unwrap();
+        store
+            .insert_history(&item("2", "2026-08-01T00:00:00Z", "Safari", "search rust"))
+            .unwrap();
+        assert_eq!(store.query_history(Some("invoice"), None, None).unwrap().len(), 1);
+        assert_eq!(
+            store
+                .query_history(None, Some("Safari"), None)
+                .unwrap()
+                .len(),
+            1
+        );
+        assert_eq!(
+            store
+                .query_history(None, None, Some("2026-07-01T00:00:00Z"))
+                .unwrap()
+                .len(),
+            1
+        );
+    }
+
+    #[test]
+    fn prune_keeps_newest() {
+        let dir = tempdir().unwrap();
+        let store = Store::open(&DataPaths::from_override(dir.path().to_path_buf())).unwrap();
+        store
+            .insert_history(&item("1", "2026-01-01T00:00:00Z", "Mail", "old"))
+            .unwrap();
+        store
+            .insert_history(&item("2", "2026-08-01T00:00:00Z", "Mail", "new"))
+            .unwrap();
+        assert_eq!(store.prune_history(1).unwrap(), 1);
+        let rows = store.list_history().unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].id, "2");
     }
 }

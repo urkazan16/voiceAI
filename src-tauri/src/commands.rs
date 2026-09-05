@@ -72,6 +72,7 @@ pub fn save_settings(
     {
         let mut eng = lock(&engine)?;
         eng.settings = settings;
+        eng.settings.normalize();
         crate::journal::set_max_bytes(eng.settings.log_max_bytes);
         let autostart = eng.settings.autostart;
         eng.persist()?;

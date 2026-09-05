@@ -1,5 +1,74 @@
 use crate::error::{LfError, LfResult};
+use std::io::Write;
+use std::path::PathBuf;
+use std::sync::Mutex;
 use std::time::Duration;
+
+static CLIPBOARD_BACKUP: Mutex<Option<PathBuf>> = Mutex::new(None);
+
+pub fn set_clipboard_backup_path(path: PathBuf) {
+    if let Ok(mut slot) = CLIPBOARD_BACKUP.lock() {
+        *slot = Some(path);
+    }
+}
+
+pub fn clipboard_backup_path() -> PathBuf {
+    CLIPBOARD_BACKUP
+        .lock()
+        .ok()
+        .and_then(|g| g.clone())
+        .unwrap_or_else(|| crate::paths::DataPaths::detect().clipboard_backup())
+}
+
+pub fn persist_clipboard_backup(text: &str) -> std::io::Result<()> {
+    let path = clipboard_backup_path();
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    std::fs::write(path, text)
+}
+
+pub fn take_clipboard_backup() -> Option<String> {
+    let path = clipboard_backup_path();
+    let text = std::fs::read_to_string(&path).ok()?;
+    let _ = std::fs::remove_file(&path);
+    Some(text)
+}
+
+pub fn restore_orphaned_clipboard() {
+    let Some(text) = take_clipboard_backup() else {
+        return;
+    };
+    let _ = write_pasteboard(&text);
+}
+
+fn write_pasteboard(text: &str) -> LfResult<()> {
+    #[cfg(target_os = "macos")]
+    {
+        let mut child = std::process::Command::new("pbcopy")
+            .stdin(std::process::Stdio::piped())
+            .spawn()
+            .map_err(|e| LfError::InjectionFailed(e.to_string()))?;
+        if let Some(stdin) = child.stdin.as_mut() {
+            stdin
+                .write_all(text.as_bytes())
+                .map_err(|e| LfError::InjectionFailed(e.to_string()))?;
+        }
+        let status = child
+            .wait()
+            .map_err(|e| LfError::InjectionFailed(e.to_string()))?;
+        if status.success() {
+            Ok(())
+        } else {
+            Err(LfError::InjectionFailed("pbcopy failed".into()))
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = text;
+        Ok(())
+    }
+}
 
 pub trait TextInjector: Send + Sync {
     fn insert_text(&self, text: &str, restore_clipboard: bool) -> LfResult<()>;
@@ -136,7 +205,6 @@ fn insert_via_clipboard(
 mod macos {
     use super::*;
     use std::ffi::c_void;
-    use std::io::Write;
     use std::time::{Duration, Instant};
 
     const VK_COMMAND: u16 = 0x37;
@@ -173,7 +241,7 @@ mod macos {
     }
 
     pub fn prepare_keyboard() {
-        wait_for_modifiers_up(Duration::from_millis(800));
+        wait_for_modifiers_up(Duration::from_millis(1000));
         release_stuck_modifiers();
     }
 
@@ -188,7 +256,7 @@ mod macos {
         focus_pid(target_pid);
         let delay = insert_delay_ms.max(40);
         let extra = if is_editor_or_terminal(target_app) {
-            delay.saturating_add(80)
+            delay.saturating_add(120)
         } else {
             delay
         };
@@ -199,41 +267,25 @@ mod macos {
                 .output()
                 .ok()
                 .and_then(|o| String::from_utf8(o.stdout).ok())
+                .or(Some(String::new()))
         } else {
             None
         };
-
-        let mut child = std::process::Command::new("pbcopy")
-            .stdin(std::process::Stdio::piped())
-            .spawn()
-            .map_err(|e| LfError::InjectionFailed(e.to_string()))?;
-        if let Some(stdin) = child.stdin.as_mut() {
-            stdin
-                .write_all(text.as_bytes())
-                .map_err(|e| LfError::InjectionFailed(e.to_string()))?;
-        }
-        let status = child
-            .wait()
-            .map_err(|e| LfError::InjectionFailed(e.to_string()))?;
-        if !status.success() {
-            return Err(LfError::InjectionFailed("pbcopy failed".into()));
+        if let Some(prev) = &previous {
+            let _ = super::persist_clipboard_backup(prev);
         }
 
-        post_paste()?;
+        super::write_pasteboard(text)?;
+        let paste_result = post_paste();
         release_stuck_modifiers();
 
         if let Some(prev) = previous {
-            std::thread::sleep(Duration::from_millis(40));
-            let mut child = std::process::Command::new("pbcopy")
-                .stdin(std::process::Stdio::piped())
-                .spawn()
-                .map_err(|e| LfError::InjectionFailed(e.to_string()))?;
-            if let Some(stdin) = child.stdin.as_mut() {
-                let _ = stdin.write_all(prev.as_bytes());
-            }
-            let _ = child.wait();
+            std::thread::sleep(Duration::from_millis(100));
+            let _ = super::write_pasteboard(&prev);
+            let path = super::clipboard_backup_path();
+            let _ = std::fs::remove_file(path);
         }
-        Ok(())
+        paste_result
     }
 
     fn is_editor_or_terminal(app: Option<&str>) -> bool {
@@ -384,5 +436,14 @@ mod tests {
         let inj = MemoryInjector::default();
         inj.insert_text("hello", true).unwrap();
         assert_eq!(inj.last.lock().unwrap().clone(), Some("hello".into()));
+    }
+
+    #[test]
+    fn clipboard_backup_roundtrip_on_disk() {
+        let dir = tempfile::tempdir().unwrap();
+        set_clipboard_backup_path(dir.path().join("clipboard-restore.txt"));
+        persist_clipboard_backup("keep me").unwrap();
+        assert_eq!(take_clipboard_backup().as_deref(), Some("keep me"));
+        assert!(take_clipboard_backup().is_none());
     }
 }

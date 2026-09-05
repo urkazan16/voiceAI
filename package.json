@@ -27,6 +27,7 @@
     "test:personalization": "bash scripts/run-with-toolchain.sh cargo test --manifest-path src-tauri/Cargo.toml --locked personalization --lib",
     "test:ai": "bash scripts/run-with-toolchain.sh cargo test --manifest-path src-tauri/Cargo.toml --locked --features ai-bench --test ai_bench",
     "check:local": "bash scripts/run-with-toolchain.sh cargo run --manifest-path src-tauri/Cargo.toml --quiet -- check",
+    "measure:block0": "bash scripts/block0-measure.sh",
     "check": "tsc --noEmit && eslint . && prettier --check . && bash scripts/run-with-toolchain.sh cargo check --manifest-path src-tauri/Cargo.toml --locked && bash scripts/run-with-toolchain.sh cargo fmt --manifest-path src-tauri/Cargo.toml -- --check && bash scripts/run-with-toolchain.sh cargo clippy --manifest-path src-tauri/Cargo.toml --locked --all-targets -- -D warnings",
     "format": "prettier --write . && bash scripts/run-with-toolchain.sh cargo fmt --manifest-path src-tauri/Cargo.toml",
     "license:check": "node scripts/license-check.mjs",

@@ -80,6 +80,8 @@ Settings live in `~/Library/Application Support/LocalFlow/config/settings.json` 
 | `insert_delay_ms`                       | Pause before paste                                            |
 | `postprocess_timeout_ms`                | Cap on formatting                                             |
 | `restore_clipboard`                     | Restore clipboard after paste                                 |
+| `vad_threshold`                         | Silence trim sensitivity (default 0.012)                      |
+| `history_max_items`                     | SQLite history rotation cap (default 500)                     |
 | `log_max_bytes`                         | Size rotation for `localflow.log`                             |
 
 Replace the recognizer by downloading another Whisper ggml in Model Manager, or set `active_stt_model` in `settings.json` to a catalog id whose file is already verified.

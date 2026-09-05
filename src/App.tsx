@@ -46,6 +46,8 @@ const fallbackSettings = (): AppSettings => ({
   log_max_bytes: 2097152,
   autostart: false,
   history_enabled: true,
+  vad_threshold: 0.012,
+  history_max_items: 500,
 });
 
 function isToday(iso: string): boolean {
@@ -55,6 +57,38 @@ function isToday(iso: string): boolean {
   }
   const now = new Date();
   return date.toDateString() === now.toDateString();
+}
+
+function daysAgo(iso: string, days: number): boolean {
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) {
+    return false;
+  }
+  return Date.now() - date.getTime() <= days * 24 * 60 * 60 * 1000;
+}
+
+function describeSelectedModel(
+  id: string | null | undefined,
+  models: ModelRecord[],
+  statuses: ModelInstallStatus[],
+): { id: string | null; name: string; ready: boolean; detail: string } {
+  if (!id) {
+    return { id: null, name: "Not selected", ready: false, detail: "Choose a model below." };
+  }
+  const record = models.find((model) => model.model_id === id);
+  const status = statuses.find((item) => item.model_id === id);
+  const name = record?.display_name ?? id;
+  const ready = status?.state === "verified" || status?.state === "installed";
+  if (ready) {
+    return { id, name, ready: true, detail: "Ready on this Mac." };
+  }
+  if (status?.state === "downloading" || status?.state === "incomplete") {
+    return { id, name, ready: false, detail: "Download in progress — not used yet." };
+  }
+  if (status?.state === "unverified") {
+    return { id, name, ready: false, detail: "File failed checksum — not used." };
+  }
+  return { id, name, ready: false, detail: "Selected but not installed." };
 }
 
 export function App() {
@@ -93,6 +127,9 @@ export function App() {
   const [microphones, setMicrophones] = useState<AudioDevice[]>([]);
   const [stats, setStats] = useState<StatsSnapshot | null>(null);
   const [permissions, setPermissions] = useState<PermissionStatus | null>(null);
+  const [historyQuery, setHistoryQuery] = useState("");
+  const [historyApp, setHistoryApp] = useState("");
+  const [historyRange, setHistoryRange] = useState<"all" | "today" | "7d">("all");
 
   async function refresh() {
     try {
@@ -138,6 +175,10 @@ export function App() {
         setMicrophones(await api.listMicrophones());
         setStats(await api.getStats());
         setPermissions(await api.permissionStatus());
+        const last = await api.getLastTranscript();
+        if (last) {
+          setPipelineOut(last);
+        }
       } catch {
         /* preview */
       }
@@ -195,7 +236,13 @@ export function App() {
       setStatus(payload.message);
       if (payload.transcript) {
         setDraft(payload.transcript);
-        setPipelineOut(null);
+      }
+      if (payload.insert_ok === false && payload.transcript) {
+        void api.getLastTranscript().then((last) => {
+          if (last) {
+            setPipelineOut(last);
+          }
+        });
       }
     }).then((fn) => {
       undictation = fn;
@@ -229,6 +276,21 @@ export function App() {
       cancelled = true;
       window.clearInterval(timer);
     };
+  }, [view]);
+
+  useEffect(() => {
+    if ((view !== "settings" && view !== "onboarding") || !isTauriRuntime()) {
+      return;
+    }
+    const timer = window.setInterval(() => {
+      void api
+        .listMicrophones()
+        .then(setMicrophones)
+        .catch(() => {
+          /* device poll is best-effort */
+        });
+    }, 2500);
+    return () => window.clearInterval(timer);
   }, [view]);
 
   async function save(next: AppSettings) {
@@ -416,6 +478,41 @@ export function App() {
                   <dt className="text-paper/50">Formed text</dt>
                   <dd className="text-lg">{pipelineOut.final_text}</dd>
                 </div>
+                {pipelineOut.insert_ok === false && pipelineOut.final_text && (
+                  <div className="flex flex-wrap gap-2 pt-2">
+                    <p className="w-full text-copper">
+                      Last insert failed. Copy or paste the text, then dismiss.
+                    </p>
+                    <button
+                      className="rounded-full border border-paper/30 px-3 py-1"
+                      onClick={() =>
+                        void api.copyLastTranscript().then(() => setStatus("Copied last transcript."))
+                      }
+                    >
+                      Copy
+                    </button>
+                    <button
+                      className="rounded-full border border-paper/30 px-3 py-1"
+                      onClick={() =>
+                        void api
+                          .pasteLastTranscript()
+                          .then(() => setStatus("Pasted last transcript."))
+                      }
+                    >
+                      Paste last
+                    </button>
+                    <button
+                      className="rounded-full border border-paper/30 px-3 py-1"
+                      onClick={() => {
+                        void api.clearLastTranscript();
+                        setPipelineOut(null);
+                        setStatus("Dismissed last transcript.");
+                      }}
+                    >
+                      Dismiss
+                    </button>
+                  </div>
+                )}
               </dl>
             )}
           </section>
@@ -526,6 +623,39 @@ export function App() {
                 onChange={(e) => void save({ ...settings, history_enabled: e.target.checked })}
               />
               Keep utterance history and JSONL journal
+            </label>
+            <label className="block text-sm text-paper/70">
+              History size (oldest rows are dropped)
+              <input
+                className="mt-1 w-full rounded-lg bg-paper/10 p-2"
+                type="number"
+                min={50}
+                max={10000}
+                value={settings.history_max_items}
+                onChange={(e) =>
+                  void save({
+                    ...settings,
+                    history_max_items: Number(e.target.value) || 500,
+                  })
+                }
+              />
+            </label>
+            <label className="block text-sm text-paper/70">
+              Silence trim (VAD): {(settings.vad_threshold ?? 0.012).toFixed(3)}
+              <input
+                className="mt-1 w-full"
+                type="range"
+                min={0.002}
+                max={0.08}
+                step={0.001}
+                value={settings.vad_threshold ?? 0.012}
+                onChange={(e) =>
+                  void save({ ...settings, vad_threshold: Number(e.target.value) })
+                }
+              />
+              <span className="text-xs text-paper/50">
+                Lower keeps quiet speech. Higher treats room noise as silence.
+              </span>
             </label>
             <label className="block text-sm text-paper/70">
               Fallback mode (used when no app profile matches)
@@ -700,6 +830,48 @@ export function App() {
               weaker. Large v3 Turbo is a similar download to Medium and usually quicker, with a bit
               less precision. Qwen models are only for text formatting, not speech.
             </p>
+            {(() => {
+              const speech = describeSelectedModel(
+                settings.active_stt_model,
+                models,
+                modelStatus,
+              );
+              const formatting = describeSelectedModel(
+                settings.active_llm_model,
+                models,
+                modelStatus,
+              );
+              return (
+                <div className="mt-4 grid gap-3 rounded-2xl border border-copper/50 bg-copper/10 p-4 sm:grid-cols-2">
+                  <div>
+                    <p className="text-xs uppercase tracking-[0.2em] text-copper">
+                      Currently in use · speech
+                    </p>
+                    <p className="mt-1 text-lg">{speech.name}</p>
+                    <p className={`mt-1 text-sm ${speech.ready ? "text-moss" : "text-copper"}`}>
+                      {speech.detail}
+                    </p>
+                    {speech.id && (
+                      <p className="mt-1 font-mono text-xs text-paper/50">{speech.id}</p>
+                    )}
+                  </div>
+                  <div>
+                    <p className="text-xs uppercase tracking-[0.2em] text-copper">
+                      Currently in use · formatting
+                    </p>
+                    <p className="mt-1 text-lg">{formatting.name}</p>
+                    <p className={`mt-1 text-sm ${formatting.ready ? "text-moss" : "text-paper/60"}`}>
+                      {formatting.ready
+                        ? formatting.detail
+                        : `${formatting.detail} Dictation still works without it.`}
+                    </p>
+                    {formatting.id && (
+                      <p className="mt-1 font-mono text-xs text-paper/50">{formatting.id}</p>
+                    )}
+                  </div>
+                </div>
+              );
+            })()}
             <p className="mt-2 text-copper">{modelMessage}</p>
             <div className="mt-6 grid gap-4">
               {models.map((model) => {
@@ -707,6 +879,9 @@ export function App() {
                 const progress = downloadProgress[model.model_id];
                 const state = status?.state ?? "missing";
                 const ready = state === "verified" || state === "installed";
+                const isSpeechActive = settings.active_stt_model === model.model_id;
+                const isFormattingActive = settings.active_llm_model === model.model_id;
+                const isActive = isSpeechActive || isFormattingActive || Boolean(status?.active);
                 const busy =
                   state === "downloading" ||
                   progress?.phase === "downloading" ||
@@ -715,28 +890,40 @@ export function App() {
                 const bytes = Math.max(status?.bytes_on_disk ?? 0, progress?.bytes_downloaded ?? 0);
                 const total = status?.expected_bytes || model.size || progress?.total_bytes || 0;
                 const percent = total > 0 ? Math.min(100, Math.round((bytes / total) * 100)) : 0;
-                const badge = ready
-                  ? {
-                      label: status?.active ? "Installed · Active" : "Installed",
-                      className: "bg-moss text-ink",
-                    }
-                  : state === "downloading"
-                    ? { label: `Downloading ${percent}%`, className: "bg-copper text-ink" }
-                    : state === "incomplete"
-                      ? {
-                          label: `Incomplete ${percent}%`,
-                          className: "bg-copper/30 text-copper",
-                        }
-                      : state === "unverified"
-                        ? { label: "Checksum failed", className: "bg-red-900 text-paper" }
-                        : { label: "Not installed", className: "bg-paper/15 text-paper/70" };
+                const roleLabel = isSpeechActive
+                  ? "In use · speech"
+                  : isFormattingActive
+                    ? "In use · formatting"
+                    : null;
+                const badge = roleLabel
+                  ? { label: roleLabel, className: "bg-copper text-ink" }
+                  : ready
+                    ? {
+                        label: "Installed",
+                        className: "bg-moss text-ink",
+                      }
+                    : state === "downloading"
+                      ? { label: `Downloading ${percent}%`, className: "bg-copper text-ink" }
+                      : state === "incomplete"
+                        ? {
+                            label: `Incomplete ${percent}%`,
+                            className: "bg-copper/30 text-copper",
+                          }
+                        : state === "unverified"
+                          ? { label: "Checksum failed", className: "bg-red-900 text-paper" }
+                          : { label: "Not installed", className: "bg-paper/15 text-paper/70" };
                 const buttonLabel = ready
                   ? "Re-download & verify"
                   : state === "incomplete" || state === "downloading"
                     ? "Resume download"
                     : "Download & install";
                 return (
-                  <article key={model.model_id} className="rounded-2xl border border-paper/10 p-5">
+                  <article
+                    key={model.model_id}
+                    className={`rounded-2xl border p-5 ${
+                      isActive ? "border-copper/70 bg-copper/5" : "border-paper/10"
+                    }`}
+                  >
                     <div className="flex items-baseline justify-between gap-4">
                       <h2 className="text-2xl">{model.display_name}</h2>
                       <span
@@ -760,8 +947,18 @@ export function App() {
                     )}
                     {ready && (
                       <p className="mt-2 text-sm text-moss">
-                        {status?.active ? "Active model. " : ""}
+                        {isSpeechActive
+                          ? "This is the speech model LocalFlow uses for dictation. "
+                          : isFormattingActive
+                            ? "This is the formatting model used after speech-to-text. "
+                            : ""}
                         Ready at {status?.local_path}
+                      </p>
+                    )}
+                    {isActive && !ready && (
+                      <p className="mt-2 text-sm text-copper">
+                        Selected as the current {isSpeechActive ? "speech" : "formatting"} model, but
+                        the file is not ready yet.
                       </p>
                     )}
                     {status?.local_path && !ready && (
@@ -819,13 +1016,25 @@ export function App() {
                       >
                         Verify local file
                       </button>
-                      {ready && !status?.active && (
+                      {ready && isActive && (
                         <button
-                          className="text-paper/80 underline"
+                          className="rounded-full border border-copper px-4 py-1 text-copper"
+                          disabled
+                        >
+                          Currently in use
+                        </button>
+                      )}
+                      {ready && !isActive && (
+                        <button
+                          className="rounded-full border border-paper/30 px-4 py-1"
                           onClick={async () => {
                             try {
                               await api.setActiveModel(model.model_id);
-                              setModelMessage(`${model.display_name} is now the active model.`);
+                              setModelMessage(
+                                `${model.display_name} is now the ${
+                                  model.kind === "llm" ? "formatting" : "speech"
+                                } model in use.`,
+                              );
                               await refresh();
                             } catch (error) {
                               setModelMessage(
@@ -834,7 +1043,7 @@ export function App() {
                             }
                           }}
                         >
-                          Set as active
+                          Use this {model.kind === "llm" ? "for formatting" : "for speech"}
                         </button>
                       )}
                     </div>
@@ -1235,8 +1444,58 @@ export function App() {
                 Delete history
               </button>
             </div>
+            <div className="mt-4 flex flex-wrap gap-3">
+              <input
+                className="min-w-[12rem] flex-1 rounded-lg bg-paper/10 p-2 text-sm"
+                placeholder="Search transcript or output"
+                value={historyQuery}
+                onChange={(e) => setHistoryQuery(e.target.value)}
+              />
+              <select
+                className="rounded-lg bg-paper/10 p-2 text-sm"
+                value={historyApp}
+                onChange={(e) => setHistoryApp(e.target.value)}
+              >
+                <option value="">All apps</option>
+                {[...new Set(history.map((item) => item.application).filter(Boolean))].map(
+                  (app) => (
+                    <option key={app} value={app}>
+                      {app}
+                    </option>
+                  ),
+                )}
+              </select>
+              <select
+                className="rounded-lg bg-paper/10 p-2 text-sm"
+                value={historyRange}
+                onChange={(e) => setHistoryRange(e.target.value as "all" | "today" | "7d")}
+              >
+                <option value="all">All dates</option>
+                <option value="today">Today</option>
+                <option value="7d">Last 7 days</option>
+              </select>
+            </div>
             {["today", "earlier"].map((bucket) => {
-              const items = history.filter((item) =>
+              const filtered = history.filter((item) => {
+                const q = historyQuery.trim().toLowerCase();
+                if (
+                  q &&
+                  !`${item.transcript} ${item.output} ${item.application}`.toLowerCase().includes(q)
+                ) {
+                  return false;
+                }
+                if (historyApp && item.application !== historyApp) {
+                  return false;
+                }
+                if (historyRange === "today" && !isToday(item.created_at)) {
+                  return false;
+                }
+                if (historyRange === "7d" && !daysAgo(item.created_at, 7)) {
+                  return false;
+                }
+                return true;
+              });
+              const items = filtered.filter((item) =>
                 bucket === "today" ? isToday(item.created_at) : !isToday(item.created_at),
               );
               if (items.length === 0) {

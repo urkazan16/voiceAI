@@ -9,6 +9,8 @@ export function Bar() {
     transcript: null,
     raw_transcript: null,
     duration_ms: 0,
+    rms: 0,
+    wpm: null,
   });
 
   useEffect(() => {
@@ -27,6 +29,8 @@ export function Bar() {
   const preview = state.transcript ?? state.message;
   const recording = state.phase === "recording" || state.phase === "pressed";
   const busy = recording || state.phase === "processing";
+  const rms = state.rms ?? 0;
+  const failed = state.insert_ok === false && (state.transcript || state.phase === "error");
 
   return (
     <div
@@ -37,25 +41,30 @@ export function Bar() {
         <p className="text-xs uppercase tracking-[0.2em] text-copper">
           {recording ? "Listening" : state.phase}
         </p>
-        <span className={`h-3 w-3 rounded-full bg-copper ${recording ? "animate-pulse" : ""}`} />
+        <span className="flex items-center gap-2">
+          {state.wpm ? (
+            <span className="text-[10px] tabular-nums text-paper/60">{state.wpm.toFixed(0)} wpm</span>
+          ) : null}
+          <span className={`h-3 w-3 rounded-full bg-copper ${recording ? "animate-pulse" : ""}`} />
+        </span>
       </div>
       {recording && (
         <div className="flex h-8 items-end gap-1">
-          {[0, 1, 2, 3, 4, 5, 6].map((bar) => (
-            <span
-              key={bar}
-              className="w-1.5 rounded-full bg-copper/90"
-              style={{
-                height: `${10 + ((bar * 13) % 22)}px`,
-                animation: `pulse ${0.4 + (bar % 3) * 0.12}s ease-in-out infinite alternate`,
-              }}
-            />
-          ))}
+          {[0, 1, 2, 3, 4, 5, 6].map((bar) => {
+            const height = Math.max(4, Math.min(28, rms * (90 + bar * 18)));
+            return (
+              <span
+                key={bar}
+                className="w-1.5 rounded-full bg-copper/90"
+                style={{ height: `${height}px` }}
+              />
+            );
+          })}
         </div>
       )}
       <p className="line-clamp-3 text-sm text-paper/85">{preview}</p>
       <div className="flex justify-end gap-2">
-        {state.insert_ok === false && (state.transcript || state.phase === "error") && (
+        {failed && (
           <>
             <button
               className="rounded-full border border-paper/30 px-3 py-1 text-xs"
@@ -68,6 +77,15 @@ export function Bar() {
               onClick={() => void api.pasteLastTranscript()}
             >
               Paste last
+            </button>
+            <button
+              className="rounded-full border border-paper/30 px-3 py-1 text-xs"
+              onClick={() => {
+                void api.clearLastTranscript();
+                void api.dictationCancel();
+              }}
+            >
+              Dismiss
             </button>
           </>
         )}

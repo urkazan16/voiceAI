@@ -7,7 +7,7 @@ use crate::profiles::Profile;
 use crate::snippets::SnippetBook;
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct AppSettings {
     pub hotkey: String,
@@ -36,6 +36,10 @@ pub struct AppSettings {
     pub autostart: bool,
     #[serde(default = "default_true")]
     pub history_enabled: bool,
+    #[serde(default = "default_vad")]
+    pub vad_threshold: f32,
+    #[serde(default = "default_history_max")]
+    pub history_max_items: u32,
 }
 
 fn default_true() -> bool {
@@ -52,6 +56,24 @@ fn default_postprocess_timeout() -> u64 {
 
 fn default_log_max() -> u64 {
     2 * 1024 * 1024
+}
+
+fn default_history_max() -> u32 {
+    500
+}
+
+fn default_vad() -> f32 {
+    crate::vad::default_threshold()
+}
+
+impl AppSettings {
+    pub fn normalize(&mut self) {
+        self.vad_threshold = crate::vad::clamp_threshold(self.vad_threshold);
+        self.history_max_items = self.history_max_items.clamp(50, 10_000);
+        if self.history_max_items == 0 {
+            self.history_max_items = default_history_max();
+        }
+    }
 }
 
 impl Default for AppSettings {
@@ -77,11 +99,13 @@ impl Default for AppSettings {
             log_max_bytes: default_log_max(),
             autostart: false,
             history_enabled: true,
+            vad_threshold: default_vad(),
+            history_max_items: default_history_max(),
         }
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ExportedConfig {
     pub version: u32,
     pub settings: AppSettings,

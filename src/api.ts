@@ -47,6 +47,8 @@ export interface AppSettings {
   log_max_bytes: number;
   autostart: boolean;
   history_enabled: boolean;
+  vad_threshold: number;
+  history_max_items: number;
 }
 
 export interface ModelRecord {
@@ -194,6 +196,8 @@ export interface DictationState {
   raw_transcript: string | null;
   duration_ms: number;
   insert_ok?: boolean;
+  rms?: number;
+  wpm?: number | null;
 }
 
 export interface PermissionStatus {

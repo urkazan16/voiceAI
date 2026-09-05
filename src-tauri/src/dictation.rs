@@ -6,7 +6,7 @@ use crate::llm::NativeLlm;
 use crate::pipeline::PipelineState;
 use crate::stt::{NativeStt, SpeechToText};
 use serde::Serialize;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::mpsc::{self, Sender};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
@@ -18,6 +18,8 @@ static WORKER: OnceLock<Sender<DictationCmd>> = OnceLock::new();
 static BOUND_HOTKEYS: Mutex<(String, String, String)> =
     Mutex::new((String::new(), String::new(), String::new()));
 static MICROPHONE: Mutex<Option<String>> = Mutex::new(None);
+static VAD_BITS: AtomicU32 = AtomicU32::new(0);
+static LAST_RMS_BITS: AtomicU32 = AtomicU32::new(0);
 
 /// Holds shorter than this are discarded. A 320 ms tap used to enter hands-free
 /// and leave the microphone open.
@@ -65,6 +67,27 @@ pub fn remember_microphone(name: Option<String>) {
     if let Ok(mut slot) = MICROPHONE.lock() {
         *slot = name;
     }
+}
+
+pub fn remember_vad(threshold: f32) {
+    VAD_BITS.store(crate::vad::clamp_threshold(threshold).to_bits(), Ordering::Relaxed);
+}
+
+fn cached_vad() -> f32 {
+    let bits = VAD_BITS.load(Ordering::Relaxed);
+    if bits == 0 {
+        crate::vad::default_threshold()
+    } else {
+        f32::from_bits(bits)
+    }
+}
+
+fn cached_rms() -> f32 {
+    f32::from_bits(LAST_RMS_BITS.load(Ordering::Relaxed))
+}
+
+fn remember_rms(rms: f32) {
+    LAST_RMS_BITS.store(rms.to_bits(), Ordering::Relaxed);
 }
 
 fn cached_microphone() -> Option<String> {
@@ -137,6 +160,10 @@ pub struct DictationState {
     pub raw_transcript: Option<String>,
     pub duration_ms: u64,
     pub insert_ok: bool,
+    #[serde(default)]
+    pub rms: f32,
+    #[serde(default)]
+    pub wpm: Option<f64>,
 }
 
 fn dictation_state(
@@ -154,6 +181,8 @@ fn dictation_state(
         raw_transcript,
         duration_ms,
         insert_ok,
+        rms: 0.0,
+        wpm: None,
     }
 }
 
@@ -180,6 +209,8 @@ pub fn notify_hotkey(app: &AppHandle, edge: &str) {
             raw_transcript: None,
             duration_ms: 0,
             insert_ok: true,
+            rms: 0.0,
+            wpm: None,
         },
     );
 }
@@ -240,6 +271,8 @@ pub fn on_hotkey_pressed(app: &AppHandle, engine: &SharedEngine, capture: &Share
                 raw_transcript: None,
                 duration_ms: 0,
                 insert_ok: true,
+                rms: 0.0,
+                wpm: None,
             },
         );
         return;
@@ -264,6 +297,7 @@ pub fn on_hotkey_pressed(app: &AppHandle, engine: &SharedEngine, capture: &Share
     let mic = match engine.try_lock() {
         Ok(mut eng) => {
             remember_microphone(eng.settings.microphone_name.clone());
+            remember_vad(eng.settings.vad_threshold);
             eng.snapshot.reset();
             let _ = eng.snapshot.transition(PipelineState::Recording);
             eng.settings.microphone_name.clone()
@@ -290,6 +324,7 @@ pub fn on_hotkey_pressed(app: &AppHandle, engine: &SharedEngine, capture: &Share
             }
             show_bar(app, engine);
             spawn_streaming_preview(app, engine, capture);
+            spawn_level_meter(app, capture);
             emit_state(
                 app,
                 DictationState {
@@ -299,6 +334,8 @@ pub fn on_hotkey_pressed(app: &AppHandle, engine: &SharedEngine, capture: &Share
                     raw_transcript: None,
                     duration_ms: 0,
                     insert_ok: true,
+                    rms: 0.0,
+                    wpm: None,
                 },
             );
         }
@@ -315,6 +352,8 @@ pub fn on_hotkey_pressed(app: &AppHandle, engine: &SharedEngine, capture: &Share
                     raw_transcript: last_raw(engine),
                     duration_ms: 0,
                     insert_ok: true,
+                    rms: 0.0,
+                    wpm: None,
                 },
             );
         }
@@ -356,11 +395,65 @@ pub fn cancel(app: &AppHandle, engine: &SharedEngine, capture: &SharedCapture) {
             raw_transcript: last_raw(engine),
             duration_ms: 0,
             insert_ok: true,
+            rms: 0.0,
+            wpm: None,
         },
     );
     if let Some(window) = app.get_webview_window("bar") {
         let _ = window.hide();
     }
+}
+
+fn spawn_level_meter(app: &AppHandle, capture: &SharedCapture) {
+    let app = app.clone();
+    let capture = capture.clone();
+    std::thread::spawn(move || loop {
+        std::thread::sleep(Duration::from_millis(80));
+        if !capture.is_recording() || CANCEL.load(Ordering::Relaxed) {
+            remember_rms(0.0);
+            break;
+        }
+        let Some(peeked) = capture.peek() else {
+            continue;
+        };
+        let pcm = audio::to_whisper_pcm(&peeked);
+        let window = if pcm.len() > 1_600 {
+            &pcm[pcm.len() - 1_600..]
+        } else {
+            pcm.as_slice()
+        };
+        let rms = crate::vad::rms(window);
+        remember_rms(rms);
+        let held = PRESS_AT
+            .lock()
+            .ok()
+            .and_then(|g| *g)
+            .map(|t| t.elapsed())
+            .unwrap_or_default();
+        let quiet = rms < cached_vad() * 0.45;
+        let warn = held > Duration::from_millis(700) && quiet;
+        let partial = crate::whisper_stt::last_partial();
+        let message = if warn {
+            "No mic signal — check the input device.".into()
+        } else {
+            partial
+                .clone()
+                .unwrap_or_else(|| "Listening…".into())
+        };
+        emit_state(
+            &app,
+            DictationState {
+                phase: "recording".into(),
+                message,
+                transcript: partial,
+                raw_transcript: None,
+                duration_ms: audio::duration_ms(&peeked),
+                insert_ok: true,
+                rms,
+                wpm: None,
+            },
+        );
+    });
 }
 
 fn spawn_streaming_preview(app: &AppHandle, engine: &SharedEngine, capture: &SharedCapture) {
@@ -400,6 +493,8 @@ fn spawn_streaming_preview(app: &AppHandle, engine: &SharedEngine, capture: &Sha
                     raw_transcript: None,
                     duration_ms: audio::duration_ms(&peeked),
                     insert_ok: true,
+                    rms: cached_rms(),
+                    wpm: None,
                 },
             );
         }
@@ -423,6 +518,8 @@ fn discard_short_hold(app: &AppHandle, engine: &SharedEngine, capture: &SharedCa
             raw_transcript: last_raw(engine),
             duration_ms: 0,
             insert_ok: true,
+            rms: 0.0,
+            wpm: None,
         },
     );
     if let Some(window) = app.get_webview_window("bar") {
@@ -452,6 +549,8 @@ fn finish_recording(app: &AppHandle, engine: &SharedEngine, capture: &SharedCapt
             raw_transcript: None,
             duration_ms: 0,
             insert_ok: true,
+            rms: 0.0,
+            wpm: None,
         },
     );
     let app = app.clone();
@@ -463,7 +562,11 @@ fn finish_recording(app: &AppHandle, engine: &SharedEngine, capture: &SharedCapt
             return;
         }
         let duration_ms = audio::duration_ms(&captured);
-        let mut pcm = crate::vad::trim_silence(&audio::to_whisper_pcm(&captured), 16_000);
+        let mut pcm = crate::vad::trim_silence_at(
+            &audio::to_whisper_pcm(&captured),
+            16_000,
+            cached_vad(),
+        );
         // Keep the onset so the first phoneme/letter is not trimmed away.
         let mut onset = vec![0.0; 2_400];
         onset.append(&mut pcm);
@@ -573,6 +676,8 @@ fn finish_recording(app: &AppHandle, engine: &SharedEngine, capture: &SharedCapt
                 }
                 let inserted = output.insert_ok;
                 let empty = output.final_text.is_empty();
+                let words = crate::uttlog::word_count(&output.final_text);
+                let wpm = crate::uttlog::wpm(words, duration_ms);
                 emit_state(
                     &app,
                     DictationState {
@@ -601,6 +706,8 @@ fn finish_recording(app: &AppHandle, engine: &SharedEngine, capture: &SharedCapt
                         raw_transcript: Some(output.raw_transcript),
                         duration_ms,
                         insert_ok: inserted,
+                        rms: 0.0,
+                        wpm: if wpm > 0.0 { Some(wpm) } else { None },
                     },
                 );
                 if inserted || empty {
@@ -627,6 +734,8 @@ fn emit_cancelled(app: &AppHandle, engine: &SharedEngine) {
             raw_transcript: last_raw(engine),
             duration_ms: 0,
             insert_ok: true,
+            rms: 0.0,
+            wpm: None,
         },
     );
     if let Some(window) = app.get_webview_window("bar") {

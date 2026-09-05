@@ -65,6 +65,8 @@ impl AppEngine {
             settings_mtime: None,
         };
         engine.load_persisted();
+        crate::injection::set_clipboard_backup_path(engine.paths.clipboard_backup());
+        crate::injection::restore_orphaned_clipboard();
         engine.dictionary.ensure_builtins();
         engine.snippets.ensure_defaults();
         if engine.profiles.iter().all(|p| p.apps.is_empty()) {
@@ -106,6 +108,7 @@ impl AppEngine {
             Ok(text) => match serde_json::from_str::<AppSettings>(&text) {
                 Ok(settings) => {
                     self.settings = settings;
+                    self.settings.normalize();
                     self.settings_mtime = mtime;
                     crate::journal::set_max_bytes(self.settings.log_max_bytes);
                 }
@@ -166,6 +169,7 @@ impl AppEngine {
         self.snippets = cfg.snippets;
         self.settings.active_stt_model = cfg.models.active_stt_model;
         self.settings.active_llm_model = cfg.models.active_llm_model;
+        self.settings.normalize();
     }
 
     pub fn export_json(&self) -> LfResult<String> {
@@ -239,7 +243,7 @@ impl AppEngine {
     }
 
     pub fn process_captured_audio(&mut self, pcm_16k: &[f32]) -> LfResult<PipelineOutput> {
-        let pcm = crate::vad::trim_silence(pcm_16k, 16_000);
+        let pcm = crate::vad::trim_silence_at(pcm_16k, 16_000, self.settings.vad_threshold);
         self.run_text_pipeline(
             "",
             &NativeStt,
@@ -414,6 +418,7 @@ impl AppEngine {
         };
         if self.settings.history_enabled {
             self.store.insert_history(&item)?;
+            let _ = self.store.prune_history(self.settings.history_max_items);
             let _ = crate::uttlog::append(
                 &self.paths,
                 crate::uttlog::UtteranceLine {
