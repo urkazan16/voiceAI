@@ -1,10 +1,18 @@
 # Testing
 
-| Command            | Coverage                                       |
-| ------------------ | ---------------------------------------------- |
-| `npm test`         | Frontend unit, Rust lib, integration           |
-| `npm run test:all` | Adds UI, pipeline, dictionary, personalization |
-| `npm run test:ai`  | AI catalog / future inference bench            |
+| Command               | Coverage                                                             |
+| --------------------- | -------------------------------------------------------------------- |
+| `npm test`            | Frontend unit, Rust lib, integration                                 |
+| `npm run test:all`    | Adds UI, pipeline, dictionary, personalization                       |
+| `npm run test:ai`     | AI catalog / future inference bench                                  |
+| `npm run check:local` | Offline checker: WER identity + VAD at SNR 15 dB (`localflow check`) |
+
+CLI (no GUI):
+
+```bash
+cargo run --manifest-path src-tauri/Cargo.toml -- check
+cargo run --manifest-path src-tauri/Cargo.toml -- transcribe --json --language ru file.wav
+```
 
 Corpus lives in `tests/corpus/` with `expected.json` per domain. Audio fixtures are tiny and synthetic; large recordings are not stored in git.
 

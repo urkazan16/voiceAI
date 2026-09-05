@@ -136,6 +136,25 @@ pub struct DictationState {
     pub transcript: Option<String>,
     pub raw_transcript: Option<String>,
     pub duration_ms: u64,
+    pub insert_ok: bool,
+}
+
+fn dictation_state(
+    phase: &str,
+    message: impl Into<String>,
+    transcript: Option<String>,
+    raw_transcript: Option<String>,
+    duration_ms: u64,
+    insert_ok: bool,
+) -> DictationState {
+    DictationState {
+        phase: phase.into(),
+        message: message.into(),
+        transcript,
+        raw_transcript,
+        duration_ms,
+        insert_ok,
+    }
 }
 
 pub fn emit_state(app: &AppHandle, state: DictationState) {
@@ -160,6 +179,7 @@ pub fn notify_hotkey(app: &AppHandle, edge: &str) {
             transcript: None,
             raw_transcript: None,
             duration_ms: 0,
+            insert_ok: true,
         },
     );
 }
@@ -210,6 +230,20 @@ pub fn hide_bar_later(app: &AppHandle) {
 }
 
 pub fn on_hotkey_pressed(app: &AppHandle, engine: &SharedEngine, capture: &SharedCapture) {
+    if crate::screenlock::screen_is_locked() {
+        emit_state(
+            app,
+            DictationState {
+                phase: "error".into(),
+                message: "Screen is locked. Unlock to dictate.".into(),
+                transcript: None,
+                raw_transcript: None,
+                duration_ms: 0,
+                insert_ok: true,
+            },
+        );
+        return;
+    }
     if capture.is_recording() {
         let too_soon = PRESS_AT
             .lock()
@@ -255,6 +289,7 @@ pub fn on_hotkey_pressed(app: &AppHandle, engine: &SharedEngine, capture: &Share
                 crate::cues::play_start();
             }
             show_bar(app, engine);
+            spawn_streaming_preview(app, engine, capture);
             emit_state(
                 app,
                 DictationState {
@@ -263,6 +298,7 @@ pub fn on_hotkey_pressed(app: &AppHandle, engine: &SharedEngine, capture: &Share
                     transcript: None,
                     raw_transcript: None,
                     duration_ms: 0,
+                    insert_ok: true,
                 },
             );
         }
@@ -274,10 +310,11 @@ pub fn on_hotkey_pressed(app: &AppHandle, engine: &SharedEngine, capture: &Share
                 app,
                 DictationState {
                     phase: "error".into(),
-                    message: err.to_string(),
+                    message: crate::error::user_guidance(&err),
                     transcript: last_processed(engine),
                     raw_transcript: last_raw(engine),
                     duration_ms: 0,
+                    insert_ok: true,
                 },
             );
         }
@@ -318,11 +355,55 @@ pub fn cancel(app: &AppHandle, engine: &SharedEngine, capture: &SharedCapture) {
             transcript: last_processed(engine),
             raw_transcript: last_raw(engine),
             duration_ms: 0,
+            insert_ok: true,
         },
     );
     if let Some(window) = app.get_webview_window("bar") {
         let _ = window.hide();
     }
+}
+
+fn spawn_streaming_preview(app: &AppHandle, engine: &SharedEngine, capture: &SharedCapture) {
+    crate::whisper_stt::allow_partial();
+    let app = app.clone();
+    let engine = engine.clone();
+    let capture = capture.clone();
+    std::thread::spawn(move || loop {
+        std::thread::sleep(Duration::from_millis(1100));
+        if !capture.is_recording() || CANCEL.load(Ordering::Relaxed) {
+            break;
+        }
+        let Some(peeked) = capture.peek() else {
+            continue;
+        };
+        let pcm = audio::to_whisper_pcm(&peeked);
+        if pcm.len() < 16_000 {
+            continue;
+        }
+        let (path, lang) = match engine.try_lock() {
+            Ok(eng) => (
+                eng.ready_model_path("stt"),
+                eng.settings.stt_language.clone(),
+            ),
+            Err(_) => continue,
+        };
+        if let Some(path) = path {
+            crate::whisper_stt::try_partial(&path, &pcm, &lang);
+        }
+        if let Some(text) = crate::whisper_stt::last_partial() {
+            emit_state(
+                &app,
+                DictationState {
+                    phase: "recording".into(),
+                    message: text.clone(),
+                    transcript: Some(text),
+                    raw_transcript: None,
+                    duration_ms: audio::duration_ms(&peeked),
+                    insert_ok: true,
+                },
+            );
+        }
+    });
 }
 
 fn discard_short_hold(app: &AppHandle, engine: &SharedEngine, capture: &SharedCapture) {
@@ -341,6 +422,7 @@ fn discard_short_hold(app: &AppHandle, engine: &SharedEngine, capture: &SharedCa
             transcript: last_processed(engine),
             raw_transcript: last_raw(engine),
             duration_ms: 0,
+            insert_ok: true,
         },
     );
     if let Some(window) = app.get_webview_window("bar") {
@@ -369,6 +451,7 @@ fn finish_recording(app: &AppHandle, engine: &SharedEngine, capture: &SharedCapt
             transcript: None,
             raw_transcript: None,
             duration_ms: 0,
+            insert_ok: true,
         },
     );
     let app = app.clone();
@@ -409,10 +492,16 @@ fn finish_recording(app: &AppHandle, engine: &SharedEngine, capture: &SharedCapt
                 return;
             }
         };
+        let whisper_ready = stt_path.is_some();
         let raw = match NativeStt.transcribe(&pcm, stt_path.as_deref(), &lang) {
             Ok(text) => crate::sanitize::strip_model_tags(&text),
             Err(err) => {
-                fail(&app, &engine, &err.to_string(), duration_ms);
+                fail(
+                    &app,
+                    &engine,
+                    &crate::error::user_guidance(&err),
+                    duration_ms,
+                );
                 return;
             }
         };
@@ -483,6 +572,7 @@ fn finish_recording(app: &AppHandle, engine: &SharedEngine, capture: &SharedCapt
                     let _ = eng.store.put_kv("stats_recordings", &(n + 1).to_string());
                 }
                 let inserted = output.insert_ok;
+                let empty = output.final_text.is_empty();
                 emit_state(
                     &app,
                     DictationState {
@@ -491,10 +581,16 @@ fn finish_recording(app: &AppHandle, engine: &SharedEngine, capture: &SharedCapt
                         } else {
                             "error".into()
                         },
-                        message: if output.final_text.is_empty() {
+                        message: if empty {
                             format!("Processed {duration_ms} ms of audio. No text to insert.")
                         } else if inserted {
-                            format!("Inserted: {}", output.final_text)
+                            let mut msg = format!("Inserted: {}", output.final_text);
+                            if !whisper_ready {
+                                msg.push_str(
+                                    " · Whisper is not installed — download it in Models for offline dictation.",
+                                );
+                            }
+                            msg
                         } else {
                             format!(
                                 "Text ready but insert failed. Copy from Last Transcript: {}",
@@ -504,11 +600,19 @@ fn finish_recording(app: &AppHandle, engine: &SharedEngine, capture: &SharedCapt
                         transcript: Some(output.final_text),
                         raw_transcript: Some(output.raw_transcript),
                         duration_ms,
+                        insert_ok: inserted,
                     },
                 );
-                hide_bar_later(&app);
+                if inserted || empty {
+                    hide_bar_later(&app);
+                }
             }
-            Err(err) => fail(&app, &engine, &err.to_string(), duration_ms),
+            Err(err) => fail(
+                &app,
+                &engine,
+                &crate::error::user_guidance(&err),
+                duration_ms,
+            ),
         }
     });
 }
@@ -522,6 +626,7 @@ fn emit_cancelled(app: &AppHandle, engine: &SharedEngine) {
             transcript: last_processed(engine),
             raw_transcript: last_raw(engine),
             duration_ms: 0,
+            insert_ok: true,
         },
     );
     if let Some(window) = app.get_webview_window("bar") {
@@ -535,13 +640,14 @@ fn fail(app: &AppHandle, engine: &SharedEngine, message: &str, duration_ms: u64)
     }
     emit_state(
         app,
-        DictationState {
-            phase: "error".into(),
-            message: message.to_string(),
-            transcript: last_processed(engine),
-            raw_transcript: last_raw(engine),
+        dictation_state(
+            "error",
+            message.to_string(),
+            last_processed(engine),
+            last_raw(engine),
             duration_ms,
-        },
+            false,
+        ),
     );
     hide_bar_later(app);
 }

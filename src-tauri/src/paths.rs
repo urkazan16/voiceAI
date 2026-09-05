@@ -72,6 +72,10 @@ impl DataPaths {
         self.config_dir().join("settings.json")
     }
 
+    pub fn utterances(&self) -> PathBuf {
+        self.logs().join("utterances.jsonl")
+    }
+
     pub fn model_file(&self, kind: &str, filename: &str) -> PathBuf {
         match kind {
             "llm" => self.models_llm().join(filename),

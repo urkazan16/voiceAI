@@ -45,6 +45,8 @@ export interface AppSettings {
   postprocess_timeout_ms: number;
   sound_cues: boolean;
   log_max_bytes: number;
+  autostart: boolean;
+  history_enabled: boolean;
 }
 
 export interface ModelRecord {
@@ -191,6 +193,27 @@ export interface DictationState {
   transcript: string | null;
   raw_transcript: string | null;
   duration_ms: number;
+  insert_ok?: boolean;
+}
+
+export interface PermissionStatus {
+  microphone_device_count: number;
+  accessibility_trusted: boolean;
+}
+
+export interface AudioDevice {
+  name: string;
+  is_default: boolean;
+}
+
+export interface StatsSnapshot {
+  recordings: number;
+  words_today: number;
+  words_total: number;
+  wpm_avg_today: number;
+  wpm_avg_all: number;
+  wpm_best: number;
+  last_wpm: number;
 }
 
 export interface HotkeyStatus {
@@ -253,6 +276,7 @@ export const api = {
   getSettings: () => call<AppSettings>("get_settings"),
   saveSettings: (settings: AppSettings) => call<void>("save_settings", { settings }),
   listModels: () => call<ModelRecord[]>("list_models"),
+  listMicrophones: () => call<AudioDevice[]>("list_microphones"),
   listDictionary: () => call<DictionaryEntry[]>("list_dictionary"),
   upsertDictionary: (entry: DictionaryEntry) => call<void>("upsert_dictionary_entry", { entry }),
   removeDictionary: (id: string) => call<void>("remove_dictionary_entry", { id }),
@@ -297,12 +321,17 @@ export const api = {
   listModelStatus: () => call<ModelInstallStatus[]>("list_model_status"),
   setActiveModel: (modelId: string) => call<string>("set_active_model", { modelId }),
   getHotkeyStatus: () => call<HotkeyStatus>("get_hotkey_status"),
-  getStats: () => call<{ recordings: number }>("get_stats"),
+  getStats: () => call<StatsSnapshot>("get_stats"),
   resetStats: () => call<void>("reset_stats"),
+  exportStatsCsv: () => call<string>("export_stats_csv"),
+  isScreenLocked: () => call<boolean>("is_screen_locked"),
   exportHistoryTimecodes: () => call<string>("export_history_timecodes"),
   uninstallLocalflow: (keepHistory: boolean) =>
     call<{ kept_history: boolean; removed: string[]; skipped: string[] }>("uninstall_localflow", {
       keepHistory,
     }),
   installDictateMacro: () => call<string>("install_dictate_macro"),
+  permissionStatus: () => call<PermissionStatus>("permission_status"),
+  openPrivacyPane: (kind: "microphone" | "accessibility" | "speech") =>
+    call<void>("open_privacy_pane", { kind }),
 };

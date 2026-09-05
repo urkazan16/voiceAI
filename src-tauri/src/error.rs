@@ -79,6 +79,31 @@ pub fn path_buf_error(path: PathBuf) -> String {
     path.display().to_string()
 }
 
+/// What to show in the bar / Settings instead of a raw error code.
+pub fn user_guidance(err: &LfError) -> String {
+    match err {
+        LfError::ModelMissing(_) | LfError::ModelFormatInvalid(_) | LfError::ModelNotPinned(_) => {
+            "No usable Whisper model. Open Models, download Whisper Medium (or Small), then Set as active.".into()
+        }
+        LfError::ModelChecksumMismatch { .. } => {
+            "Model file is corrupted or incomplete. Delete it in Models and download again.".into()
+        }
+        LfError::PermissionDenied(msg) if msg.to_lowercase().contains("accessib") => {
+            "macOS blocked paste. System Settings → Privacy & Security → Accessibility → enable LocalFlow, then Paste last.".into()
+        }
+        LfError::PermissionDenied(msg) if msg.to_lowercase().contains("speech") => {
+            "Speech Recognition is off, and Whisper is not installed. Enable Speech Recognition or download Whisper in Models.".into()
+        }
+        LfError::PermissionDenied(_) | LfError::DeviceUnavailable(_) => {
+            "Microphone is unavailable. System Settings → Privacy & Security → Microphone → LocalFlow, then pick the device in Settings.".into()
+        }
+        LfError::InjectionFailed(_) => {
+            "Text is ready but could not paste into the other app. Use Copy last / Paste last, and enable Accessibility if paste still fails.".into()
+        }
+        other => other.to_string(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -122,5 +147,12 @@ mod tests {
     #[test]
     fn path_buf_error_keeps_display() {
         assert!(path_buf_error(PathBuf::from("/tmp/model.bin")).contains("model.bin"));
+    }
+
+    #[test]
+    fn user_guidance_sends_missing_model_to_manager() {
+        let text = user_guidance(&LfError::ModelMissing("whisper-small".into()));
+        assert!(text.contains("Models"));
+        assert!(text.contains("Whisper"));
     }
 }

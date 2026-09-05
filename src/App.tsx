@@ -4,6 +4,7 @@ import {
   bundledCatalog,
   isTauriRuntime,
   type AppSettings,
+  type AudioDevice,
   type BuildInfo,
   type DictationState,
   type DictionaryEntry,
@@ -12,11 +13,13 @@ import {
   type Profile,
   type ResolvedContext,
   type Snippet,
+  type StatsSnapshot,
   type ModelDownloadProgress,
   type ModelInstallStatus,
   type ModelRecord,
   type PipelineOutput,
   type PrivacySummary,
+  type PermissionStatus,
   type ViewId,
 } from "./api";
 import { formatBytes, NAV } from "./ui";
@@ -41,6 +44,8 @@ const fallbackSettings = (): AppSettings => ({
   postprocess_timeout_ms: 45000,
   sound_cues: true,
   log_max_bytes: 2097152,
+  autostart: false,
+  history_enabled: true,
 });
 
 function isToday(iso: string): boolean {
@@ -85,6 +90,9 @@ export function App() {
   const [downloadProgress, setDownloadProgress] = useState<Record<string, ModelDownloadProgress>>(
     {},
   );
+  const [microphones, setMicrophones] = useState<AudioDevice[]>([]);
+  const [stats, setStats] = useState<StatsSnapshot | null>(null);
+  const [permissions, setPermissions] = useState<PermissionStatus | null>(null);
 
   async function refresh() {
     try {
@@ -105,7 +113,7 @@ export function App() {
         api.getSettings(),
         api.listModels(),
         api.listDictionary(),
-        api.listHistory(),
+        api.listHistory().catch(() => [] as HistoryItem[]),
         api.getBuildInfo(),
         api.privacySummary(),
         api.getHotkeyStatus(),
@@ -126,6 +134,13 @@ export function App() {
       setSuggestions(nextSuggestions);
       setBuild(nextBuild);
       setPrivacy(nextPrivacy);
+      try {
+        setMicrophones(await api.listMicrophones());
+        setStats(await api.getStats());
+        setPermissions(await api.permissionStatus());
+      } catch {
+        /* preview */
+      }
       if (hotkey.registered) {
         setStatus(
           `Hold ${hotkey.registered.replace("Control", "Ctrl").replace("Command", "⌘")}, speak, release.`,
@@ -226,6 +241,10 @@ export function App() {
   }
 
   if (view === "onboarding") {
+    const sttReady = modelStatus.some((item) => {
+      const record = models.find((model) => model.model_id === item.model_id);
+      return record?.kind === "stt" && item.active && item.verified;
+    });
     return (
       <div className="min-h-screen bg-ink px-10 py-12 text-paper">
         <p className="text-copper tracking-[0.3em] text-xs uppercase">LocalFlow</p>
@@ -233,13 +252,53 @@ export function App() {
           Speak. Release. Insert — entirely on this Mac.
         </h1>
         <ol className="mt-8 max-w-xl space-y-3 text-lg text-paper/80">
-          <li>1. Grant Microphone and Accessibility permissions.</li>
-          <li>2. Download Whisper and Qwen models in Model Manager (network, user-initiated).</li>
-          <li>
-            3. Hold Control+Shift+Space, talk, release to process the recording. Typed Process
-            locally still works without models.
-          </li>
+          <li>1. Allow Microphone and Accessibility (paste into other apps).</li>
+          <li>2. Download Whisper in Models, then Set as active.</li>
+          <li>3. Hold Control+Shift+Space over a text field, talk, release.</li>
         </ol>
+        <div className="mt-8 flex flex-wrap gap-3">
+          <button
+            className="rounded-full border border-paper/30 px-4 py-2"
+            onClick={() => void api.openPrivacyPane("microphone")}
+          >
+            Open Microphone settings
+          </button>
+          <button
+            className="rounded-full border border-paper/30 px-4 py-2"
+            onClick={() => void api.openPrivacyPane("accessibility")}
+          >
+            Open Accessibility settings
+          </button>
+        </div>
+        <label className="mt-8 block max-w-xl text-sm text-paper/70">
+          Microphone
+          <select
+            className="mt-1 w-full rounded-lg bg-paper/10 p-2 text-paper"
+            value={settings.microphone_name ?? ""}
+            onChange={(e) =>
+              void save({
+                ...settings,
+                microphone_name: e.target.value === "" ? null : e.target.value,
+              })
+            }
+          >
+            <option value="">System default</option>
+            {microphones.map((device) => (
+              <option key={device.name} value={device.name}>
+                {device.name}
+                {device.is_default ? " (OS default)" : ""}
+              </option>
+            ))}
+          </select>
+        </label>
+        <p className="mt-3 max-w-xl text-sm text-paper/50">
+          {sttReady
+            ? "Whisper is installed and active."
+            : "No verified Whisper model yet. Continue, then open Models — dictation will prompt you."}
+          {permissions
+            ? ` Accessibility: ${permissions.accessibility_trusted ? "trusted" : "not trusted yet"}.`
+            : ""}
+        </p>
         <button
           className="mt-10 rounded-full bg-copper px-6 py-3 text-ink"
           onClick={async () => {
@@ -286,6 +345,24 @@ export function App() {
         {view === "home" && (
           <section>
             <h1 className="text-4xl">Dictation pipeline</h1>
+            {(() => {
+              const sttReady = modelStatus.some((item) => {
+                const record = models.find((model) => model.model_id === item.model_id);
+                return record?.kind === "stt" && item.active && item.verified;
+              });
+              if (sttReady) {
+                return null;
+              }
+              return (
+                <p className="mt-3 rounded-xl border border-copper/40 bg-copper/10 px-4 py-3 text-sm">
+                  Whisper is not ready. Open Models, download Medium or Small, then Set as active.
+                  Until then, dictation may fall back to macOS Speech Recognition.
+                  <button className="ml-3 underline" onClick={() => setView("models")}>
+                    Open Models
+                  </button>
+                </p>
+              );
+            })()}
             {context && (
               <p className="mt-3 rounded-xl bg-paper/5 px-4 py-2 text-sm text-paper/80">
                 Current app: {context.app_name || "—"} / Profile: {context.profile_name} (
@@ -357,8 +434,8 @@ export function App() {
             </label>
             <p className="text-xs text-paper/60">
               Option+Space and Control+Space are often taken by macOS (Spotlight / input source).
-              Check System Settings → Keyboard → Keyboard Shortcuts. After changing the hotkey,
-              restart the app.
+              Check System Settings → Keyboard → Keyboard Shortcuts. Changing the hotkey here
+              re-registers it immediately.
             </p>
             <label className="block text-sm text-paper/70">
               Speech language
@@ -376,6 +453,80 @@ export function App() {
               Russian is more accurate for Russian speech. Auto-detect can slip into Ukrainian or
               English and mangle similar-sounding words.
             </p>
+            <label className="block text-sm text-paper/70">
+              Microphone
+              <select
+                className="mt-1 w-full rounded-lg bg-paper/10 p-2"
+                value={settings.microphone_name ?? ""}
+                onChange={(e) =>
+                  void save({
+                    ...settings,
+                    microphone_name: e.target.value === "" ? null : e.target.value,
+                  })
+                }
+              >
+                <option value="">System default</option>
+                {microphones.map((device) => (
+                  <option key={device.name} value={device.name}>
+                    {device.name}
+                    {device.is_default ? " (OS default)" : ""}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <button
+              className="rounded-full border border-paper/30 px-4 py-2 text-sm"
+              onClick={async () => {
+                try {
+                  setMicrophones(await api.listMicrophones());
+                  setStatus("Microphone list refreshed.");
+                } catch (error) {
+                  setStatus(error instanceof Error ? error.message : String(error));
+                }
+              }}
+            >
+              Refresh devices
+            </button>
+            <div className="flex flex-wrap gap-2">
+              <button
+                className="rounded-full border border-paper/30 px-4 py-2 text-sm"
+                onClick={() => void api.openPrivacyPane("microphone")}
+              >
+                Microphone permission
+              </button>
+              <button
+                className="rounded-full border border-paper/30 px-4 py-2 text-sm"
+                onClick={() => void api.openPrivacyPane("accessibility")}
+              >
+                Accessibility permission
+              </button>
+            </div>
+            {permissions && (
+              <p className="text-xs text-paper/50">
+                {permissions.microphone_device_count} input device
+                {permissions.microphone_device_count === 1 ? "" : "s"} visible. Accessibility{" "}
+                {permissions.accessibility_trusted
+                  ? "is trusted"
+                  : "is not trusted — paste may fail"}
+                .
+              </p>
+            )}
+            <label className="flex items-center gap-2 text-sm">
+              <input
+                type="checkbox"
+                checked={settings.autostart}
+                onChange={(e) => void save({ ...settings, autostart: e.target.checked })}
+              />
+              Launch at login
+            </label>
+            <label className="flex items-center gap-2 text-sm">
+              <input
+                type="checkbox"
+                checked={settings.history_enabled}
+                onChange={(e) => void save({ ...settings, history_enabled: e.target.checked })}
+              />
+              Keep utterance history and JSONL journal
+            </label>
             <label className="block text-sm text-paper/70">
               Fallback mode (used when no app profile matches)
               <select
@@ -1219,6 +1370,35 @@ export function App() {
             <p>Tauri: {build.tauri_version}</p>
             <p>Rust: {build.rustc_version}</p>
             <p>Native runtime: {build.native_runtime}</p>
+            {permissions && (
+              <p>
+                Permissions: mic devices={permissions.microphone_device_count}, accessibility=
+                {String(permissions.accessibility_trusted)}
+              </p>
+            )}
+            {stats && (
+              <div className="mt-4 space-y-1 text-paper/80">
+                <p>
+                  WPM last / best / today avg: {stats.last_wpm.toFixed(0)} /{" "}
+                  {stats.wpm_best.toFixed(0)} / {stats.wpm_avg_today.toFixed(0)}
+                </p>
+                <p>
+                  Words today / all: {stats.words_today} / {stats.words_total}
+                </p>
+                <p>Utterances in journal: {stats.recordings}</p>
+                <button
+                  className="mt-2 rounded-full border border-paper/30 px-4 py-2 font-sans"
+                  onClick={async () => {
+                    const csv = await api.exportStatsCsv();
+                    setConfigText(csv);
+                    setStatus("Statistics CSV copied into the settings export box.");
+                    setView("settings");
+                  }}
+                >
+                  Export stats CSV
+                </button>
+              </div>
+            )}
           </section>
         )}
 
@@ -1236,7 +1416,9 @@ export function App() {
             {privacy.network_operations.map((item) => (
               <p key={item}>{item}</p>
             ))}
-            <p className="text-sm text-paper/70">Audio cache uses a private 0700 folder. Logs rotate by size and never store tokens.</p>
+            <p className="text-sm text-paper/70">
+              Audio cache uses a private 0700 folder. Logs rotate by size and never store tokens.
+            </p>
             <div className="flex flex-wrap gap-3 pt-2">
               <button
                 className="rounded-full border border-paper/30 px-4 py-2"

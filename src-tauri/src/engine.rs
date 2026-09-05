@@ -14,10 +14,10 @@ use crate::pipeline::{PipelineMode, PipelineOutput, PipelineSnapshot, PipelineSt
 use crate::profiles::{self, Profile, ResolvedContext};
 use crate::snippets::SnippetBook;
 use crate::stt::{NativeStt, ScriptedStt, SpeechToText};
-use chrono::Utc;
+use std::fs;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
-use std::time::Instant;
+use std::time::{Instant, SystemTime};
 use uuid::Uuid;
 
 pub struct AppEngine {
@@ -36,6 +36,8 @@ pub struct AppEngine {
     pub insert_target_pid: Option<i32>,
     pub insert_target_app: Option<String>,
     pub session_text: String,
+    pub inject_enabled: bool,
+    settings_mtime: Option<SystemTime>,
 }
 
 impl AppEngine {
@@ -59,6 +61,8 @@ impl AppEngine {
             insert_target_pid: None,
             insert_target_app: None,
             session_text: String::new(),
+            inject_enabled: true,
+            settings_mtime: None,
         };
         engine.load_persisted();
         engine.dictionary.ensure_builtins();
@@ -76,10 +80,56 @@ impl AppEngine {
 
     fn load_persisted(&mut self) {
         if let Ok(Some(json)) = self.store.get_kv("config") {
-            if let Ok(cfg) = import_config(&json, &self.catalog) {
-                self.apply_imported(cfg);
+            match import_config(&json, &self.catalog) {
+                Ok(cfg) => self.apply_imported(cfg),
+                Err(_) => crate::journal::log("config", "sqlite config invalid; using defaults"),
             }
         }
+        self.load_settings_file(true);
+        let _ = self.write_settings_file();
+    }
+
+    pub fn reload_settings_file(&mut self) {
+        self.load_settings_file(false);
+    }
+
+    fn load_settings_file(&mut self, replace_corrupt: bool) {
+        let path = self.paths.settings_file();
+        if !path.exists() {
+            return;
+        }
+        let mtime = fs::metadata(&path).and_then(|m| m.modified()).ok();
+        if !replace_corrupt && mtime == self.settings_mtime {
+            return;
+        }
+        match fs::read_to_string(&path) {
+            Ok(text) => match serde_json::from_str::<AppSettings>(&text) {
+                Ok(settings) => {
+                    self.settings = settings;
+                    self.settings_mtime = mtime;
+                    crate::journal::set_max_bytes(self.settings.log_max_bytes);
+                }
+                Err(err) => {
+                    crate::journal::log("config", &format!("settings.json invalid: {err}"));
+                    if replace_corrupt {
+                        let bak = self.paths.config_dir().join("settings.json.bak");
+                        let _ = fs::copy(&path, bak);
+                        self.settings = AppSettings::default();
+                        let _ = self.write_settings_file();
+                    }
+                }
+            },
+            Err(err) => crate::journal::log("config", &format!("settings.json read: {err}")),
+        }
+    }
+
+    fn write_settings_file(&self) -> LfResult<()> {
+        let path = self.paths.settings_file();
+        if let Some(dir) = path.parent() {
+            fs::create_dir_all(dir)?;
+        }
+        fs::write(&path, serde_json::to_string_pretty(&self.settings)?)?;
+        Ok(())
     }
 
     pub fn resolve_context(&self) -> ResolvedContext {
@@ -104,6 +154,7 @@ impl AppEngine {
         );
         self.store
             .put_kv("config", &serde_json::to_string_pretty(&exported)?)?;
+        self.write_settings_file()?;
         Ok(())
     }
 
@@ -298,7 +349,13 @@ impl AppEngine {
         self.snapshot.transition(PipelineState::Injecting)?;
         let mut insert_ok = true;
         let mut insert_err = None;
-        if !final_text.is_empty() && !crate::dictation::is_cancelled() {
+        let insert_method = if self.inject_enabled {
+            "clipboard"
+        } else {
+            "none"
+        };
+        crate::journal::log("insert", insert_method);
+        if self.inject_enabled && !final_text.is_empty() && !crate::dictation::is_cancelled() {
             if let Err(err) = injector.insert_text(&final_text, self.settings.restore_clipboard) {
                 insert_ok = false;
                 insert_err = Some(err);
@@ -336,22 +393,52 @@ impl AppEngine {
         } else {
             crate::pipeline::cues_to_srt(&cues)
         };
+        let duration_ms = if pcm.is_empty() {
+            0
+        } else {
+            (pcm.len() as u64 * 1000) / 16_000
+        };
+        let words = crate::uttlog::word_count(&final_text);
+        let wpm = crate::uttlog::wpm(words, duration_ms);
         let item = HistoryItem {
             id: Uuid::new_v4().to_string(),
-            created_at: Utc::now().to_rfc3339(),
+            created_at: crate::uttlog::now_rfc3339(),
             mode: format!("{mode:?}").to_lowercase(),
-            transcript: raw,
-            output: final_text,
+            transcript: raw.clone(),
+            output: final_text.clone(),
             application: resolved.app_name.clone(),
             profile: resolved.profile_name.clone(),
             model: self.settings.active_stt_model.clone().unwrap_or_default(),
             processing_time_ms: started.elapsed().as_millis() as u64,
             timecodes,
         };
-        self.store.insert_history(&item)?;
+        if self.settings.history_enabled {
+            self.store.insert_history(&item)?;
+            let _ = crate::uttlog::append(
+                &self.paths,
+                crate::uttlog::UtteranceLine {
+                    schema: 1,
+                    id: item.id.clone(),
+                    ts: item.created_at.clone(),
+                    timezone: crate::uttlog::timezone_name(),
+                    text: final_text,
+                    raw,
+                    application: resolved.app_name.clone(),
+                    profile: resolved.profile_name.clone(),
+                    mode: item.mode.clone(),
+                    model: item.model.clone(),
+                    processing_time_ms: item.processing_time_ms,
+                    duration_ms,
+                    word_count: words,
+                    wpm,
+                    insert_method: insert_method.into(),
+                    insert_ok,
+                },
+            );
+        }
         self.snapshot.transition(PipelineState::Idle)?;
         if let Some(err) = insert_err {
-            return Err(err);
+            crate::journal::log("insert_failed", &err.to_string());
         }
         Ok(output)
     }
@@ -557,5 +644,30 @@ mod tests {
                 .final_text,
             "Привет, как дела?"
         );
+    }
+
+    #[test]
+    fn insert_failure_keeps_transcript_ready() {
+        struct FailInjector;
+        impl TextInjector for FailInjector {
+            fn insert_text(&self, _text: &str, _restore_clipboard: bool) -> LfResult<()> {
+                Err(LfError::InjectionFailed("no paste".into()))
+            }
+        }
+        let (_dir, mut eng) = engine();
+        let out = eng
+            .run_text_pipeline(
+                "привет",
+                &ScriptedStt {
+                    transcript: "привет".into(),
+                },
+                &ScriptedLlm,
+                &FailInjector,
+                &[],
+            )
+            .unwrap();
+        assert_eq!(out.final_text, "Привет.");
+        assert!(!out.insert_ok);
+        assert_eq!(eng.snapshot.state, PipelineState::Idle);
     }
 }

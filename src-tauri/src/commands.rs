@@ -32,7 +32,7 @@ impl From<LfError> for CommandError {
     fn from(value: LfError) -> Self {
         Self {
             code: value.code().to_string(),
-            message: value.to_string(),
+            message: crate::error::user_guidance(&value),
         }
     }
 }
@@ -58,7 +58,9 @@ pub fn get_snapshot(engine: tauri::State<SharedEngine>) -> Result<PipelineSnapsh
 
 #[tauri::command]
 pub fn get_settings(engine: tauri::State<SharedEngine>) -> Result<AppSettings, CommandError> {
-    Ok(lock(&engine)?.settings.clone())
+    let mut eng = lock(&engine)?;
+    eng.reload_settings_file();
+    Ok(eng.settings.clone())
 }
 
 #[tauri::command]
@@ -71,7 +73,10 @@ pub fn save_settings(
         let mut eng = lock(&engine)?;
         eng.settings = settings;
         crate::journal::set_max_bytes(eng.settings.log_max_bytes);
+        let autostart = eng.settings.autostart;
         eng.persist()?;
+        drop(eng);
+        crate::autostart::apply(autostart)?;
     }
     crate::apply_shortcuts(&app, &engine);
     Ok(())
@@ -304,6 +309,12 @@ pub fn import_configuration(
 
 #[tauri::command]
 pub fn list_history(engine: tauri::State<SharedEngine>) -> Result<Vec<HistoryItem>, CommandError> {
+    if crate::screenlock::screen_is_locked() {
+        return Err(CommandError {
+            code: "PERMISSION_DENIED".into(),
+            message: "History is unavailable while the screen is locked.".into(),
+        });
+    }
     Ok(lock(&engine)?.store.list_history()?)
 }
 
@@ -559,26 +570,79 @@ pub fn get_hotkey_status(engine: tauri::State<SharedEngine>) -> Result<HotkeySta
 #[derive(Serialize)]
 pub struct StatsSnapshot {
     pub recordings: u64,
+    pub words_today: u64,
+    pub words_total: u64,
+    pub wpm_avg_today: f64,
+    pub wpm_avg_all: f64,
+    pub wpm_best: f64,
+    pub last_wpm: f64,
 }
 
 #[tauri::command]
 pub fn get_stats(engine: tauri::State<SharedEngine>) -> Result<StatsSnapshot, CommandError> {
     let eng = lock(&engine)?;
-    let recordings = eng
-        .store
-        .get_kv("stats_recordings")
-        .ok()
-        .flatten()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(0);
-    Ok(StatsSnapshot { recordings })
+    let epoch = eng.store.get_kv("stats_epoch").ok().flatten();
+    let rows = crate::uttlog::read_since(&eng.paths, epoch.as_deref());
+    let recordings = rows.len() as u64;
+    let today = chrono::Local::now().date_naive();
+    let mut words_today = 0u64;
+    let mut words_total = 0u64;
+    let mut wpm_today = Vec::new();
+    let mut wpm_all = Vec::new();
+    for row in &rows {
+        words_total += u64::from(row.word_count);
+        if row.wpm > 0.0 {
+            wpm_all.push(row.wpm);
+        }
+        if chrono::DateTime::parse_from_rfc3339(&row.ts)
+            .ok()
+            .map(|d| d.with_timezone(&chrono::Local).date_naive() == today)
+            .unwrap_or(false)
+        {
+            words_today += u64::from(row.word_count);
+            if row.wpm > 0.0 {
+                wpm_today.push(row.wpm);
+            }
+        }
+    }
+    let avg = |v: &[f64]| {
+        if v.is_empty() {
+            0.0
+        } else {
+            v.iter().sum::<f64>() / v.len() as f64
+        }
+    };
+    Ok(StatsSnapshot {
+        recordings,
+        words_today,
+        words_total,
+        wpm_avg_today: avg(&wpm_today),
+        wpm_avg_all: avg(&wpm_all),
+        wpm_best: wpm_all.iter().copied().fold(0.0, f64::max),
+        last_wpm: rows.last().map(|r| r.wpm).unwrap_or(0.0),
+    })
 }
 
 #[tauri::command]
 pub fn reset_stats(engine: tauri::State<SharedEngine>) -> Result<(), CommandError> {
-    lock(&engine)?.store.put_kv("stats_recordings", "0")?;
+    lock(&engine)?
+        .store
+        .put_kv("stats_epoch", &crate::uttlog::now_rfc3339())?;
     crate::journal::log("stats_reset", "ok");
     Ok(())
+}
+
+#[tauri::command]
+pub fn export_stats_csv(engine: tauri::State<SharedEngine>) -> Result<String, CommandError> {
+    let eng = lock(&engine)?;
+    let epoch = eng.store.get_kv("stats_epoch").ok().flatten();
+    let rows = crate::uttlog::read_since(&eng.paths, epoch.as_deref());
+    Ok(crate::uttlog::to_csv(&rows))
+}
+
+#[tauri::command]
+pub fn is_screen_locked() -> bool {
+    crate::screenlock::screen_is_locked()
 }
 
 #[tauri::command]
@@ -610,6 +674,16 @@ pub fn uninstall_localflow(
     keep_history: bool,
 ) -> Result<crate::uninstall::UninstallReport, CommandError> {
     Ok(crate::uninstall::uninstall(keep_history)?)
+}
+
+#[tauri::command]
+pub fn permission_status() -> crate::permissions::PermissionStatus {
+    crate::permissions::status()
+}
+
+#[tauri::command]
+pub fn open_privacy_pane(kind: String) -> Result<(), CommandError> {
+    Ok(crate::permissions::open_pane(&kind)?)
 }
 
 #[tauri::command]

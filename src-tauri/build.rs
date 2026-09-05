@@ -27,10 +27,14 @@ fn main() {
     #[cfg(target_os = "macos")]
     {
         println!("cargo:rerun-if-changed=native/src/speech.m");
+        println!("cargo:rerun-if-changed=native/src/lock.m");
         println!("cargo:rustc-link-lib=framework=Speech");
         println!("cargo:rustc-link-lib=framework=Foundation");
+        println!("cargo:rustc-link-lib=framework=CoreGraphics");
+        println!("cargo:rustc-link-lib=framework=CoreFoundation");
         cc::Build::new()
             .file("native/src/speech.m")
+            .file("native/src/lock.m")
             .include("native/include")
             .flag("-fobjc-arc")
             .compile("localflow_speech");

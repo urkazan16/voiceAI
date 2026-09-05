@@ -9,9 +9,11 @@ use tauri::{
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut};
 
 pub mod audio;
+pub mod autostart;
 pub mod backtrack;
 pub mod build_info;
 pub mod catalog;
+pub mod cli;
 pub mod commands;
 pub mod config;
 pub mod cues;
@@ -21,32 +23,54 @@ pub mod dictionary;
 pub mod download;
 pub mod engine;
 pub mod error;
+pub mod eval;
 pub mod format;
 pub mod history;
 pub mod injection;
+pub mod instance;
 pub mod integrity;
 pub mod journal;
 pub mod llm;
 pub mod macos_stt;
+pub mod media;
 pub mod paths;
+pub mod permissions;
 pub mod personalization;
 pub mod phrases;
 pub mod pipeline;
 pub mod profiles;
 pub mod runtime;
 pub mod sanitize;
+pub mod screenlock;
 pub mod snippets;
 pub mod stt;
 pub mod uninstall;
+pub mod uttlog;
 pub mod vad;
 pub mod whisper_stt;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let paths = DataPaths::detect();
+    if let Err(err) = instance::acquire_gui_lock(&paths) {
+        if !err.to_string().contains("(activated)") {
+            instance::notify_already_running(&err.to_string());
+        }
+        std::process::exit(0);
+    }
     let engine = engine::AppEngine::open(paths).expect("open LocalFlow data directory");
     let shared: SharedEngine = Arc::new(Mutex::new(engine));
     let capture = audio::CaptureHub::spawn();
+    let watcher = shared.clone();
+    std::thread::Builder::new()
+        .name("localflow-settings".into())
+        .spawn(move || loop {
+            std::thread::sleep(std::time::Duration::from_secs(2));
+            if let Ok(mut eng) = watcher.lock() {
+                eng.reload_settings_file();
+            }
+        })
+        .ok();
 
     tauri::Builder::default()
         .plugin(tauri_plugin_clipboard_manager::init())
@@ -103,7 +127,11 @@ pub fn run() {
             commands::reset_stats,
             commands::get_stats,
             commands::export_history_timecodes,
-            commands::install_dictate_macro
+            commands::install_dictate_macro,
+            commands::export_stats_csv,
+            commands::is_screen_locked,
+            commands::open_privacy_pane,
+            commands::permission_status
         ])
         .setup(move |app| {
             let show = MenuItem::with_id(app, "show", "Open LocalFlow", true, None::<&str>)?;

@@ -173,8 +173,10 @@ fn correction_becomes_dictionary_after_repeat() {
 #[test]
 fn config_rejects_unknown_model_id() {
     let catalog = ModelCatalog::embedded().unwrap();
-    let mut settings = AppSettings::default();
-    settings.active_stt_model = Some("not-a-real-model".into());
+    let settings = AppSettings {
+        active_stt_model: Some("not-a-real-model".into()),
+        ..AppSettings::default()
+    };
     let exported = export_config(
         &settings,
         &[],
@@ -291,4 +293,30 @@ fn classify_release_process_when_idle() {
         classify_release(Duration::from_millis(1), false),
         ReleaseAction::Process
     );
+}
+
+#[test]
+fn settings_json_is_written_on_open_and_human_readable() {
+    let (dir, mut eng) = engine();
+    eng.settings.stt_language = "en".into();
+    eng.persist().unwrap();
+    let text = std::fs::read_to_string(eng.paths.settings_file()).unwrap();
+    assert!(text.contains("\"stt_language\": \"en\""));
+    std::fs::write(eng.paths.settings_file(), "{not json").unwrap();
+    drop(eng);
+    let eng =
+        localflow_lib::engine::AppEngine::open(DataPaths::from_override(dir.path().to_path_buf()))
+            .unwrap();
+    assert_eq!(eng.settings.stt_language, "ru");
+}
+
+#[test]
+fn scripted_pipeline_writes_jsonl_journal() {
+    let (_dir, mut eng) = engine();
+    eng.run_scripted("привет мир").unwrap();
+    let rows = localflow_lib::uttlog::read_since(&eng.paths, None);
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].schema, 1);
+    assert!(rows[0].timezone.starts_with('+') || rows[0].timezone.starts_with('-'));
+    assert_eq!(rows[0].insert_method, "clipboard");
 }

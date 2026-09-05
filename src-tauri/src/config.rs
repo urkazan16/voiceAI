@@ -32,6 +32,10 @@ pub struct AppSettings {
     pub sound_cues: bool,
     #[serde(default = "default_log_max")]
     pub log_max_bytes: u64,
+    #[serde(default)]
+    pub autostart: bool,
+    #[serde(default = "default_true")]
+    pub history_enabled: bool,
 }
 
 fn default_true() -> bool {
@@ -71,6 +75,8 @@ impl Default for AppSettings {
             postprocess_timeout_ms: default_postprocess_timeout(),
             sound_cues: true,
             log_max_bytes: default_log_max(),
+            autostart: false,
+            history_enabled: true,
         }
     }
 }
@@ -162,8 +168,10 @@ mod tests {
     #[test]
     fn rejects_unknown_stt_model() {
         let catalog = ModelCatalog::embedded().unwrap();
-        let mut settings = AppSettings::default();
-        settings.active_stt_model = Some("missing-whisper".into());
+        let settings = AppSettings {
+            active_stt_model: Some("missing-whisper".into()),
+            ..AppSettings::default()
+        };
         let exported = export_config(
             &settings,
             &[],

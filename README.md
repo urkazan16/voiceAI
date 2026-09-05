@@ -2,6 +2,8 @@
 
 Local, private, CPU-first voice-to-text for macOS. Hold **Option+Space**, speak, release. Speech-to-text, dictionary, personalization, and optional local LLM formatting run on this machine. Inserted text is never executed.
 
+License: MIT. See `LICENSE`.
+
 ```text
 ./install.sh
 npm run tauri dev
@@ -39,17 +41,49 @@ There are no secret environment variables and no absolute developer paths in the
 
 ## Commands
 
-| Command                 | What it does                                                                           |
-| ----------------------- | -------------------------------------------------------------------------------------- |
-| `npm install`           | Install JS dependencies from `package-lock.json`                                       |
-| `npm run check`         | TypeScript, ESLint, Prettier, `cargo check`, `cargo fmt`, Clippy                       |
-| `npm test`              | Frontend + Rust unit + integration tests                                               |
-| `npm run test:all`      | Unit, integration, UI, pipeline, dictionary, personalization                           |
-| `npm run test:ai`       | AI benchmark profile (requires catalog + optional local models)                        |
-| `npm run build`         | Frontend production bundle + debug Rust binary                                         |
-| `npm run build:release` | Checks UI, builds Rust, packages `.app`/`.dmg`, SBOM, SHA-256 |
-| `npm run license:check` | Dependency license allowlist                                                           |
-| `npm run sbom`          | CycloneDX SBOM                                                                         |
+| Command                 | What it does                                                     |
+| ----------------------- | ---------------------------------------------------------------- |
+| `npm install`           | Install JS dependencies from `package-lock.json`                 |
+| `npm run check`         | TypeScript, ESLint, Prettier, `cargo check`, `cargo fmt`, Clippy |
+| `npm test`              | Frontend + Rust unit + integration tests                         |
+| `npm run test:all`      | Unit, integration, UI, pipeline, dictionary, personalization     |
+| `npm run test:ai`       | AI benchmark profile (requires catalog + optional local models)  |
+| `npm run build`         | Frontend production bundle + debug Rust binary                   |
+| `npm run build:release` | Checks UI, builds Rust, packages `.app`/`.dmg`, SBOM, SHA-256    |
+| `npm run check:local`   | Offline checker (WER + VAD SNR 15 dB), no network                |
+| `npm run license:check` | Dependency license allowlist                                     |
+
+Headless CLI (no window):
+
+```bash
+cargo run --manifest-path src-tauri/Cargo.toml -- --help
+cargo run --manifest-path src-tauri/Cargo.toml -- check
+cargo run --manifest-path src-tauri/Cargo.toml -- transcribe --json --language ru speech.wav
+cargo run --manifest-path src-tauri/Cargo.toml -- transcribe --dir ./clips --no-postprocess
+ffmpeg -f avfoundation -i ":0" -t 3 -f wav - | cargo run --manifest-path src-tauri/Cargo.toml -- transcribe --stdin
+```
+
+Settings live in `~/Library/Application Support/LocalFlow/config/settings.json` (JSON). Edits apply within a couple of seconds without rebuilding. Schema of the replica journal: `docs/journal/UTTERANCE.md`.
+
+## Settings
+
+| Key                                     | Meaning                                                       |
+| --------------------------------------- | ------------------------------------------------------------- |
+| `hotkey`                                | Push-to-talk shortcut                                         |
+| `microphone_name`                       | Input device, or `null` for the OS default                    |
+| `active_stt_model` / `active_llm_model` | Catalog ids (see Model Manager)                               |
+| `stt_language`                          | `ru`, `en`, or `auto`                                         |
+| `mode`                                  | Fallback pipeline: `raw` / `normal` / `professional` / `code` |
+| `autostart`                             | Launch at login                                               |
+| `history_enabled`                       | SQLite history + JSONL journal                                |
+| `sound_cues`                            | Start/end beeps                                               |
+| `insert_delay_ms`                       | Pause before paste                                            |
+| `postprocess_timeout_ms`                | Cap on formatting                                             |
+| `restore_clipboard`                     | Restore clipboard after paste                                 |
+| `log_max_bytes`                         | Size rotation for `localflow.log`                             |
+
+Replace the recognizer by downloading another Whisper ggml in Model Manager, or set `active_stt_model` in `settings.json` to a catalog id whose file is already verified.
+| `npm run sbom` | CycloneDX SBOM |
 
 First Cargo fetch needs network. After `src-tauri/Cargo.lock` is present, crates resolve reproducibly.
 

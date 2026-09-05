@@ -49,7 +49,7 @@ pub fn recover(text: &str) -> String {
             continue;
         }
         let ratio = heard_len as f64 / target_len as f64;
-        if ratio < 0.55 || ratio > 1.7 {
+        if !(0.55..=1.7).contains(&ratio) {
             continue;
         }
         let stems = phrase

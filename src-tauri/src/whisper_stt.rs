@@ -1,15 +1,70 @@
 use crate::error::{LfError, LfResult};
 use crate::pipeline::TranscriptCue;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Sender};
 use std::sync::{Mutex, OnceLock};
 use whisper_rs::{FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters};
+
+static SKIP_PARTIAL: AtomicBool = AtomicBool::new(false);
+static BUSY: AtomicBool = AtomicBool::new(false);
+static LAST_PARTIAL: OnceLock<Mutex<Option<String>>> = OnceLock::new();
 
 struct TranscribeJob {
     model_path: PathBuf,
     pcm: Vec<f32>,
     language: String,
     reply: Sender<LfResult<String>>,
+    partial: bool,
+}
+
+fn last_partial_slot() -> &'static Mutex<Option<String>> {
+    LAST_PARTIAL.get_or_init(|| Mutex::new(None))
+}
+
+pub fn last_partial() -> Option<String> {
+    last_partial_slot().lock().ok().and_then(|g| g.clone())
+}
+
+pub fn clear_partial() {
+    if let Ok(mut slot) = last_partial_slot().lock() {
+        *slot = None;
+    }
+}
+
+pub fn allow_partial() {
+    SKIP_PARTIAL.store(false, Ordering::Relaxed);
+    clear_partial();
+}
+
+pub fn try_partial(model_path: &Path, pcm: &[f32], language: &str) {
+    if SKIP_PARTIAL.load(Ordering::Relaxed) || BUSY.load(Ordering::Relaxed) {
+        return;
+    }
+    if pcm.len() < 16_000 || !model_path.is_file() {
+        return;
+    }
+    let tx = worker();
+    let (reply_tx, reply_rx) = mpsc::channel();
+    let job = TranscribeJob {
+        model_path: model_path.to_path_buf(),
+        pcm: pad_to_whisper_window(&pcm[pcm.len().saturating_sub(8 * 16_000)..]),
+        language: language.to_string(),
+        reply: reply_tx,
+        partial: true,
+    };
+    if tx.send(job).is_err() {
+        return;
+    }
+    std::thread::spawn(move || {
+        if let Ok(Ok(text)) = reply_rx.recv() {
+            if !text.is_empty() {
+                if let Ok(mut slot) = last_partial_slot().lock() {
+                    *slot = Some(text);
+                }
+            }
+        }
+    });
 }
 
 static JOBS: OnceLock<Sender<TranscribeJob>> = OnceLock::new();
@@ -35,6 +90,7 @@ pub fn transcribe(
     if pcm.is_empty() {
         return Ok(String::new());
     }
+    SKIP_PARTIAL.store(true, Ordering::Relaxed);
     let tx = worker();
     let (reply_tx, reply_rx) = mpsc::channel();
     tx.send(TranscribeJob {
@@ -42,11 +98,14 @@ pub fn transcribe(
         pcm: pad_to_whisper_window(pcm),
         language: language.to_string(),
         reply: reply_tx,
+        partial: false,
     })
     .map_err(|_| LfError::RuntimeUnsupported("whisper worker stopped".into()))?;
-    reply_rx
+    let result = reply_rx
         .recv()
-        .map_err(|_| LfError::RuntimeUnsupported("whisper worker stopped".into()))?
+        .map_err(|_| LfError::RuntimeUnsupported("whisper worker stopped".into()))?;
+    SKIP_PARTIAL.store(false, Ordering::Relaxed);
+    result
 }
 
 fn worker() -> Sender<TranscribeJob> {
@@ -57,7 +116,13 @@ fn worker() -> Sender<TranscribeJob> {
             .spawn(move || {
                 let mut loaded: Option<(PathBuf, WhisperContext)> = None;
                 while let Ok(job) = rx.recv() {
+                    if job.partial && SKIP_PARTIAL.load(Ordering::Relaxed) {
+                        let _ = job.reply.send(Ok(String::new()));
+                        continue;
+                    }
+                    BUSY.store(true, Ordering::Relaxed);
                     let result = run_job(&mut loaded, job.model_path, &job.pcm, &job.language);
+                    BUSY.store(false, Ordering::Relaxed);
                     let _ = job.reply.send(result);
                 }
             })
@@ -142,8 +207,8 @@ fn decode(ctx: &WhisperContext, pcm: &[f32], language: &str) -> LfResult<String>
             if text.is_empty() {
                 continue;
             }
-            let t0 = state.full_get_segment_t0(i as i32).unwrap_or(0).max(0) as u64 * 10;
-            let t1 = state.full_get_segment_t1(i as i32).unwrap_or(0).max(0) as u64 * 10;
+            let t0 = state.full_get_segment_t0(i).unwrap_or(0).max(0) as u64 * 10;
+            let t1 = state.full_get_segment_t1(i).unwrap_or(0).max(0) as u64 * 10;
             cues.push(TranscriptCue {
                 start_ms: t0,
                 end_ms: t1.max(t0),

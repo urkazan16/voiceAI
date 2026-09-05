@@ -37,9 +37,7 @@ export function Bar() {
         <p className="text-xs uppercase tracking-[0.2em] text-copper">
           {recording ? "Listening" : state.phase}
         </p>
-        <span
-          className={`h-3 w-3 rounded-full bg-copper ${recording ? "animate-pulse" : ""}`}
-        />
+        <span className={`h-3 w-3 rounded-full bg-copper ${recording ? "animate-pulse" : ""}`} />
       </div>
       {recording && (
         <div className="flex h-8 items-end gap-1">
@@ -57,6 +55,22 @@ export function Bar() {
       )}
       <p className="line-clamp-3 text-sm text-paper/85">{preview}</p>
       <div className="flex justify-end gap-2">
+        {state.insert_ok === false && (state.transcript || state.phase === "error") && (
+          <>
+            <button
+              className="rounded-full border border-paper/30 px-3 py-1 text-xs"
+              onClick={() => void api.copyLastTranscript()}
+            >
+              Copy
+            </button>
+            <button
+              className="rounded-full border border-paper/30 px-3 py-1 text-xs"
+              onClick={() => void api.pasteLastTranscript()}
+            >
+              Paste last
+            </button>
+          </>
+        )}
         <button
           className="rounded-full border border-paper/30 px-3 py-1 text-xs"
           onClick={() => void api.dictationCancel()}

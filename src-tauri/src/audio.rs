@@ -147,7 +147,7 @@ pub fn start_capture(preferred_name: Option<&str>) -> LfResult<LiveCapture> {
     let device = select_input_device(&host, preferred_name)?;
     let config = device
         .default_input_config()
-        .map_err(|e| LfError::DeviceUnavailable(e.to_string()))?;
+        .map_err(|e| map_capture_error(e.to_string()))?;
     let sample_rate = config.sample_rate().0;
     let channels = config.channels();
     let samples = Arc::new(Mutex::new(Vec::new()));
@@ -165,7 +165,7 @@ pub fn start_capture(preferred_name: Option<&str>) -> LfResult<LiveCapture> {
                 err_fn,
                 None,
             )
-            .map_err(|e| LfError::DeviceUnavailable(e.to_string()))?,
+            .map_err(|e| map_capture_error(e.to_string()))?,
         cpal::SampleFormat::I16 => device
             .build_input_stream(
                 &config.into(),
@@ -177,7 +177,7 @@ pub fn start_capture(preferred_name: Option<&str>) -> LfResult<LiveCapture> {
                 err_fn,
                 None,
             )
-            .map_err(|e| LfError::DeviceUnavailable(e.to_string()))?,
+            .map_err(|e| map_capture_error(e.to_string()))?,
         other => {
             return Err(LfError::DeviceUnavailable(format!(
                 "unsupported sample format {other:?}"
@@ -186,7 +186,7 @@ pub fn start_capture(preferred_name: Option<&str>) -> LfResult<LiveCapture> {
     };
     stream
         .play()
-        .map_err(|e| LfError::DeviceUnavailable(e.to_string()))?;
+        .map_err(|e| map_capture_error(e.to_string()))?;
     Ok(LiveCapture {
         stream,
         samples,
@@ -262,6 +262,20 @@ pub fn resample_linear(input: &[f32], from_hz: u32, to_hz: u32) -> Vec<f32> {
     out
 }
 
+fn map_capture_error(message: String) -> LfError {
+    let lower = message.to_lowercase();
+    if lower.contains("permission")
+        || lower.contains("denied")
+        || lower.contains("not authorized")
+        || lower.contains("errorkisdenied")
+        || lower.contains("-54")
+    {
+        LfError::PermissionDenied("Microphone permission is required for dictation".into())
+    } else {
+        LfError::DeviceUnavailable(message)
+    }
+}
+
 fn select_input_device(host: &cpal::Host, preferred_name: Option<&str>) -> LfResult<cpal::Device> {
     use cpal::traits::{DeviceTrait, HostTrait};
     if let Some(name) = preferred_name {
@@ -292,5 +306,11 @@ mod tests {
         let input: Vec<f32> = (0..16).map(|i| i as f32).collect();
         let out = resample_linear(&input, 32_000, 16_000);
         assert_eq!(out.len(), 8);
+    }
+
+    #[test]
+    fn permission_errors_are_not_generic_device_unavailable() {
+        let err = map_capture_error("PermissionDenied".into());
+        assert_eq!(err.code(), "PERMISSION_DENIED");
     }
 }
