@@ -76,7 +76,7 @@ fn unix_free(path: &Path) -> Option<u64> {
         if libc::statfs(cstr.as_ptr(), &mut buf) != 0 {
             return None;
         }
-        Some((buf.f_bavail as u64).saturating_mul(buf.f_bsize as u64))
+        Some(buf.f_bavail.saturating_mul(buf.f_bsize as u64))
     }
 }
 

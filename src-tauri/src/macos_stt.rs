@@ -82,8 +82,7 @@ mod macos {
                 }
             }
             6 => Err(LfError::PermissionDenied(
-                "Speech Recognition permission is required for dictation until whisper.cpp is linked"
-                    .into(),
+                "Whisper is not ready. Download a speech model in Models.".into(),
             )),
             5 => Err(LfError::RuntimeUnsupported(
                 "on-device speech recognizer is unavailable for the current language".into(),

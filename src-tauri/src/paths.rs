@@ -37,7 +37,16 @@ impl DataPaths {
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            for dir in [self.audio(), self.logs(), self.root.clone()] {
+            for dir in [
+                self.root.clone(),
+                self.audio(),
+                self.logs(),
+                self.config_dir(),
+                self.models(),
+                self.models_whisper(),
+                self.models_llm(),
+                self.database_dir(),
+            ] {
                 let _ = std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700));
             }
         }
@@ -126,12 +135,19 @@ mod tests {
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            let mode = std::fs::metadata(paths.audio())
-                .unwrap()
-                .permissions()
-                .mode()
-                & 0o777;
-            assert_eq!(mode, 0o700);
+            for dir in [
+                paths.root.clone(),
+                paths.audio(),
+                paths.logs(),
+                paths.config_dir(),
+                paths.models(),
+                paths.models_whisper(),
+                paths.models_llm(),
+                paths.database_dir(),
+            ] {
+                let mode = std::fs::metadata(&dir).unwrap().permissions().mode() & 0o777;
+                assert_eq!(mode, 0o700, "{}", dir.display());
+            }
         }
     }
 }

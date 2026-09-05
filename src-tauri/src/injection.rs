@@ -20,6 +20,54 @@ pub fn clipboard_backup_path() -> PathBuf {
         .unwrap_or_else(|| crate::paths::DataPaths::detect().clipboard_backup())
 }
 
+pub fn clipboard_snapshot_path() -> PathBuf {
+    clipboard_backup_path().with_extension("json")
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct ClipboardDiskSnapshot {
+    schema: u32,
+    items: Vec<(String, String)>,
+}
+
+fn persist_clipboard_snapshot(items: &[(String, Vec<u8>)]) -> std::io::Result<()> {
+    let path = clipboard_snapshot_path();
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    let disk = ClipboardDiskSnapshot {
+        schema: 1,
+        items: items
+            .iter()
+            .map(|(ty, bytes)| (ty.clone(), hex::encode(bytes)))
+            .collect(),
+    };
+    std::fs::write(path, serde_json::to_vec(&disk)?)
+}
+
+fn take_clipboard_snapshot() -> Option<Vec<(String, Vec<u8>)>> {
+    let path = clipboard_snapshot_path();
+    let bytes = std::fs::read(&path).ok()?;
+    let _ = std::fs::remove_file(&path);
+    let disk: ClipboardDiskSnapshot = serde_json::from_slice(&bytes).ok()?;
+    if disk.schema != 1 {
+        return None;
+    }
+    let mut items = Vec::new();
+    for (ty, hex_data) in disk.items {
+        let Ok(data) = hex::decode(hex_data) else {
+            continue;
+        };
+        items.push((ty, data));
+    }
+    Some(items)
+}
+
+fn clear_clipboard_backups() {
+    let _ = std::fs::remove_file(clipboard_backup_path());
+    let _ = std::fs::remove_file(clipboard_snapshot_path());
+}
+
 pub fn persist_clipboard_backup(text: &str) -> std::io::Result<()> {
     let path = clipboard_backup_path();
     if let Some(dir) = path.parent() {
@@ -36,6 +84,13 @@ pub fn take_clipboard_backup() -> Option<String> {
 }
 
 pub fn restore_orphaned_clipboard() {
+    #[cfg(target_os = "macos")]
+    {
+        if macos::restore_orphaned_snapshot() {
+            let _ = std::fs::remove_file(clipboard_backup_path());
+            return;
+        }
+    }
     let Some(text) = take_clipboard_backup() else {
         return;
     };
@@ -273,6 +328,7 @@ mod macos {
             None
         };
         if let Some(prev) = &previous {
+            let _ = super::persist_clipboard_snapshot(&prev.items);
             if let Some(plain) = prev.plain_text() {
                 let _ = super::persist_clipboard_backup(plain);
             }
@@ -285,8 +341,7 @@ mod macos {
         if let Some(prev) = previous {
             std::thread::sleep(Duration::from_millis(100));
             restore_pasteboard(&prev);
-            let path = super::clipboard_backup_path();
-            let _ = std::fs::remove_file(path);
+            super::clear_clipboard_backups();
         }
         paste_result
     }
@@ -346,6 +401,17 @@ mod macos {
             let data = NSData::with_bytes(bytes);
             let _ = pb.setData_forType(Some(&data), &ns_ty);
         }
+    }
+
+    pub(super) fn restore_orphaned_snapshot() -> bool {
+        let Some(items) = super::take_clipboard_snapshot() else {
+            return false;
+        };
+        if items.is_empty() {
+            return false;
+        }
+        restore_pasteboard(&PasteboardSnapshot { items });
+        true
     }
 
     fn write_pasteboard_string(text: &str) -> LfResult<()> {
@@ -517,6 +583,11 @@ mod tests {
         persist_clipboard_backup("keep me").unwrap();
         assert_eq!(take_clipboard_backup().as_deref(), Some("keep me"));
         assert!(take_clipboard_backup().is_none());
+        persist_clipboard_snapshot(&[("public.utf8-plain-text".into(), b"rtf-or-img".to_vec())])
+            .unwrap();
+        let snap = take_clipboard_snapshot().unwrap();
+        assert_eq!(snap[0].1, b"rtf-or-img");
+        assert!(take_clipboard_snapshot().is_none());
     }
 
     #[cfg(target_os = "macos")]

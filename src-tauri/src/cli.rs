@@ -213,30 +213,59 @@ fn transcribe(opts: Opts) -> Result<i32, String> {
         engine.settings.personalization_enabled = false;
     }
     let mut outputs = Vec::new();
+    let mut any_error = false;
     for (name, pcm) in paths_to_run {
-        let pcm = pcm?;
         eprintln!("transcribing {name}");
-        let out = run_pcm(&mut engine, &pcm).map_err(|e| e.to_string())?;
-        if !opts.json {
-            println!("{}", out.final_text);
-        }
-        outputs.push(CliRow {
-            file: name,
-            text: out.final_text.clone(),
-            raw: out.raw_transcript.clone(),
-        });
-        let sidecar = PathBuf::from(&outputs.last().unwrap().file);
-        if sidecar.exists() {
-            let txt = sidecar.with_extension("txt");
-            if txt != sidecar {
-                let _ = std::fs::write(txt, format!("{}\n", out.final_text));
+        let pcm = match pcm {
+            Ok(p) => p,
+            Err(err) => {
+                any_error = true;
+                eprintln!("{name}: {err}");
+                outputs.push(CliRow {
+                    file: name,
+                    text: String::new(),
+                    raw: String::new(),
+                    error: Some(err),
+                });
+                continue;
+            }
+        };
+        match run_pcm(&mut engine, &pcm) {
+            Ok(out) => {
+                if !opts.json {
+                    println!("{}", out.final_text);
+                }
+                outputs.push(CliRow {
+                    file: name,
+                    text: out.final_text.clone(),
+                    raw: out.raw_transcript.clone(),
+                    error: None,
+                });
+                let sidecar = PathBuf::from(&outputs.last().unwrap().file);
+                if sidecar.exists() {
+                    let txt = sidecar.with_extension("txt");
+                    if txt != sidecar {
+                        let _ = std::fs::write(txt, format!("{}\n", out.final_text));
+                    }
+                }
+            }
+            Err(err) => {
+                any_error = true;
+                let msg = err.to_string();
+                eprintln!("{name}: {msg}");
+                outputs.push(CliRow {
+                    file: name,
+                    text: String::new(),
+                    raw: String::new(),
+                    error: Some(msg),
+                });
             }
         }
     }
     if opts.json {
         println!("{}", serde_json::to_string_pretty(&outputs).unwrap());
     }
-    Ok(0)
+    Ok(if any_error { 1 } else { 0 })
 }
 
 #[derive(serde::Serialize)]
@@ -244,6 +273,8 @@ struct CliRow {
     file: String,
     text: String,
     raw: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<String>,
 }
 
 fn run_pcm(engine: &mut AppEngine, pcm: &[f32]) -> LfResult<PipelineOutput> {

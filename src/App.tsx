@@ -836,9 +836,9 @@ export function App() {
               Restore clipboard after insert
             </label>
             <p className="text-xs text-paper/50">
-              Keeps the previous pasteboard (text, RTF, images) after Cmd+V. Crash recovery still
-              restores text only. Password fields block paste — use Copy last after leaving the
-              field.
+              Keeps the previous pasteboard (text, RTF, images) after Cmd+V. If the app
+              crashes mid-paste, the same snapshot is restored from disk. Password fields
+              block paste — use Copy last after leaving the field.
             </p>
             <label className="flex items-center gap-2 text-sm">
               <input

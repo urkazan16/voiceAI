@@ -95,7 +95,7 @@ pub fn user_guidance(err: &LfError) -> String {
             "macOS blocked paste. System Settings → Privacy & Security → Accessibility → enable LocalFlow, then Paste last.".into()
         }
         LfError::PermissionDenied(msg) if msg.to_lowercase().contains("speech") => {
-            "Speech Recognition is off, and Whisper is not installed. Enable Speech Recognition or download Whisper in Models.".into()
+            "Whisper is not ready. Open Models and download the speech model, then try again.".into()
         }
         LfError::PermissionDenied(_) | LfError::DeviceUnavailable(_) => {
             "Microphone is unavailable. System Settings → Privacy & Security → Microphone → LocalFlow, then pick the device in Settings.".into()

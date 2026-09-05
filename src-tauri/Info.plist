@@ -2,11 +2,9 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-  <key>NSMicrophoneUsageDescription</key>
-  <string>LocalFlow records audio locally so speech can be transcribed on this Mac. Audio is not uploaded.</string>
-  <key>NSSpeechRecognitionUsageDescription</key>
-  <string>LocalFlow transcribes dictation on this Mac. Until whisper.cpp is linked, macOS Speech Recognition is used as a fallback.</string>
-  <key>NSAppleEventsUsageDescription</key>
+          <key>NSMicrophoneUsageDescription</key>
+          <string>LocalFlow records audio locally so speech can be transcribed on this Mac. Audio is not uploaded.</string>
+          <key>NSAppleEventsUsageDescription</key>
   <string>LocalFlow uses Accessibility and Apple Events only to paste recognized text into the frontmost app.</string>
 </dict>
 </plist>
