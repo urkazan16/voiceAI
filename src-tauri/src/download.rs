@@ -24,6 +24,7 @@ pub struct ModelInstallStatus {
     pub local_path: Option<String>,
     pub bytes_on_disk: u64,
     pub expected_bytes: u64,
+    pub active: bool,
 }
 
 pub fn partial_path(dest: &Path) -> PathBuf {
@@ -48,6 +49,7 @@ pub fn inspect_install(record: &ModelRecord, dest: &Path) -> ModelInstallStatus 
             local_path: Some(dest.display().to_string()),
             bytes_on_disk,
             expected_bytes: record.size,
+            active: false,
         };
     }
 
@@ -62,6 +64,7 @@ pub fn inspect_install(record: &ModelRecord, dest: &Path) -> ModelInstallStatus 
                 local_path: Some(partial.display().to_string()),
                 bytes_on_disk: meta.len(),
                 expected_bytes: record.size,
+                active: false,
             };
         }
     }
@@ -74,6 +77,7 @@ pub fn inspect_install(record: &ModelRecord, dest: &Path) -> ModelInstallStatus 
         local_path: None,
         bytes_on_disk: 0,
         expected_bytes: record.size,
+        active: false,
     }
 }
 
@@ -123,10 +127,7 @@ pub async fn download_and_install(
         total_bytes: record.size,
     });
 
-    if let Err(err) = activate_model(&partial, record) {
-        let _ = tokio::fs::remove_file(&partial).await;
-        return Err(err);
-    }
+    activate_model(&partial, record)?;
 
     on_progress(ModelDownloadProgress {
         model_id: record.model_id.clone(),

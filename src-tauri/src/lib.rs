@@ -59,6 +59,7 @@ pub fn run() {
             commands::verify_model,
             commands::download_model,
             commands::list_model_status,
+            commands::set_active_model,
             commands::get_hotkey_status
         ])
         .setup(move |app| {

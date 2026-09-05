@@ -119,7 +119,12 @@ impl AppEngine {
     pub fn model_status(&self, model_id: &str) -> LfResult<crate::download::ModelInstallStatus> {
         let record = self.catalog.get(model_id)?;
         let path = self.model_path(record);
-        Ok(crate::download::inspect_install(record, &path))
+        let mut status = crate::download::inspect_install(record, &path);
+        status.active = match record.kind.as_str() {
+            "llm" => self.settings.active_llm_model.as_deref() == Some(model_id),
+            _ => self.settings.active_stt_model.as_deref() == Some(model_id),
+        };
+        Ok(status)
     }
 
     pub fn activate_installed(&mut self, model_id: &str) -> LfResult<PathBuf> {

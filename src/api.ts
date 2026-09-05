@@ -63,6 +63,7 @@ export interface ModelInstallStatus {
   local_path: string | null;
   bytes_on_disk: number;
   expected_bytes: number;
+  active: boolean;
 }
 
 export interface ModelDownloadProgress {
@@ -121,11 +122,50 @@ export interface HotkeyStatus {
 const BROWSER_HINT =
   "IPC is unavailable. Use the LocalFlow window from the menu bar (npm run tauri dev), not a browser tab on localhost:1420.";
 
+export function formatInvokeError(error: unknown): string {
+  if (error instanceof Error && error.message && error.message !== "[object Object]") {
+    return error.message;
+  }
+  if (typeof error === "string") {
+    return error;
+  }
+  if (error && typeof error === "object") {
+    const value = error as Record<string, unknown>;
+    const nested =
+      value.error && typeof value.error === "object"
+        ? (value.error as Record<string, unknown>)
+        : value;
+    const code = typeof nested.code === "string" ? nested.code : "";
+    const message =
+      typeof nested.message === "string"
+        ? nested.message
+        : typeof value.message === "string"
+          ? value.message
+          : "";
+    if (code && message) {
+      return `${code}: ${message}`;
+    }
+    if (message) {
+      return message;
+    }
+    try {
+      return JSON.stringify(error);
+    } catch {
+      return "Unknown error";
+    }
+  }
+  return String(error);
+}
+
 async function call<T>(command: string, args?: Record<string, unknown>): Promise<T> {
   if (!isTauriRuntime()) {
     throw new Error(BROWSER_HINT);
   }
-  return invoke<T>(command, args);
+  try {
+    return await invoke<T>(command, args);
+  } catch (error) {
+    throw new Error(formatInvokeError(error));
+  }
 }
 
 export const api = {
@@ -147,5 +187,6 @@ export const api = {
   verifyModel: (modelId: string) => call<string>("verify_model", { modelId }),
   downloadModel: (modelId: string) => call<string>("download_model", { modelId }),
   listModelStatus: () => call<ModelInstallStatus[]>("list_model_status"),
+  setActiveModel: (modelId: string) => call<string>("set_active_model", { modelId }),
   getHotkeyStatus: () => call<HotkeyStatus>("get_hotkey_status"),
 };

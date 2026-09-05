@@ -46,7 +46,11 @@ pub fn validate_format(path: &Path, format: &str) -> LfResult<()> {
             }
         }
         "GGML" => {
-            if &magic != b"ggml" && &magic != b"ggmf" && &magic != b"ggjt" && &magic != b"GGUF" {
+            // whisper.cpp writes fourcc little-endian, so 'ggml' appears on disk as 'lmgg'.
+            if !matches!(
+                &magic,
+                b"ggml" | b"ggmf" | b"ggjt" | b"lmgg" | b"fmgg" | b"tjgg" | b"GGUF"
+            ) {
                 return Err(LfError::ModelFormatInvalid(format!(
                     "{} is not a ggml/whisper artifact",
                     path.display()
@@ -127,6 +131,17 @@ mod tests {
         std::fs::write(&path, bytes).unwrap();
         let sha = sha256_file(&path).unwrap();
         let rec = record(&sha, "GGUF", "model.gguf");
+        activate_model(&path, &rec).unwrap();
+    }
+
+    #[test]
+    fn whisper_ggml_accepts_little_endian_fourcc() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("ggml-base.bin");
+        let bytes = b"lmggtest";
+        std::fs::write(&path, bytes).unwrap();
+        let sha = sha256_file(&path).unwrap();
+        let rec = record(&sha, "ggml", "ggml-base.bin");
         activate_model(&path, &rec).unwrap();
     }
 }

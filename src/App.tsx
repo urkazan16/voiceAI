@@ -335,7 +335,10 @@ export function App() {
                 const percent = total > 0 ? Math.min(100, Math.round((bytes / total) * 100)) : 0;
                 const badge =
                   state === "verified"
-                    ? { label: "Installed", className: "bg-moss text-ink" }
+                    ? {
+                        label: status?.active ? "Installed · Active" : "Installed",
+                        className: "bg-moss text-ink",
+                      }
                     : state === "downloading"
                       ? { label: `Downloading ${percent}%`, className: "bg-copper text-ink" }
                       : state === "incomplete"
@@ -376,7 +379,10 @@ export function App() {
                       </div>
                     )}
                     {state === "verified" && (
-                      <p className="mt-2 text-sm text-moss">Ready at {status?.local_path}</p>
+                      <p className="mt-2 text-sm text-moss">
+                        {status?.active ? "Active model. " : ""}
+                        Ready at {status?.local_path}
+                      </p>
                     )}
                     {status?.local_path && state !== "verified" && (
                       <p className="mt-1 break-all font-mono text-xs text-paper/50">
@@ -407,7 +413,7 @@ export function App() {
                             setModelMessage(`Installed and verified at ${path}`);
                             await refresh();
                           } catch (error) {
-                            setModelMessage(String(error));
+                            setModelMessage(error instanceof Error ? error.message : String(error));
                             try {
                               setModelStatus(await api.listModelStatus());
                             } catch {
@@ -426,12 +432,30 @@ export function App() {
                             setModelMessage(`Verified at ${path}`);
                             await refresh();
                           } catch (error) {
-                            setModelMessage(String(error));
+                            setModelMessage(error instanceof Error ? error.message : String(error));
                           }
                         }}
                       >
                         Verify local file
                       </button>
+                      {state === "verified" && !status?.active && (
+                        <button
+                          className="text-paper/80 underline"
+                          onClick={async () => {
+                            try {
+                              await api.setActiveModel(model.model_id);
+                              setModelMessage(`${model.display_name} is now the active model.`);
+                              await refresh();
+                            } catch (error) {
+                              setModelMessage(
+                                error instanceof Error ? error.message : String(error),
+                              );
+                            }
+                          }}
+                        >
+                          Set as active
+                        </button>
+                      )}
                     </div>
                     {model.network_required_to_obtain && state !== "verified" && (
                       <p className="mt-3 text-xs uppercase tracking-wide text-copper">

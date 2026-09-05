@@ -13,10 +13,16 @@ use std::collections::HashSet;
 use std::sync::{Mutex, OnceLock};
 use tauri::{AppHandle, Emitter};
 
-#[derive(Serialize)]
+#[derive(Debug, Serialize)]
 pub struct CommandError {
     pub code: String,
     pub message: String,
+}
+
+impl std::fmt::Display for CommandError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}: {}", self.code, self.message)
+    }
 }
 
 impl From<LfError> for CommandError {
@@ -275,6 +281,15 @@ async fn download_model_inner(
         CommandError::from(err)
     })?;
 
+    let path = lock(&engine)?.activate_installed(&model_id)?;
+    Ok(path.display().to_string())
+}
+
+#[tauri::command]
+pub fn set_active_model(
+    engine: tauri::State<SharedEngine>,
+    model_id: String,
+) -> Result<String, CommandError> {
     let path = lock(&engine)?.activate_installed(&model_id)?;
     Ok(path.display().to_string())
 }
