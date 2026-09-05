@@ -10,12 +10,9 @@ use tempfile::tempdir;
 fn integration_pipeline_dictionary_and_history() {
     let dir = tempdir().unwrap();
     let mut engine = AppEngine::open(DataPaths::from_override(dir.path().to_path_buf())).unwrap();
-    engine.dictionary.upsert(DictionaryEntry {
-        id: "sql".into(),
-        source: "селект".into(),
-        replacement: "SELECT".into(),
-        case_sensitive: false,
-    });
+    engine
+        .dictionary
+        .upsert(DictionaryEntry::rule("sql", "селект", "SELECT"));
     let output = engine.run_scripted("сделай селект из users").unwrap();
     assert!(output.dictionary_text.contains("SELECT"));
     assert_eq!(engine.snapshot.state, PipelineState::Idle);
@@ -44,6 +41,7 @@ fn integration_exported_config_validates_against_catalog() {
         &[],
         &Dictionary::default(),
         &PersonalizationState::default(),
+        &localflow_lib::snippets::SnippetBook::default(),
     );
     let json = serde_json::to_string(&exported).unwrap();
     let catalog = localflow_lib::catalog::ModelCatalog::embedded().unwrap();

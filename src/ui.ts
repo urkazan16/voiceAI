@@ -3,6 +3,7 @@ export const NAV: { id: string; label: string }[] = [
   { id: "settings", label: "Settings" },
   { id: "models", label: "Models" },
   { id: "dictionary", label: "Dictionary" },
+  { id: "snippets", label: "Snippets" },
   { id: "profiles", label: "Profiles" },
   { id: "personalization", label: "Personalization" },
   { id: "history", label: "History" },

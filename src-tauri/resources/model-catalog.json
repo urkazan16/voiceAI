@@ -18,7 +18,7 @@
       "license_url": "https://github.com/ggerganov/whisper.cpp/blob/master/LICENSE",
       "network_required_to_obtain": true,
       "checksum_pinned": true,
-      "notes": "Official whisper.cpp ggml-base.bin. SHA-256 from Hugging Face."
+      "notes": "Smallest STT option. Fast, weakest Russian accuracy. Prefer Medium for dictation."
     },
     {
       "model_id": "whisper-small",
@@ -37,7 +37,45 @@
       "license_url": "https://github.com/ggerganov/whisper.cpp/blob/master/LICENSE",
       "network_required_to_obtain": true,
       "checksum_pinned": true,
-      "notes": "Official whisper.cpp ggml-small.bin. SHA-256 from Hugging Face."
+      "notes": "Faster, less accurate. Fine for drafts. Tongue twisters and dense Russian often come out wrong."
+    },
+    {
+      "model_id": "whisper-medium",
+      "display_name": "Whisper Medium",
+      "version": "1.0.0",
+      "filename": "ggml-medium.bin",
+      "format": "ggml",
+      "quantization": "F16",
+      "kind": "stt",
+      "source": "ggerganov/whisper.cpp",
+      "source_url": "https://huggingface.co/ggerganov/whisper.cpp",
+      "download_url": "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-medium.bin?download=true",
+      "sha256": "6c14d5adee5f86394037b4e4e8b59f1673b6cee10e3cf0b11bbdbee79c156208",
+      "size": 1533763059,
+      "license": "MIT",
+      "license_url": "https://github.com/ggerganov/whisper.cpp/blob/master/LICENSE",
+      "network_required_to_obtain": true,
+      "checksum_pinned": true,
+      "notes": "Recommended for Russian dictation. ~1.5 GB, slower than Small, much more accurate on similar-sounding words."
+    },
+    {
+      "model_id": "whisper-large-v3-turbo",
+      "display_name": "Whisper Large v3 Turbo",
+      "version": "1.0.0",
+      "filename": "ggml-large-v3-turbo.bin",
+      "format": "ggml",
+      "quantization": "F16",
+      "kind": "stt",
+      "source": "ggerganov/whisper.cpp",
+      "source_url": "https://huggingface.co/ggerganov/whisper.cpp",
+      "download_url": "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo.bin?download=true",
+      "sha256": "1fc70f774d38eb169993ac391eea357ef47c88757ef72ee5943879b7e8e2bc69",
+      "size": 1624555275,
+      "license": "MIT",
+      "license_url": "https://github.com/ggerganov/whisper.cpp/blob/master/LICENSE",
+      "network_required_to_obtain": true,
+      "checksum_pinned": true,
+      "notes": "About the same disk size as Medium, usually faster. Slightly less precise than Medium on Russian tongue twisters."
     },
     {
       "model_id": "Qwen3-4B-Instruct-2507",

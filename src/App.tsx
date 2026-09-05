@@ -8,6 +8,10 @@ import {
   type DictationState,
   type DictionaryEntry,
   type HistoryItem,
+  type LearnedCandidate,
+  type Profile,
+  type ResolvedContext,
+  type Snippet,
   type ModelDownloadProgress,
   type ModelInstallStatus,
   type ModelRecord,
@@ -29,7 +33,20 @@ const fallbackSettings = (): AppSettings => ({
   copy_last_hotkey: "Command+Control+C",
   paste_last_hotkey: "Command+Control+V",
   show_flow_bar: true,
+  profile_override: null,
+  personalization_enabled: true,
+  learn_from_corrections: true,
+  stt_language: "ru",
 });
+
+function isToday(iso: string): boolean {
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) {
+    return false;
+  }
+  const now = new Date();
+  return date.toDateString() === now.toDateString();
+}
 
 export function App() {
   const [view, setView] = useState<ViewId>("onboarding");
@@ -44,6 +61,20 @@ export function App() {
   const [pipelineOut, setPipelineOut] = useState<PipelineOutput | null>(null);
   const [term, setTerm] = useState("");
   const [replacement, setReplacement] = useState("");
+  const [aliases, setAliases] = useState("");
+  const [dictKind, setDictKind] = useState<DictionaryEntry["kind"]>("replacement");
+  const [dictQuery, setDictQuery] = useState("");
+  const [dictImport, setDictImport] = useState("");
+  const [snippets, setSnippets] = useState<Snippet[]>([]);
+  const [snippetTrigger, setSnippetTrigger] = useState("");
+  const [snippetContent, setSnippetContent] = useState("");
+  const [profiles, setProfiles] = useState<Profile[]>([]);
+  const [context, setContext] = useState<ResolvedContext | null>(null);
+  const [suggestions, setSuggestions] = useState<LearnedCandidate[]>([]);
+  const [correctionOriginal, setCorrectionOriginal] = useState("");
+  const [correctionFixed, setCorrectionFixed] = useState("");
+  const [editingHistoryId, setEditingHistoryId] = useState<string | null>(null);
+  const [editingHistoryText, setEditingHistoryText] = useState("");
   const [configText, setConfigText] = useState("");
   const [modelMessage, setModelMessage] = useState("");
   const [modelStatus, setModelStatus] = useState<ModelInstallStatus[]>([]);
@@ -62,6 +93,10 @@ export function App() {
         nextPrivacy,
         hotkey,
         nextStatus,
+        nextSnippets,
+        nextProfiles,
+        nextContext,
+        nextSuggestions,
       ] = await Promise.all([
         api.getSettings(),
         api.listModels(),
@@ -71,12 +106,20 @@ export function App() {
         api.privacySummary(),
         api.getHotkeyStatus(),
         api.listModelStatus(),
+        api.listSnippets(),
+        api.listProfiles(),
+        api.getActiveContext(),
+        api.listSuggestions(),
       ]);
       setSettings(nextSettings);
       setModels(nextModels);
       setModelStatus(nextStatus);
       setDictionary(nextDict);
       setHistory(nextHistory);
+      setSnippets(nextSnippets);
+      setProfiles(nextProfiles);
+      setContext(nextContext);
+      setSuggestions(nextSuggestions);
       setBuild(nextBuild);
       setPrivacy(nextPrivacy);
       if (hotkey.registered) {
@@ -239,6 +282,12 @@ export function App() {
         {view === "home" && (
           <section>
             <h1 className="text-4xl">Dictation pipeline</h1>
+            {context && (
+              <p className="mt-3 rounded-xl bg-paper/5 px-4 py-2 text-sm text-paper/80">
+                Current app: {context.app_name || "—"} / Profile: {context.profile_name} (
+                {context.style || context.mode}, {context.source})
+              </p>
+            )}
             <p className="mt-2 text-paper/70">{status}</p>
             <p className="mt-1 text-sm text-paper/50">
               Type a sample and click Process locally, or hold the hotkey over a field. Whisper.cpp
@@ -308,7 +357,23 @@ export function App() {
               restart the app.
             </p>
             <label className="block text-sm text-paper/70">
-              Mode
+              Speech language
+              <select
+                className="mt-1 w-full rounded-lg bg-paper/10 p-2"
+                value={settings.stt_language}
+                onChange={(e) => void save({ ...settings, stt_language: e.target.value })}
+              >
+                <option value="ru">Russian</option>
+                <option value="en">English</option>
+                <option value="auto">Auto-detect</option>
+              </select>
+            </label>
+            <p className="text-xs text-paper/60">
+              Russian is more accurate for Russian speech. Auto-detect can slip into Ukrainian or
+              English and mangle similar-sounding words.
+            </p>
+            <label className="block text-sm text-paper/70">
+              Fallback mode (used when no app profile matches)
               <select
                 className="mt-1 w-full rounded-lg bg-paper/10 p-2"
                 value={settings.mode}
@@ -320,6 +385,26 @@ export function App() {
                 <option value="normal">Normal</option>
                 <option value="professional">Professional</option>
                 <option value="code">Code</option>
+              </select>
+            </label>
+            <label className="block text-sm text-paper/70">
+              Profile override
+              <select
+                className="mt-1 w-full rounded-lg bg-paper/10 p-2"
+                value={settings.profile_override ?? ""}
+                onChange={(e) =>
+                  void save({
+                    ...settings,
+                    profile_override: e.target.value === "" ? null : e.target.value,
+                  })
+                }
+              >
+                <option value="">Auto (frontmost app)</option>
+                {profiles.map((profile) => (
+                  <option key={profile.id} value={profile.id}>
+                    {profile.name}
+                  </option>
+                ))}
               </select>
             </label>
             <label className="flex items-center gap-2 text-sm">
@@ -410,9 +495,9 @@ export function App() {
           <section>
             <h1 className="text-4xl">Model Manager</h1>
             <p className="mt-2 max-w-2xl text-paper/70">
-              Weights are not inside the installer. Download is a labeled network action, then
-              SHA-256 must match before activation. Catalog cards below are expected. Process
-              locally still works on typed text without downloading models.
+              For Russian dictation download Whisper Medium, then Set as active. Small is faster but
+              weaker. Large v3 Turbo is a similar download to Medium and usually quicker, with a bit
+              less precision. Qwen models are only for text formatting, not speech.
             </p>
             <p className="mt-2 text-copper">{modelMessage}</p>
             <div className="mt-6 grid gap-4">
@@ -485,6 +570,7 @@ export function App() {
                     )}
                     <p className="mt-1 text-sm">License: {model.license}</p>
                     <p className="mt-1 text-sm">Source: {model.source}</p>
+                    {model.notes && <p className="mt-2 text-sm text-paper/70">{model.notes}</p>}
                     <p className="mt-1 break-all font-mono text-xs text-paper/50">
                       SHA-256: {model.sha256}
                     </p>
@@ -564,52 +650,188 @@ export function App() {
         )}
 
         {view === "dictionary" && (
-          <section className="max-w-xl">
-            <h1 className="text-4xl">Dictionary</h1>
-            <div className="mt-4 flex gap-2">
+          <section className="max-w-2xl">
+            <h1 className="text-4xl">Dictionary 2.0</h1>
+            <p className="mt-2 text-sm text-paper/60">
+              Vocabulary keeps a canonical term plus aliases. Replacement Rule maps spoken phrases
+              to written text. Built-in developer terms (RestAssured, JUnit, …) are seeded
+              automatically.
+            </p>
+            <input
+              className="mt-4 w-full rounded-lg bg-paper/10 p-2"
+              placeholder="Search canonical or alias"
+              value={dictQuery}
+              onChange={async (e) => {
+                const query = e.target.value;
+                setDictQuery(query);
+                try {
+                  setDictionary(await api.searchDictionary(query));
+                } catch {
+                  /* preview */
+                }
+              }}
+            />
+            <div className="mt-4 flex flex-wrap gap-2">
+              <select
+                className="rounded-lg bg-paper/10 p-2"
+                value={dictKind}
+                onChange={(e) => setDictKind(e.target.value as DictionaryEntry["kind"])}
+              >
+                <option value="replacement">Replacement Rule</option>
+                <option value="vocabulary">Vocabulary</option>
+              </select>
               <input
                 className="flex-1 rounded-lg bg-paper/10 p-2"
-                placeholder="spoken term"
+                placeholder="canonical"
+                value={replacement}
+                onChange={(e) => setReplacement(e.target.value)}
+              />
+              <input
+                className="flex-1 rounded-lg bg-paper/10 p-2"
+                placeholder="primary spoken / alias"
                 value={term}
                 onChange={(e) => setTerm(e.target.value)}
               />
               <input
-                className="flex-1 rounded-lg bg-paper/10 p-2"
-                placeholder="replacement"
-                value={replacement}
-                onChange={(e) => setReplacement(e.target.value)}
+                className="w-full rounded-lg bg-paper/10 p-2"
+                placeholder="extra aliases, comma-separated"
+                value={aliases}
+                onChange={(e) => setAliases(e.target.value)}
               />
               <button
-                className="rounded-lg bg-moss px-3 text-ink"
+                className="rounded-lg bg-moss px-3 py-2 text-ink"
                 onClick={async () => {
+                  const extra = aliases
+                    .split(",")
+                    .map((item) => item.trim())
+                    .filter(Boolean);
+                  const allAliases = [term, ...extra].filter(Boolean);
                   await api.upsertDictionary({
                     id: crypto.randomUUID(),
+                    kind: dictKind,
+                    canonical: replacement,
+                    aliases: allAliases,
                     source: term,
                     replacement,
                     case_sensitive: false,
+                    enabled: true,
+                    builtin: false,
                   });
-                  setDictionary(await api.listDictionary());
+                  setDictionary(await api.searchDictionary(dictQuery));
                   setTerm("");
                   setReplacement("");
+                  setAliases("");
                 }}
               >
                 Add
               </button>
             </div>
+            <textarea
+              className="mt-4 h-24 w-full rounded-lg bg-paper/10 p-2 text-sm"
+              placeholder='Import JSON array: [{"canonical":"JUnit 5","aliases":["жюнит"],"kind":"vocabulary"}]'
+              value={dictImport}
+              onChange={(e) => setDictImport(e.target.value)}
+            />
+            <button
+              className="mt-2 rounded-full border border-paper/30 px-4 py-2"
+              onClick={async () => {
+                try {
+                  const count = await api.importDictionary(dictImport);
+                  setStatus(`Imported ${count} dictionary entries.`);
+                  setDictImport("");
+                  setDictionary(await api.searchDictionary(dictQuery));
+                } catch (error) {
+                  setStatus(error instanceof Error ? error.message : String(error));
+                }
+              }}
+            >
+              Import
+            </button>
             <ul className="mt-6 space-y-2">
               {dictionary.map((entry) => (
-                <li key={entry.id} className="flex justify-between rounded-lg bg-paper/5 px-3 py-2">
-                  <span>
-                    {entry.source} → {entry.replacement}
-                  </span>
-                  <button
-                    onClick={async () => {
-                      await api.removeDictionary(entry.id);
-                      setDictionary(await api.listDictionary());
-                    }}
-                  >
-                    Remove
-                  </button>
+                <li key={entry.id} className="rounded-lg bg-paper/5 px-3 py-2">
+                  <div className="flex justify-between gap-3">
+                    <span>
+                      <span className="text-xs uppercase tracking-wide text-copper">
+                        {entry.kind}
+                        {entry.builtin ? " · built-in" : ""}
+                      </span>
+                      <br />
+                      {(entry.aliases.length ? entry.aliases : [entry.source]).join(" / ")} →{" "}
+                      {entry.canonical || entry.replacement}
+                    </span>
+                    {!entry.builtin && (
+                      <button
+                        onClick={async () => {
+                          await api.removeDictionary(entry.id);
+                          setDictionary(await api.searchDictionary(dictQuery));
+                        }}
+                      >
+                        Remove
+                      </button>
+                    )}
+                  </div>
+                </li>
+              ))}
+            </ul>
+          </section>
+        )}
+
+        {view === "snippets" && (
+          <section className="max-w-2xl">
+            <h1 className="text-4xl">Snippets</h1>
+            <p className="mt-2 text-sm text-paper/60">
+              Exact trigger expands before the LLM. Priority: Command → Snippet → Dictionary.
+            </p>
+            <input
+              className="mt-4 w-full rounded-lg bg-paper/10 p-2"
+              placeholder="trigger (≤ 60)"
+              value={snippetTrigger}
+              onChange={(e) => setSnippetTrigger(e.target.value)}
+            />
+            <textarea
+              className="mt-2 h-28 w-full rounded-lg bg-paper/10 p-2"
+              placeholder="content (≤ 4000)"
+              value={snippetContent}
+              onChange={(e) => setSnippetContent(e.target.value)}
+            />
+            <button
+              className="mt-3 rounded-lg bg-moss px-3 py-2 text-ink"
+              onClick={async () => {
+                await api.upsertSnippet({
+                  id: crypto.randomUUID(),
+                  trigger: snippetTrigger,
+                  content: snippetContent,
+                  language: "",
+                  profile: "",
+                  enabled: true,
+                  created_at: "",
+                  updated_at: "",
+                });
+                setSnippets(await api.listSnippets());
+                setSnippetTrigger("");
+                setSnippetContent("");
+              }}
+            >
+              Add snippet
+            </button>
+            <ul className="mt-6 space-y-2">
+              {snippets.map((snippet) => (
+                <li key={snippet.id} className="rounded-lg bg-paper/5 p-3">
+                  <div className="flex justify-between">
+                    <p className="font-medium">{snippet.trigger}</p>
+                    <button
+                      onClick={async () => {
+                        await api.removeSnippet(snippet.id);
+                        setSnippets(await api.listSnippets());
+                      }}
+                    >
+                      Remove
+                    </button>
+                  </div>
+                  <pre className="mt-2 whitespace-pre-wrap text-sm text-paper/80">
+                    {snippet.content}
+                  </pre>
                 </li>
               ))}
             </ul>
@@ -617,25 +839,179 @@ export function App() {
         )}
 
         {view === "profiles" && (
-          <section>
-            <h1 className="text-4xl">Profiles</h1>
-            <p className="mt-2 text-paper/70">
-              Default profile follows the mode in Settings and the shared dictionary.
+          <section className="max-w-2xl space-y-4">
+            <h1 className="text-4xl">Styles + application profiles</h1>
+            {context && (
+              <p className="rounded-xl bg-paper/5 px-4 py-2 text-sm">
+                Current app: {context.app_name || "—"} / Profile: {context.profile_name}
+              </p>
+            )}
+            <p className="text-sm text-paper/60">
+              Resolver: exact app → group → profile → global fallback mode.
             </p>
+            {profiles.map((profile, index) => (
+              <article key={profile.id} className="rounded-2xl border border-paper/10 p-4">
+                <h2 className="text-xl">{profile.name}</h2>
+                <label className="mt-2 block text-sm text-paper/70">
+                  Style
+                  <select
+                    className="mt-1 w-full rounded-lg bg-paper/10 p-2"
+                    value={profile.style}
+                    onChange={(e) => {
+                      const next = profiles.map((item, i) =>
+                        i === index ? { ...item, style: e.target.value } : item,
+                      );
+                      setProfiles(next);
+                    }}
+                  >
+                    <option value="personal">Personal</option>
+                    <option value="work">Work</option>
+                    <option value="email">Email</option>
+                    <option value="other">Other</option>
+                  </select>
+                </label>
+                <label className="mt-2 block text-sm text-paper/70">
+                  Mode
+                  <select
+                    className="mt-1 w-full rounded-lg bg-paper/10 p-2"
+                    value={profile.mode}
+                    onChange={(e) => {
+                      const next = profiles.map((item, i) =>
+                        i === index
+                          ? { ...item, mode: e.target.value as AppSettings["mode"] }
+                          : item,
+                      );
+                      setProfiles(next);
+                    }}
+                  >
+                    <option value="raw">Raw</option>
+                    <option value="normal">Normal</option>
+                    <option value="professional">Professional</option>
+                    <option value="code">Code</option>
+                  </select>
+                </label>
+                <label className="mt-2 block text-sm text-paper/70">
+                  Apps (comma-separated)
+                  <input
+                    className="mt-1 w-full rounded-lg bg-paper/10 p-2"
+                    value={profile.apps.join(", ")}
+                    onChange={(e) => {
+                      const apps = e.target.value
+                        .split(",")
+                        .map((item) => item.trim())
+                        .filter(Boolean);
+                      const next = profiles.map((item, i) =>
+                        i === index ? { ...item, apps } : item,
+                      );
+                      setProfiles(next);
+                    }}
+                  />
+                </label>
+              </article>
+            ))}
+            <button
+              className="rounded-full bg-copper px-5 py-2 text-ink"
+              onClick={async () => {
+                await api.saveProfiles(profiles);
+                setContext(await api.getActiveContext());
+                setStatus("Profiles saved.");
+              }}
+            >
+              Save profiles
+            </button>
           </section>
         )}
 
         {view === "personalization" && (
-          <section>
+          <section className="max-w-xl space-y-4">
             <h1 className="text-4xl">Personalization</h1>
-            <p className="mt-2 max-w-xl text-paper/70">
-              Accepted corrections become learned candidates. Reset removes correction events,
-              learned candidates, and accepted inferred preferences.
+            <label className="flex items-center gap-2 text-sm">
+              <input
+                type="checkbox"
+                checked={settings.personalization_enabled}
+                onChange={(e) =>
+                  void save({ ...settings, personalization_enabled: e.target.checked })
+                }
+              />
+              Personalization ON
+            </label>
+            <label className="flex items-center gap-2 text-sm">
+              <input
+                type="checkbox"
+                checked={settings.learn_from_corrections}
+                onChange={(e) =>
+                  void save({ ...settings, learn_from_corrections: e.target.checked })
+                }
+              />
+              Learn from corrections
+            </label>
+            <p className="text-sm text-paper/60">
+              First correction is a candidate. Repeat it to get a suggestion. Accept writes a
+              dictionary replacement rule.
             </p>
+            <div className="flex gap-2">
+              <input
+                className="flex-1 rounded-lg bg-paper/10 p-2"
+                placeholder="original"
+                value={correctionOriginal}
+                onChange={(e) => setCorrectionOriginal(e.target.value)}
+              />
+              <input
+                className="flex-1 rounded-lg bg-paper/10 p-2"
+                placeholder="corrected"
+                value={correctionFixed}
+                onChange={(e) => setCorrectionFixed(e.target.value)}
+              />
+              <button
+                className="rounded-lg bg-moss px-3 text-ink"
+                onClick={async () => {
+                  const next = await api.recordCorrection(correctionOriginal, correctionFixed);
+                  setSuggestions(next);
+                  setCorrectionOriginal("");
+                  setCorrectionFixed("");
+                  setStatus("Correction recorded.");
+                }}
+              >
+                Record
+              </button>
+            </div>
+            <h2 className="text-xl">Suggestions</h2>
+            <ul className="space-y-2">
+              {suggestions.map((item) => (
+                <li
+                  key={item.id}
+                  className="flex items-center justify-between rounded-lg bg-paper/5 px-3 py-2"
+                >
+                  <span>
+                    {item.pattern} → {item.replacement} (×{item.weight})
+                  </span>
+                  <span className="flex gap-3">
+                    <button
+                      onClick={async () => {
+                        await api.acceptSuggestion(item.id);
+                        setSuggestions(await api.listSuggestions());
+                        setDictionary(await api.listDictionary());
+                      }}
+                    >
+                      Accept
+                    </button>
+                    <button
+                      onClick={async () => {
+                        await api.dismissSuggestion(item.id);
+                        setSuggestions(await api.listSuggestions());
+                      }}
+                    >
+                      Dismiss
+                    </button>
+                  </span>
+                </li>
+              ))}
+            </ul>
             <button
-              className="mt-6 rounded-full border border-copper px-4 py-2 text-copper"
+              className="rounded-full border border-copper px-4 py-2 text-copper"
               onClick={async () => {
                 await api.resetPersonalization();
+                setSuggestions([]);
                 setStatus("Personalization reset.");
               }}
             >
@@ -658,16 +1034,125 @@ export function App() {
                 Delete history
               </button>
             </div>
-            <ul className="mt-6 space-y-3">
-              {history.map((item) => (
-                <li key={item.id} className="rounded-xl bg-paper/5 p-4">
-                  <p className="text-xs text-paper/50">
-                    {item.created_at} · {item.mode}
-                  </p>
-                  <p className="mt-2">{item.output}</p>
-                </li>
-              ))}
-            </ul>
+            {["today", "earlier"].map((bucket) => {
+              const items = history.filter((item) =>
+                bucket === "today" ? isToday(item.created_at) : !isToday(item.created_at),
+              );
+              if (items.length === 0) {
+                return null;
+              }
+              return (
+                <div key={bucket} className="mt-6">
+                  <h2 className="text-sm uppercase tracking-[0.2em] text-copper">
+                    {bucket === "today" ? "Today" : "Earlier"}
+                  </h2>
+                  <ul className="mt-3 space-y-3">
+                    {items.map((item) => (
+                      <li key={item.id} className="rounded-xl bg-paper/5 p-4">
+                        <p className="text-xs text-paper/50">
+                          {item.created_at} · {item.application || "—"} · {item.profile || "—"} ·{" "}
+                          {item.model || "—"} · {item.processing_time_ms} ms · {item.mode}
+                        </p>
+                        <p className="mt-1 text-xs text-paper/40">{item.transcript}</p>
+                        {editingHistoryId === item.id ? (
+                          <textarea
+                            className="mt-2 h-24 w-full rounded-lg bg-paper/10 p-2"
+                            value={editingHistoryText}
+                            onChange={(e) => setEditingHistoryText(e.target.value)}
+                          />
+                        ) : (
+                          <p className="mt-2 whitespace-pre-wrap">{item.output}</p>
+                        )}
+                        <div className="mt-3 flex flex-wrap gap-3 text-sm text-copper">
+                          <button
+                            onClick={() =>
+                              void api.copyText(item.output).then(() => setStatus("Copied."))
+                            }
+                          >
+                            Copy
+                          </button>
+                          <button
+                            onClick={() =>
+                              void api.pasteText(item.output).then(() => setStatus("Pasted."))
+                            }
+                          >
+                            Paste
+                          </button>
+                          {editingHistoryId === item.id ? (
+                            <button
+                              onClick={async () => {
+                                await api.updateHistoryOutput(item.id, editingHistoryText);
+                                setEditingHistoryId(null);
+                                setHistory(await api.listHistory());
+                              }}
+                            >
+                              Save
+                            </button>
+                          ) : (
+                            <button
+                              onClick={() => {
+                                setEditingHistoryId(item.id);
+                                setEditingHistoryText(item.output);
+                              }}
+                            >
+                              Edit
+                            </button>
+                          )}
+                          <button
+                            onClick={async () => {
+                              const output = await api.retryHistory(item.transcript);
+                              setStatus(`Retry: ${output.final_text}`);
+                              setHistory(await api.listHistory());
+                            }}
+                          >
+                            Retry
+                          </button>
+                          <button
+                            onClick={async () => {
+                              await api.historyToSnippet(
+                                item.transcript.slice(0, 60) || item.output.slice(0, 60),
+                                item.output,
+                              );
+                              setSnippets(await api.listSnippets());
+                              setStatus("Saved as snippet.");
+                            }}
+                          >
+                            Use as Snippet
+                          </button>
+                          <button
+                            onClick={async () => {
+                              await api.upsertDictionary({
+                                id: crypto.randomUUID(),
+                                kind: "replacement",
+                                canonical: item.output,
+                                aliases: [item.transcript],
+                                source: item.transcript,
+                                replacement: item.output,
+                                case_sensitive: false,
+                                enabled: true,
+                                builtin: false,
+                              });
+                              setDictionary(await api.listDictionary());
+                              setStatus("Added to dictionary.");
+                            }}
+                          >
+                            Add to Dictionary
+                          </button>
+                          <button
+                            onClick={async () => {
+                              await api.deleteHistoryItem(item.id);
+                              setHistory(await api.listHistory());
+                            }}
+                          >
+                            Delete
+                          </button>
+                        </div>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              );
+            })}
           </section>
         )}
 

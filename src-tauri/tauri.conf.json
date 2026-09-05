@@ -36,7 +36,9 @@
         "skipTaskbar": true,
         "transparent": true,
         "focus": false,
-        "shadow": false
+        "shadow": false,
+        "x": 240,
+        "y": 48
       }
     ],
     "trayIcon": {

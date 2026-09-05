@@ -3,15 +3,30 @@ use crate::runtime;
 use std::path::Path;
 
 pub trait SpeechToText: Send + Sync {
-    fn transcribe(&self, pcm: &[f32], model_path: Option<&Path>) -> LfResult<String>;
+    fn transcribe(
+        &self,
+        pcm: &[f32],
+        model_path: Option<&Path>,
+        language: &str,
+    ) -> LfResult<String>;
 }
 
 pub struct NativeStt;
 
 impl SpeechToText for NativeStt {
-    fn transcribe(&self, pcm: &[f32], model_path: Option<&Path>) -> LfResult<String> {
+    fn transcribe(
+        &self,
+        pcm: &[f32],
+        model_path: Option<&Path>,
+        language: &str,
+    ) -> LfResult<String> {
         if let Some(path) = model_path {
-            match crate::whisper_stt::transcribe(path, pcm, crate::dictation::cancel_flag()) {
+            match crate::whisper_stt::transcribe(
+                path,
+                pcm,
+                crate::dictation::cancel_flag(),
+                language,
+            ) {
                 Ok(text) if !text.trim().is_empty() => return Ok(text),
                 Ok(_) => {
                     return Err(LfError::RuntimeUnsupported(
@@ -33,7 +48,12 @@ pub struct ScriptedStt {
 }
 
 impl SpeechToText for ScriptedStt {
-    fn transcribe(&self, _pcm: &[f32], _model_path: Option<&Path>) -> LfResult<String> {
+    fn transcribe(
+        &self,
+        _pcm: &[f32],
+        _model_path: Option<&Path>,
+        _language: &str,
+    ) -> LfResult<String> {
         Ok(self.transcript.clone())
     }
 }

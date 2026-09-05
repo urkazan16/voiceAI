@@ -7,4 +7,12 @@ pub struct HistoryItem {
     pub mode: String,
     pub transcript: String,
     pub output: String,
+    #[serde(default)]
+    pub application: String,
+    #[serde(default)]
+    pub profile: String,
+    #[serde(default)]
+    pub model: String,
+    #[serde(default)]
+    pub processing_time_ms: u64,
 }

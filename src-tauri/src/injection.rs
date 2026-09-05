@@ -1,4 +1,5 @@
 use crate::error::{LfError, LfResult};
+use std::time::Duration;
 
 pub trait TextInjector: Send + Sync {
     fn insert_text(&self, text: &str, restore_clipboard: bool) -> LfResult<()>;
@@ -38,23 +39,56 @@ impl TextInjector for ClipboardInjector {
 }
 
 pub fn frontmost_unix_id() -> Option<i32> {
+    frontmost_target().0
+}
+
+pub fn frontmost_app_name() -> Option<String> {
+    frontmost_target().1
+}
+
+pub fn frontmost_target() -> (Option<i32>, Option<String>) {
     #[cfg(target_os = "macos")]
     {
-        let output = std::process::Command::new("osascript")
-            .args([
-                "-e",
-                "tell application \"System Events\" to get unix id of first application process whose frontmost is true",
-            ])
-            .output()
-            .ok()?;
-        if !output.status.success() {
-            return None;
-        }
-        String::from_utf8(output.stdout).ok()?.trim().parse().ok()
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = tx.send(frontmost_target_blocking());
+        });
+        rx.recv_timeout(Duration::from_millis(250))
+            .unwrap_or((None, None))
     }
     #[cfg(not(target_os = "macos"))]
     {
-        None
+        (None, None)
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn frontmost_target_blocking() -> (Option<i32>, Option<String>) {
+    let output = std::process::Command::new("osascript")
+        .args([
+            "-e",
+            "tell application \"System Events\" to tell first application process whose frontmost is true to get name & tab & unix id",
+        ])
+        .output();
+    let Ok(output) = output else {
+        return (None, None);
+    };
+    if !output.status.success() {
+        return (None, None);
+    }
+    let text = String::from_utf8(output.stdout).unwrap_or_default();
+    let text = text.trim();
+    if text.is_empty() {
+        return (None, None);
+    }
+    match text.rsplit_once('\t') {
+        Some((name, id)) => (
+            id.trim().parse().ok(),
+            Some(name.trim())
+                .filter(|n| !n.is_empty())
+                .map(str::to_string),
+        ),
+        None => (text.parse().ok(), None),
     }
 }
 

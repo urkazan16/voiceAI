@@ -3,6 +3,8 @@ use crate::dictionary::Dictionary;
 use crate::error::{LfError, LfResult};
 use crate::personalization::PersonalizationState;
 use crate::pipeline::PipelineMode;
+use crate::profiles::Profile;
+use crate::snippets::SnippetBook;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -18,6 +20,10 @@ pub struct AppSettings {
     pub copy_last_hotkey: String,
     pub paste_last_hotkey: String,
     pub show_flow_bar: bool,
+    pub profile_override: Option<String>,
+    pub personalization_enabled: bool,
+    pub learn_from_corrections: bool,
+    pub stt_language: String,
 }
 
 impl Default for AppSettings {
@@ -33,16 +39,12 @@ impl Default for AppSettings {
             copy_last_hotkey: "Command+Control+C".into(),
             paste_last_hotkey: "Command+Control+V".into(),
             show_flow_bar: true,
+            profile_override: None,
+            personalization_enabled: true,
+            learn_from_corrections: true,
+            stt_language: "ru".into(),
         }
     }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct Profile {
-    pub id: String,
-    pub name: String,
-    pub mode: PipelineMode,
-    pub dictionary_ids: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -52,6 +54,8 @@ pub struct ExportedConfig {
     pub profiles: Vec<Profile>,
     pub dictionary: Dictionary,
     pub personalization: PersonalizationState,
+    #[serde(default)]
+    pub snippets: SnippetBook,
     pub models: ModelSelection,
 }
 
@@ -84,6 +88,7 @@ pub fn export_config(
     profiles: &[Profile],
     dictionary: &Dictionary,
     personalization: &PersonalizationState,
+    snippets: &SnippetBook,
 ) -> ExportedConfig {
     ExportedConfig {
         version: 1,
@@ -95,6 +100,7 @@ pub fn export_config(
         profiles: profiles.to_vec(),
         dictionary: dictionary.clone(),
         personalization: personalization.clone(),
+        snippets: snippets.clone(),
     }
 }
 
@@ -117,6 +123,7 @@ mod tests {
             &[],
             &Dictionary::default(),
             &PersonalizationState::default(),
+            &SnippetBook::default(),
         );
         let json = serde_json::to_string_pretty(&exported).unwrap();
         let imported = import_config(&json, &catalog).unwrap();

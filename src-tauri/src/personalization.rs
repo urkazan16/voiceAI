@@ -14,6 +14,8 @@ pub struct LearnedCandidate {
     pub pattern: String,
     pub replacement: String,
     pub weight: i32,
+    #[serde(default)]
+    pub accepted: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -34,7 +36,8 @@ pub struct PersonalizationState {
 impl PersonalizationState {
     pub fn apply(&self, input: &str) -> String {
         let mut output = input.to_string();
-        let mut learned = self.learned.clone();
+        let mut learned: Vec<&LearnedCandidate> =
+            self.learned.iter().filter(|c| c.accepted).collect();
         learned.sort_by(|a, b| {
             b.weight
                 .cmp(&a.weight)
@@ -54,13 +57,13 @@ impl PersonalizationState {
         output
     }
 
-    pub fn record_correction(&mut self, event: CorrectionEvent) {
-        if event.accepted && event.original != event.corrected {
-            let id = format!("learned-{}", event.id);
+    pub fn record_correction(&mut self, event: CorrectionEvent, learn: bool) {
+        if learn && event.original != event.corrected {
+            let id = format!("learned-{}", event.original.to_lowercase());
             if let Some(existing) = self
                 .learned
                 .iter_mut()
-                .find(|c| c.pattern == event.original)
+                .find(|c| c.pattern.eq_ignore_ascii_case(&event.original))
             {
                 existing.replacement = event.corrected.clone();
                 existing.weight += 1;
@@ -70,10 +73,29 @@ impl PersonalizationState {
                     pattern: event.original.clone(),
                     replacement: event.corrected.clone(),
                     weight: 1,
+                    accepted: false,
                 });
             }
         }
         self.corrections.push(event);
+    }
+
+    pub fn suggestions(&self) -> Vec<LearnedCandidate> {
+        self.learned
+            .iter()
+            .filter(|c| !c.accepted && c.weight >= 2)
+            .cloned()
+            .collect()
+    }
+
+    pub fn accept_suggestion(&mut self, id: &str) -> Option<LearnedCandidate> {
+        let item = self.learned.iter_mut().find(|c| c.id == id)?;
+        item.accepted = true;
+        Some(item.clone())
+    }
+
+    pub fn dismiss_suggestion(&mut self, id: &str) {
+        self.learned.retain(|c| c.id != id);
     }
 
     pub fn accept_preference(&mut self, id: &str) {
@@ -85,7 +107,6 @@ impl PersonalizationState {
     pub fn reset(&mut self) {
         self.corrections.clear();
         self.learned.clear();
-        self.preferences.retain(|p| !p.accepted);
         self.preferences.clear();
     }
 }
@@ -95,16 +116,37 @@ mod tests {
     use super::*;
 
     #[test]
-    fn accepted_correction_becomes_learned_candidate() {
+    fn first_correction_is_only_a_candidate() {
         let mut state = PersonalizationState::default();
-        state.record_correction(CorrectionEvent {
-            id: "c1".into(),
+        state.record_correction(
+            CorrectionEvent {
+                id: "c1".into(),
+                original: "локалфлоу".into(),
+                corrected: "LocalFlow".into(),
+                accepted: true,
+            },
+            true,
+        );
+        assert_eq!(state.apply("запусти локалфлоу"), "запусти локалфлоу");
+        assert_eq!(state.learned.len(), 1);
+        assert!(state.suggestions().is_empty());
+    }
+
+    #[test]
+    fn repeated_correction_becomes_suggestion_then_accept() {
+        let mut state = PersonalizationState::default();
+        let event = CorrectionEvent {
+            id: "c".into(),
             original: "локалфлоу".into(),
             corrected: "LocalFlow".into(),
             accepted: true,
-        });
+        };
+        state.record_correction(event.clone(), true);
+        state.record_correction(event, true);
+        assert_eq!(state.suggestions().len(), 1);
+        let id = state.suggestions()[0].id.clone();
+        state.accept_suggestion(&id);
         assert_eq!(state.apply("запусти локалфлоу"), "запусти LocalFlow");
-        assert_eq!(state.learned.len(), 1);
     }
 
     #[test]
@@ -121,6 +163,7 @@ mod tests {
                 pattern: "a".into(),
                 replacement: "b".into(),
                 weight: 2,
+                accepted: true,
             }],
             preferences: vec![InferredPreference {
                 id: "p".into(),

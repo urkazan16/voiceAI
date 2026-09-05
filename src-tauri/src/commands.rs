@@ -1,4 +1,4 @@
-use crate::audio::{self, AudioDevice, SharedCapture};
+use crate::audio::{self, AudioDevice};
 use crate::build_info::{self, BuildInfo};
 use crate::catalog::ModelRecord;
 use crate::config::AppSettings;
@@ -7,7 +7,10 @@ use crate::download::{self, ModelDownloadProgress, ModelInstallStatus};
 use crate::engine::SharedEngine;
 use crate::error::LfError;
 use crate::history::HistoryItem;
+use crate::injection::TextInjector;
 use crate::pipeline::{PipelineOutput, PipelineSnapshot};
+use crate::profiles::{Profile, ResolvedContext};
+use crate::snippets::Snippet;
 use serde::Serialize;
 use std::collections::HashSet;
 use std::sync::{Mutex, OnceLock};
@@ -60,12 +63,16 @@ pub fn get_settings(engine: tauri::State<SharedEngine>) -> Result<AppSettings, C
 
 #[tauri::command]
 pub fn save_settings(
+    app: tauri::AppHandle,
     engine: tauri::State<SharedEngine>,
     settings: AppSettings,
 ) -> Result<(), CommandError> {
-    let mut eng = lock(&engine)?;
-    eng.settings = settings;
-    eng.persist()?;
+    {
+        let mut eng = lock(&engine)?;
+        eng.settings = settings;
+        eng.persist()?;
+    }
+    crate::apply_shortcuts(&app, &engine);
     Ok(())
 }
 
@@ -109,6 +116,176 @@ pub fn remove_dictionary_entry(
 }
 
 #[tauri::command]
+pub fn import_dictionary(
+    engine: tauri::State<SharedEngine>,
+    json: String,
+) -> Result<usize, CommandError> {
+    let entries: Vec<DictionaryEntry> = serde_json::from_str(&json).map_err(|e| CommandError {
+        code: "JSON".into(),
+        message: e.to_string(),
+    })?;
+    let count = entries.len();
+    let mut eng = lock(&engine)?;
+    eng.dictionary.import_entries(entries);
+    eng.persist()?;
+    Ok(count)
+}
+
+#[tauri::command]
+pub fn search_dictionary(
+    engine: tauri::State<SharedEngine>,
+    query: String,
+) -> Result<Vec<DictionaryEntry>, CommandError> {
+    Ok(lock(&engine)?.dictionary.search(&query))
+}
+
+#[tauri::command]
+pub fn list_snippets(engine: tauri::State<SharedEngine>) -> Result<Vec<Snippet>, CommandError> {
+    Ok(lock(&engine)?.snippets.items.clone())
+}
+
+#[tauri::command]
+pub fn upsert_snippet(
+    engine: tauri::State<SharedEngine>,
+    snippet: Snippet,
+) -> Result<(), CommandError> {
+    let mut eng = lock(&engine)?;
+    eng.snippets.upsert(snippet);
+    eng.persist()?;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn remove_snippet(engine: tauri::State<SharedEngine>, id: String) -> Result<(), CommandError> {
+    let mut eng = lock(&engine)?;
+    eng.snippets.remove(&id);
+    eng.persist()?;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn list_profiles(engine: tauri::State<SharedEngine>) -> Result<Vec<Profile>, CommandError> {
+    Ok(lock(&engine)?.profiles.clone())
+}
+
+#[tauri::command]
+pub fn save_profiles(
+    engine: tauri::State<SharedEngine>,
+    profiles: Vec<Profile>,
+) -> Result<(), CommandError> {
+    let mut eng = lock(&engine)?;
+    eng.profiles = profiles;
+    eng.persist()?;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn get_active_context(
+    engine: tauri::State<SharedEngine>,
+) -> Result<ResolvedContext, CommandError> {
+    let mut eng = lock(&engine)?;
+    if eng.insert_target_app.is_none() {
+        eng.insert_target_app = crate::injection::frontmost_app_name();
+    }
+    Ok(eng.resolve_context())
+}
+
+#[tauri::command]
+pub fn record_correction(
+    engine: tauri::State<SharedEngine>,
+    original: String,
+    corrected: String,
+) -> Result<Vec<crate::personalization::LearnedCandidate>, CommandError> {
+    Ok(lock(&engine)?.record_user_correction(original, corrected)?)
+}
+
+#[tauri::command]
+pub fn list_suggestions(
+    engine: tauri::State<SharedEngine>,
+) -> Result<Vec<crate::personalization::LearnedCandidate>, CommandError> {
+    Ok(lock(&engine)?.personalization.suggestions())
+}
+
+#[tauri::command]
+pub fn accept_suggestion(
+    engine: tauri::State<SharedEngine>,
+    id: String,
+) -> Result<(), CommandError> {
+    lock(&engine)?.accept_learned(&id)?;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn dismiss_suggestion(
+    engine: tauri::State<SharedEngine>,
+    id: String,
+) -> Result<(), CommandError> {
+    let mut eng = lock(&engine)?;
+    eng.personalization.dismiss_suggestion(&id);
+    eng.persist()?;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn delete_history_item(
+    engine: tauri::State<SharedEngine>,
+    id: String,
+) -> Result<(), CommandError> {
+    lock(&engine)?.store.delete_history_item(&id)?;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn update_history_output(
+    engine: tauri::State<SharedEngine>,
+    id: String,
+    output: String,
+) -> Result<(), CommandError> {
+    lock(&engine)?.store.update_history_output(&id, &output)?;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn retry_history(
+    engine: tauri::State<SharedEngine>,
+    transcript: String,
+) -> Result<PipelineOutput, CommandError> {
+    Ok(lock(&engine)?.run_scripted(&transcript)?)
+}
+
+#[tauri::command]
+pub fn history_to_snippet(
+    engine: tauri::State<SharedEngine>,
+    trigger: String,
+    content: String,
+) -> Result<(), CommandError> {
+    let mut eng = lock(&engine)?;
+    eng.snippets.upsert(crate::snippets::Snippet::new(
+        &uuid::Uuid::new_v4().to_string(),
+        &trigger,
+        &content,
+    ));
+    eng.persist()?;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn copy_text(text: String) -> Result<(), CommandError> {
+    crate::engine::AppEngine::copy_text(&text)?;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn paste_text(engine: tauri::State<SharedEngine>, text: String) -> Result<(), CommandError> {
+    let restore = lock(&engine)?.settings.restore_clipboard;
+    crate::injection::ClipboardInjector {
+        target_pid: crate::injection::frontmost_unix_id(),
+    }
+    .insert_text(&text, restore)?;
+    Ok(())
+}
+
+#[tauri::command]
 pub fn export_configuration(engine: tauri::State<SharedEngine>) -> Result<String, CommandError> {
     Ok(lock(&engine)?.export_json()?)
 }
@@ -148,22 +325,14 @@ pub fn process_transcript(
 }
 
 #[tauri::command]
-pub fn dictation_stop(
-    app: tauri::AppHandle,
-    engine: tauri::State<SharedEngine>,
-    capture: tauri::State<SharedCapture>,
-) -> Result<(), CommandError> {
-    crate::dictation::stop_and_process(&app, &engine, &capture);
+pub fn dictation_stop() -> Result<(), CommandError> {
+    crate::dictation::enqueue(crate::dictation::DictationCmd::Stop);
     Ok(())
 }
 
 #[tauri::command]
-pub fn dictation_cancel(
-    app: tauri::AppHandle,
-    engine: tauri::State<SharedEngine>,
-    capture: tauri::State<SharedCapture>,
-) -> Result<(), CommandError> {
-    crate::dictation::cancel(&app, &engine, &capture);
+pub fn dictation_cancel() -> Result<(), CommandError> {
+    crate::dictation::enqueue(crate::dictation::DictationCmd::Cancel);
     Ok(())
 }
 

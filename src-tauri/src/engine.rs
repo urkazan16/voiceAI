@@ -1,5 +1,5 @@
 use crate::catalog::{ModelCatalog, ModelRecord};
-use crate::config::{export_config, import_config, AppSettings, ExportedConfig, Profile};
+use crate::config::{export_config, import_config, AppSettings, ExportedConfig};
 use crate::db::Store;
 use crate::dictionary::Dictionary;
 use crate::error::{LfError, LfResult};
@@ -11,10 +11,13 @@ use crate::llm::{LanguageModel, NativeLlm, ScriptedLlm};
 use crate::paths::DataPaths;
 use crate::personalization::PersonalizationState;
 use crate::pipeline::{PipelineMode, PipelineOutput, PipelineSnapshot, PipelineState};
+use crate::profiles::{self, Profile, ResolvedContext};
+use crate::snippets::SnippetBook;
 use crate::stt::{NativeStt, ScriptedStt, SpeechToText};
 use chrono::Utc;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
+use std::time::Instant;
 use uuid::Uuid;
 
 pub struct AppEngine {
@@ -24,12 +27,14 @@ pub struct AppEngine {
     pub profiles: Vec<Profile>,
     pub dictionary: Dictionary,
     pub personalization: PersonalizationState,
+    pub snippets: SnippetBook,
     pub snapshot: PipelineSnapshot,
     pub store: Store,
     pub last_output: Option<PipelineOutput>,
     pub hotkey_registered: Option<String>,
     pub hotkey_error: Option<String>,
     pub insert_target_pid: Option<i32>,
+    pub insert_target_app: Option<String>,
     pub session_text: String,
 }
 
@@ -42,23 +47,25 @@ impl AppEngine {
             paths,
             catalog,
             settings: AppSettings::default(),
-            profiles: vec![Profile {
-                id: "default".into(),
-                name: "Default".into(),
-                mode: PipelineMode::Normal,
-                dictionary_ids: vec![],
-            }],
+            profiles: profiles::default_profiles(),
             dictionary: Dictionary::default(),
             personalization: PersonalizationState::default(),
+            snippets: SnippetBook::default(),
             snapshot: PipelineSnapshot::default(),
             store,
             last_output: None,
             hotkey_registered: None,
             hotkey_error: None,
             insert_target_pid: None,
+            insert_target_app: None,
             session_text: String::new(),
         };
         engine.load_persisted();
+        engine.dictionary.ensure_builtins();
+        engine.snippets.ensure_defaults();
+        if engine.profiles.iter().all(|p| p.apps.is_empty()) {
+            engine.profiles = profiles::default_profiles();
+        }
         if let Ok(Some(json)) = engine.store.get_kv("last_transcript") {
             if let Ok(output) = serde_json::from_str::<PipelineOutput>(&json) {
                 engine.last_output = Some(output);
@@ -75,12 +82,25 @@ impl AppEngine {
         }
     }
 
+    pub fn resolve_context(&self) -> ResolvedContext {
+        let mut ctx = profiles::resolve_profile(
+            &self.profiles,
+            self.insert_target_app.as_deref(),
+            self.settings.profile_override.as_deref(),
+        );
+        if ctx.source == "global" {
+            ctx.mode = self.settings.mode;
+        }
+        ctx
+    }
+
     pub fn persist(&self) -> LfResult<()> {
         let exported = export_config(
             &self.settings,
             &self.profiles,
             &self.dictionary,
             &self.personalization,
+            &self.snippets,
         );
         self.store
             .put_kv("config", &serde_json::to_string_pretty(&exported)?)?;
@@ -92,6 +112,7 @@ impl AppEngine {
         self.profiles = cfg.profiles;
         self.dictionary = cfg.dictionary;
         self.personalization = cfg.personalization;
+        self.snippets = cfg.snippets;
         self.settings.active_stt_model = cfg.models.active_stt_model;
         self.settings.active_llm_model = cfg.models.active_llm_model;
     }
@@ -102,6 +123,7 @@ impl AppEngine {
             &self.profiles,
             &self.dictionary,
             &self.personalization,
+            &self.snippets,
         );
         Ok(serde_json::to_string_pretty(&exported)?)
     }
@@ -186,6 +208,7 @@ impl AppEngine {
         injector: &dyn TextInjector,
         pcm: &[f32],
     ) -> LfResult<PipelineOutput> {
+        let started = Instant::now();
         self.snapshot.reset();
         self.snapshot.mode = self.settings.mode;
         self.snapshot.transition(PipelineState::Recording)?;
@@ -194,45 +217,72 @@ impl AppEngine {
             return Err(LfError::Other("cancelled".into()));
         }
         let raw = if transcript.is_empty() {
-            stt.transcribe(pcm, self.ready_model_path("stt").as_deref())?
+            stt.transcribe(
+                pcm,
+                self.ready_model_path("stt").as_deref(),
+                &self.settings.stt_language,
+            )?
         } else {
             transcript.to_string()
         };
         if crate::dictation::is_cancelled() {
             return Err(LfError::Other("cancelled".into()));
         }
+        let (after_command, command_mode, _) = profiles::apply_voice_command(&raw);
+        let resolved = self.resolve_context();
+        let mode = command_mode.unwrap_or(resolved.mode);
+        self.snapshot.mode = mode;
+        let snippet_hit = self.snippets.expand(&after_command, &resolved.profile_id);
+        let skip_llm = snippet_hit.as_ref().map(|(_, skip)| *skip).unwrap_or(false);
+        let working = snippet_hit.map(|(text, _)| text).unwrap_or(after_command);
         self.snapshot.transition(PipelineState::Dictionary)?;
-        let dictionary_text = self.dictionary.apply(&raw);
+        let dictionary_text = if skip_llm {
+            working.clone()
+        } else {
+            crate::phrases::recover(&self.dictionary.apply(&working))
+        };
         self.snapshot.transition(PipelineState::Backtrack)?;
-        let backtrack_text = if self.settings.mode == PipelineMode::Raw {
+        let backtrack_text = if skip_llm || mode == PipelineMode::Raw {
             dictionary_text.clone()
         } else {
             crate::backtrack::apply(&dictionary_text, &self.session_text)
         };
         self.snapshot.transition(PipelineState::Formatting)?;
-        let formatted_text = crate::format::format_smart(self.settings.mode, &backtrack_text);
+        let formatted_text = if skip_llm {
+            backtrack_text.clone()
+        } else {
+            crate::phrases::recover(&crate::format::format_smart(mode, &backtrack_text))
+        };
         self.snapshot.transition(PipelineState::Personalization)?;
-        let personalized_text = self.personalization.apply(&formatted_text);
+        let personalized_text = if self.settings.personalization_enabled && !skip_llm {
+            self.personalization.apply(&formatted_text)
+        } else {
+            formatted_text.clone()
+        };
         self.snapshot.transition(PipelineState::Llm)?;
-        let llm_text = match self.settings.mode {
-            PipelineMode::Raw | PipelineMode::Normal => personalized_text.clone(),
-            PipelineMode::Professional | PipelineMode::Code => {
-                match llm.generate(
-                    &personalized_text,
-                    self.settings.mode,
-                    self.ready_model_path("llm").as_deref(),
-                ) {
-                    Ok(text) => text,
-                    Err(LfError::RuntimeUnsupported(_)) | Err(LfError::ModelMissing(_)) => {
-                        personalized_text.clone()
+        let llm_text = if skip_llm {
+            personalized_text.clone()
+        } else {
+            match mode {
+                PipelineMode::Raw | PipelineMode::Normal => personalized_text.clone(),
+                PipelineMode::Professional | PipelineMode::Code => {
+                    match llm.generate(
+                        &personalized_text,
+                        mode,
+                        self.ready_model_path("llm").as_deref(),
+                    ) {
+                        Ok(text) => text,
+                        Err(LfError::RuntimeUnsupported(_)) | Err(LfError::ModelMissing(_)) => {
+                            personalized_text.clone()
+                        }
+                        Err(other) => return Err(other),
                     }
-                    Err(other) => return Err(other),
                 }
             }
         };
         self.snapshot.transition(PipelineState::Validate)?;
         let final_text = llm_text.trim().to_string();
-        if self.settings.mode == PipelineMode::Code {
+        if mode == PipelineMode::Code {
             debug_assert!(crate::llm::assert_non_execution_policy());
         }
         self.snapshot.transition(PipelineState::Injecting)?;
@@ -255,7 +305,7 @@ impl AppEngine {
             formatted_text,
             personalized_text,
             final_text: final_text.clone(),
-            mode: self.settings.mode,
+            mode,
             insert_ok,
         };
         self.last_output = Some(output.clone());
@@ -269,9 +319,13 @@ impl AppEngine {
         let item = HistoryItem {
             id: Uuid::new_v4().to_string(),
             created_at: Utc::now().to_rfc3339(),
-            mode: format!("{:?}", self.settings.mode).to_lowercase(),
+            mode: format!("{mode:?}").to_lowercase(),
             transcript: raw,
             output: final_text,
+            application: resolved.app_name.clone(),
+            profile: resolved.profile_name.clone(),
+            model: self.settings.active_stt_model.clone().unwrap_or_default(),
+            processing_time_ms: started.elapsed().as_millis() as u64,
         };
         self.store.insert_history(&item)?;
         self.snapshot.transition(PipelineState::Idle)?;
@@ -297,6 +351,53 @@ impl AppEngine {
     pub fn reset_personalization(&mut self) -> LfResult<()> {
         self.personalization.reset();
         self.persist()
+    }
+
+    pub fn record_user_correction(
+        &mut self,
+        original: String,
+        corrected: String,
+    ) -> LfResult<Vec<crate::personalization::LearnedCandidate>> {
+        self.personalization.record_correction(
+            crate::personalization::CorrectionEvent {
+                id: Uuid::new_v4().to_string(),
+                original,
+                corrected,
+                accepted: true,
+            },
+            self.settings.learn_from_corrections,
+        );
+        self.persist()?;
+        Ok(self.personalization.suggestions())
+    }
+
+    pub fn accept_learned(
+        &mut self,
+        id: &str,
+    ) -> LfResult<Option<crate::dictionary::DictionaryEntry>> {
+        let Some(item) = self.personalization.accept_suggestion(id) else {
+            return Ok(None);
+        };
+        let entry =
+            crate::dictionary::DictionaryEntry::rule(&item.id, &item.pattern, &item.replacement);
+        self.dictionary.upsert(entry.clone());
+        self.persist()?;
+        Ok(Some(entry))
+    }
+
+    pub fn copy_text(text: &str) -> LfResult<()> {
+        let mut child = std::process::Command::new("pbcopy")
+            .stdin(std::process::Stdio::piped())
+            .spawn()
+            .map_err(|e| LfError::InjectionFailed(e.to_string()))?;
+        if let Some(stdin) = child.stdin.as_mut() {
+            use std::io::Write;
+            stdin
+                .write_all(text.as_bytes())
+                .map_err(|e| LfError::InjectionFailed(e.to_string()))?;
+        }
+        let _ = child.wait();
+        Ok(())
     }
 
     pub fn copy_last_transcript(&self) -> LfResult<String> {
@@ -359,22 +460,50 @@ mod tests {
     #[test]
     fn pipeline_applies_dictionary_and_personalization() {
         let (_dir, mut eng) = engine();
-        eng.dictionary.upsert(DictionaryEntry {
-            id: "1".into(),
-            source: "жюнит".into(),
-            replacement: "JUnit 5".into(),
-            case_sensitive: false,
-        });
-        eng.personalization.record_correction(CorrectionEvent {
+        eng.dictionary
+            .upsert(DictionaryEntry::rule("1", "жюнит", "JUnit 5"));
+        let event = CorrectionEvent {
             id: "c".into(),
-            original: "локалфлоу".into(),
-            corrected: "LocalFlow".into(),
+            original: "маккензи".into(),
+            corrected: "McKenzie".into(),
             accepted: true,
-        });
-        let out = eng.run_scripted("жюнит тест для локалфлоу").unwrap();
+        };
+        eng.personalization.record_correction(event.clone(), true);
+        eng.personalization.record_correction(event, true);
+        let id = eng.personalization.suggestions()[0].id.clone();
+        eng.personalization.accept_suggestion(&id);
+        let out = eng.run_scripted("жюнит тест для маккензи").unwrap();
         assert!(out.final_text.contains("JUnit 5"));
-        assert!(out.final_text.contains("LocalFlow"));
+        assert!(out.final_text.contains("McKenzie"));
         assert_eq!(eng.snapshot.state, PipelineState::Idle);
+    }
+
+    #[test]
+    fn snippet_skips_llm_and_expands_exact_trigger() {
+        let (_dir, mut eng) = engine();
+        let out = eng.run_scripted("мой баг репорт").unwrap();
+        assert_eq!(
+            out.final_text,
+            "[BUG]\nEnvironment:\nSteps:\nExpected:\nActual:"
+        );
+    }
+
+    #[test]
+    fn recovers_mangled_nalim_tongue_twister() {
+        let (_dir, mut eng) = engine();
+        let out = eng
+            .run_scripted("На милимы лениваловили налимо, на милимы лениваловили ления, а любви не. Не меняли вы мило молили, и в туману лимана молили меня.")
+            .unwrap();
+        assert_eq!(out.final_text, crate::phrases::NALIM_TONGUE_TWISTER);
+    }
+
+    #[test]
+    fn recovers_mangled_sasha_tongue_twister() {
+        let (_dir, mut eng) = engine();
+        let out = eng
+            .run_scripted("Шла саша паше си і сасала сушку.")
+            .unwrap();
+        assert_eq!(out.final_text, crate::phrases::SASHA_TONGUE_TWISTER);
     }
 
     #[test]

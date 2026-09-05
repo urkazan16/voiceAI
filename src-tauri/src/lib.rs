@@ -4,9 +4,9 @@ use std::sync::{Arc, Mutex};
 use tauri::{
     menu::{Menu, MenuItem},
     tray::TrayIconBuilder,
-    Manager,
+    AppHandle, Manager, PhysicalPosition, WebviewWindow,
 };
-use tauri_plugin_global_shortcut::GlobalShortcutExt;
+use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut};
 
 pub mod audio;
 pub mod backtrack;
@@ -28,8 +28,11 @@ pub mod llm;
 pub mod macos_stt;
 pub mod paths;
 pub mod personalization;
+pub mod phrases;
 pub mod pipeline;
+pub mod profiles;
 pub mod runtime;
+pub mod snippets;
 pub mod stt;
 pub mod vad;
 pub mod whisper_stt;
@@ -73,7 +76,25 @@ pub fn run() {
             commands::get_last_transcript,
             commands::copy_last_transcript,
             commands::paste_last_transcript,
-            commands::clear_last_transcript
+            commands::clear_last_transcript,
+            commands::import_dictionary,
+            commands::search_dictionary,
+            commands::list_snippets,
+            commands::upsert_snippet,
+            commands::remove_snippet,
+            commands::list_profiles,
+            commands::save_profiles,
+            commands::get_active_context,
+            commands::record_correction,
+            commands::list_suggestions,
+            commands::accept_suggestion,
+            commands::dismiss_suggestion,
+            commands::delete_history_item,
+            commands::update_history_output,
+            commands::retry_history,
+            commands::history_to_snippet,
+            commands::copy_text,
+            commands::paste_text
         ])
         .setup(move |app| {
             let show = MenuItem::with_id(app, "show", "Open LocalFlow", true, None::<&str>)?;
@@ -96,10 +117,11 @@ pub fn run() {
             let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
             let menu =
                 Menu::with_items(app, &[&show, &copy_last, &paste_last, &cancel_item, &quit])?;
-            let mut tray = TrayIconBuilder::new()
-                .menu(&menu)
-                .show_menu_on_left_click(true)
-                .on_menu_event(|app, event| match event.id.as_ref() {
+            if let Some(tray) = app.tray_by_id("localflow") {
+                tray.set_menu(Some(menu))?;
+                tray.set_show_menu_on_left_click(true)?;
+                tray.set_icon_as_template(true)?;
+                tray.on_menu_event(|app, event| match event.id.as_ref() {
                     "quit" => app.exit(0),
                     "show" => {
                         if let Some(window) = app.get_webview_window("main") {
@@ -107,44 +129,53 @@ pub fn run() {
                             let _ = window.set_focus();
                         }
                     }
-                    "copy-last" => {
-                        let _ = app
-                            .state::<SharedEngine>()
-                            .lock()
-                            .ok()
-                            .and_then(|eng| eng.copy_last_transcript().ok());
-                    }
-                    "paste-last" => {
-                        let _ = app
-                            .state::<SharedEngine>()
-                            .lock()
-                            .ok()
-                            .and_then(|eng| eng.paste_last_transcript().ok());
-                    }
+                    "copy-last" => dictation::enqueue(dictation::DictationCmd::CopyLast),
+                    "paste-last" => dictation::enqueue(dictation::DictationCmd::PasteLast),
                     "cancel-dictation" => {
-                        let engine = (*app.state::<SharedEngine>()).clone();
-                        let capture = (*app.state::<audio::SharedCapture>()).clone();
-                        dictation::cancel(app, &engine, &capture);
+                        dictation::enqueue(dictation::DictationCmd::Cancel);
                     }
                     _ => {}
                 });
-            if let Some(icon) = app.default_window_icon() {
-                tray = tray.icon(icon.clone());
+            } else {
+                TrayIconBuilder::with_id("localflow")
+                    .menu(&menu)
+                    .show_menu_on_left_click(true)
+                    .icon_as_template(true)
+                    .on_menu_event(|app, event| match event.id.as_ref() {
+                        "quit" => app.exit(0),
+                        "show" => {
+                            if let Some(window) = app.get_webview_window("main") {
+                                let _ = window.show();
+                                let _ = window.set_focus();
+                            }
+                        }
+                        "copy-last" => dictation::enqueue(dictation::DictationCmd::CopyLast),
+                        "paste-last" => dictation::enqueue(dictation::DictationCmd::PasteLast),
+                        "cancel-dictation" => {
+                            dictation::enqueue(dictation::DictationCmd::Cancel);
+                        }
+                        _ => {}
+                    })
+                    .build(app)?;
             }
-            tray.build(app)?;
+
+            if let Some(bar) = app.get_webview_window("bar") {
+                position_flow_bar(&bar);
+                let _ = bar.hide();
+            }
+
+            dictation::start_worker(app.handle().clone(), shared.clone(), capture.clone());
 
             let engine_for_hotkey = shared.clone();
-            let capture_for_hotkey = capture.clone();
             app.handle().plugin(
                 tauri_plugin_global_shortcut::Builder::new()
-                    .with_handler(move |app, shortcut, event| {
-                        let name = shortcut.to_string();
+                    .with_handler(move |_app, shortcut, event| {
                         let pressed =
                             event.state == tauri_plugin_global_shortcut::ShortcutState::Pressed;
                         let released =
                             event.state == tauri_plugin_global_shortcut::ShortcutState::Released;
-                        if shortcut_eq(&name, "Escape") && pressed {
-                            dictation::cancel(app, &engine_for_hotkey, &capture_for_hotkey);
+                        if shortcut_matches(shortcut, "Escape") && pressed {
+                            dictation::enqueue(dictation::DictationCmd::Cancel);
                             return;
                         }
                         let keys = engine_for_hotkey.lock().ok().map(|eng| {
@@ -159,71 +190,26 @@ pub fn run() {
                         let Some((talk, copy, paste)) = keys else {
                             return;
                         };
-                        if shortcut_eq(&name, &copy) && pressed {
-                            let _ = engine_for_hotkey
-                                .lock()
-                                .ok()
-                                .and_then(|eng| eng.copy_last_transcript().ok());
+                        if shortcut_matches(shortcut, &copy) && pressed {
+                            dictation::enqueue(dictation::DictationCmd::CopyLast);
                             return;
                         }
-                        if shortcut_eq(&name, &paste) && pressed {
-                            let _ = engine_for_hotkey
-                                .lock()
-                                .ok()
-                                .and_then(|eng| eng.paste_last_transcript().ok());
+                        if shortcut_matches(shortcut, &paste) && pressed {
+                            dictation::enqueue(dictation::DictationCmd::PasteLast);
                             return;
                         }
-                        if shortcut_eq(&name, &talk) {
+                        if shortcut_matches(shortcut, &talk) {
                             if pressed {
-                                dictation::on_hotkey_pressed(
-                                    app,
-                                    &engine_for_hotkey,
-                                    &capture_for_hotkey,
-                                );
+                                dictation::enqueue(dictation::DictationCmd::Pressed);
                             }
                             if released {
-                                dictation::on_hotkey_released(
-                                    app,
-                                    &engine_for_hotkey,
-                                    &capture_for_hotkey,
-                                );
+                                dictation::enqueue(dictation::DictationCmd::Released);
                             }
                         }
                     })
                     .build(),
             )?;
-            let requested = shared
-                .lock()
-                .map(|eng| eng.settings.hotkey.clone())
-                .unwrap_or_else(|_| "Control+Shift+Space".into());
-            let candidates = [requested.as_str(), "Control+Shift+Space", "Command+Shift+D"];
-            let mut registered = None;
-            let mut last_err = None;
-            for shortcut in candidates {
-                match app.global_shortcut().register(shortcut) {
-                    Ok(()) => {
-                        registered = Some(shortcut.to_string());
-                        last_err = None;
-                        break;
-                    }
-                    Err(err) => last_err = Some(err.to_string()),
-                }
-            }
-            if let Ok(mut eng) = shared.lock() {
-                eng.hotkey_registered = registered.clone();
-                if let Some(active) = &registered {
-                    eng.settings.hotkey = active.clone();
-                }
-                eng.hotkey_error = last_err;
-            }
-            if let Ok(eng) = shared.lock() {
-                let _ = app
-                    .global_shortcut()
-                    .register(eng.settings.copy_last_hotkey.as_str());
-                let _ = app
-                    .global_shortcut()
-                    .register(eng.settings.paste_last_hotkey.as_str());
-            }
+            apply_shortcuts(app.handle(), &shared);
             if let Some(window) = app.get_webview_window("main") {
                 let _ = window.show();
                 let _ = window.set_focus();
@@ -234,10 +220,90 @@ pub fn run() {
         .expect("error while running LocalFlow");
 }
 
-fn shortcut_eq(left: &str, right: &str) -> bool {
-    normalize_shortcut(left) == normalize_shortcut(right)
+pub(crate) fn position_flow_bar(bar: &WebviewWindow) {
+    if let Ok(Some(monitor)) = bar.primary_monitor() {
+        let scale = monitor.scale_factor();
+        let size = monitor.size();
+        let origin = monitor.position();
+        let bar_w = (420.0 * scale) as i32;
+        let x = origin.x + ((size.width as i32) - bar_w).max(0) / 2;
+        let y = origin.y + (36.0 * scale) as i32;
+        let _ = bar.set_position(PhysicalPosition::new(x, y));
+    } else {
+        let _ = bar.set_position(PhysicalPosition::new(200, 48));
+    }
 }
 
-fn normalize_shortcut(value: &str) -> String {
-    value.replace(' ', "").to_ascii_lowercase()
+fn shortcut_matches(event: &Shortcut, configured: &str) -> bool {
+    configured
+        .parse::<Shortcut>()
+        .ok()
+        .is_some_and(|parsed| parsed.key == event.key && parsed.mods == event.mods)
+}
+
+pub fn apply_shortcuts(app: &AppHandle, engine: &SharedEngine) -> Option<String> {
+    let (talk, copy, paste, previous) = match engine.lock() {
+        Ok(eng) => (
+            eng.settings.hotkey.clone(),
+            eng.settings.copy_last_hotkey.clone(),
+            eng.settings.paste_last_hotkey.clone(),
+            eng.hotkey_registered.clone(),
+        ),
+        Err(_) => return Some("engine lock poisoned".into()),
+    };
+    for old in [
+        previous.as_deref(),
+        Some(talk.as_str()),
+        Some(copy.as_str()),
+        Some(paste.as_str()),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        let _ = app.global_shortcut().unregister(old);
+    }
+    let candidates = [talk.as_str(), "Control+Shift+Space", "Command+Shift+D"];
+    let mut registered = None;
+    let mut last_err = None;
+    for shortcut in candidates {
+        match app.global_shortcut().register(shortcut) {
+            Ok(()) => {
+                registered = Some(shortcut.to_string());
+                last_err = None;
+                break;
+            }
+            Err(err) => last_err = Some(err.to_string()),
+        }
+    }
+    let _ = app.global_shortcut().register(copy.as_str());
+    let _ = app.global_shortcut().register(paste.as_str());
+    let _ = app.global_shortcut().register("Escape");
+    if let Ok(mut eng) = engine.lock() {
+        eng.hotkey_registered = registered.clone();
+        if let Some(active) = &registered {
+            eng.settings.hotkey = active.clone();
+        }
+        eng.hotkey_error = last_err.clone();
+    }
+    last_err
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn talk_hotkey_matches_plugin_display_order() {
+        let event: Shortcut = "shift+control+Space".parse().unwrap();
+        assert!(shortcut_matches(&event, "Control+Shift+Space"));
+        assert!(shortcut_matches(&event, "Ctrl+Shift+Space"));
+        assert!(!shortcut_matches(&event, "Command+Shift+D"));
+    }
+
+    #[test]
+    fn copy_hotkey_matches_command_control() {
+        let event: Shortcut = "Command+Control+C".parse().unwrap();
+        assert!(shortcut_matches(&event, "Command+Control+C"));
+        assert_eq!(event.to_string(), "control+super+KeyC");
+    }
 }

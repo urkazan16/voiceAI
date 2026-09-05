@@ -7,6 +7,7 @@ export type ViewId =
   | "settings"
   | "models"
   | "dictionary"
+  | "snippets"
   | "profiles"
   | "personalization"
   | "history"
@@ -36,6 +37,10 @@ export interface AppSettings {
   copy_last_hotkey: string;
   paste_last_hotkey: string;
   show_flow_bar: boolean;
+  profile_override: string | null;
+  personalization_enabled: boolean;
+  learn_from_corrections: boolean;
+  stt_language: string;
 }
 
 export interface ModelRecord {
@@ -78,9 +83,52 @@ export interface ModelDownloadProgress {
 
 export interface DictionaryEntry {
   id: string;
+  kind: "vocabulary" | "replacement";
+  canonical: string;
+  aliases: string[];
   source: string;
   replacement: string;
   case_sensitive: boolean;
+  enabled: boolean;
+  builtin: boolean;
+}
+
+export interface Snippet {
+  id: string;
+  trigger: string;
+  content: string;
+  language: string;
+  profile: string;
+  enabled: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface Profile {
+  id: string;
+  name: string;
+  mode: AppSettings["mode"];
+  style: string;
+  dictionary_ids: string[];
+  apps: string[];
+  group: string;
+}
+
+export interface ResolvedContext {
+  app_name: string;
+  profile_id: string;
+  profile_name: string;
+  style: string;
+  mode: AppSettings["mode"];
+  source: string;
+}
+
+export interface LearnedCandidate {
+  id: string;
+  pattern: string;
+  replacement: string;
+  weight: number;
+  accepted: boolean;
 }
 
 export interface PipelineOutput {
@@ -100,6 +148,10 @@ export interface HistoryItem {
   mode: string;
   transcript: string;
   output: string;
+  application: string;
+  profile: string;
+  model: string;
+  processing_time_ms: number;
 }
 
 export interface PrivacySummary {
@@ -198,12 +250,34 @@ export const api = {
   listDictionary: () => call<DictionaryEntry[]>("list_dictionary"),
   upsertDictionary: (entry: DictionaryEntry) => call<void>("upsert_dictionary_entry", { entry }),
   removeDictionary: (id: string) => call<void>("remove_dictionary_entry", { id }),
+  searchDictionary: (query: string) => call<DictionaryEntry[]>("search_dictionary", { query }),
+  importDictionary: (json: string) => call<number>("import_dictionary", { json }),
+  listSnippets: () => call<Snippet[]>("list_snippets"),
+  upsertSnippet: (snippet: Snippet) => call<void>("upsert_snippet", { snippet }),
+  removeSnippet: (id: string) => call<void>("remove_snippet", { id }),
+  listProfiles: () => call<Profile[]>("list_profiles"),
+  saveProfiles: (profiles: Profile[]) => call<void>("save_profiles", { profiles }),
+  getActiveContext: () => call<ResolvedContext>("get_active_context"),
+  recordCorrection: (original: string, corrected: string) =>
+    call<LearnedCandidate[]>("record_correction", { original, corrected }),
+  listSuggestions: () => call<LearnedCandidate[]>("list_suggestions"),
+  acceptSuggestion: (id: string) => call<void>("accept_suggestion", { id }),
+  dismissSuggestion: (id: string) => call<void>("dismiss_suggestion", { id }),
+  deleteHistoryItem: (id: string) => call<void>("delete_history_item", { id }),
+  updateHistoryOutput: (id: string, output: string) =>
+    call<void>("update_history_output", { id, output }),
+  retryHistory: (transcript: string) => call<PipelineOutput>("retry_history", { transcript }),
+  historyToSnippet: (trigger: string, content: string) =>
+    call<void>("history_to_snippet", { trigger, content }),
+  copyText: (text: string) => call<void>("copy_text", { text }),
+  pasteText: (text: string) => call<void>("paste_text", { text }),
   exportConfiguration: () => call<string>("export_configuration"),
   importConfiguration: (json: string) => call<void>("import_configuration", { json }),
   listHistory: () => call<HistoryItem[]>("list_history"),
   deleteHistory: () => call<void>("delete_history"),
   resetPersonalization: () => call<void>("reset_personalization"),
-  processTranscript: (transcript: string) => call<PipelineOutput>("process_transcript", { transcript }),
+  processTranscript: (transcript: string) =>
+    call<PipelineOutput>("process_transcript", { transcript }),
   completeOnboarding: () => call<void>("complete_onboarding"),
   dictationStop: () => call<void>("dictation_stop"),
   dictationCancel: () => call<void>("dictation_cancel"),

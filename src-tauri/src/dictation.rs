@@ -4,14 +4,61 @@ use crate::error::LfError;
 use crate::pipeline::PipelineState;
 use serde::Serialize;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Mutex;
+use std::sync::mpsc::{self, Sender};
+use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter, Manager};
-use tauri_plugin_global_shortcut::GlobalShortcutExt;
 
 static CANCEL: AtomicBool = AtomicBool::new(false);
 static HANDS_FREE: AtomicBool = AtomicBool::new(false);
 static PRESS_AT: Mutex<Option<Instant>> = Mutex::new(None);
+static WORKER: OnceLock<Sender<DictationCmd>> = OnceLock::new();
+
+#[derive(Debug, Clone, Copy)]
+pub enum DictationCmd {
+    Pressed,
+    Released,
+    Cancel,
+    Stop,
+    CopyLast,
+    PasteLast,
+}
+
+pub fn start_worker(app: AppHandle, engine: SharedEngine, capture: SharedCapture) {
+    let (tx, rx) = mpsc::channel();
+    let _ = WORKER.set(tx);
+    std::thread::Builder::new()
+        .name("localflow-dictation".into())
+        .spawn(move || {
+            while let Ok(cmd) = rx.recv() {
+                match cmd {
+                    DictationCmd::Pressed => on_hotkey_pressed(&app, &engine, &capture),
+                    DictationCmd::Released => on_hotkey_released(&app, &engine, &capture),
+                    DictationCmd::Cancel => cancel(&app, &engine, &capture),
+                    DictationCmd::Stop => stop_and_process(&app, &engine, &capture),
+                    DictationCmd::CopyLast => {
+                        let _ = engine
+                            .lock()
+                            .ok()
+                            .and_then(|eng| eng.copy_last_transcript().ok());
+                    }
+                    DictationCmd::PasteLast => {
+                        let _ = engine
+                            .lock()
+                            .ok()
+                            .and_then(|eng| eng.paste_last_transcript().ok());
+                    }
+                }
+            }
+        })
+        .expect("start dictation worker");
+}
+
+pub fn enqueue(cmd: DictationCmd) {
+    if let Some(tx) = WORKER.get() {
+        let _ = tx.send(cmd);
+    }
+}
 
 pub fn cancel_flag() -> &'static AtomicBool {
     &CANCEL
@@ -47,6 +94,7 @@ pub fn show_bar(app: &AppHandle, engine: &SharedEngine) {
         return;
     }
     if let Some(window) = app.get_webview_window("bar") {
+        crate::position_flow_bar(&window);
         let _ = window.show();
     }
 }
@@ -61,7 +109,6 @@ pub fn hide_bar_later(app: &AppHandle) {
         if let Some(window) = app.get_webview_window("bar") {
             let _ = window.hide();
         }
-        let _ = app.global_shortcut().unregister("Escape");
     });
 }
 
@@ -78,13 +125,18 @@ pub fn on_hotkey_pressed(app: &AppHandle, engine: &SharedEngine, capture: &Share
         .lock()
         .ok()
         .and_then(|eng| eng.settings.microphone_name.clone());
-    let target_pid = crate::injection::frontmost_unix_id();
+    let engine_for_target = engine.clone();
+    std::thread::spawn(move || {
+        let (pid, name) = crate::injection::frontmost_target();
+        if let Ok(mut eng) = engine_for_target.lock() {
+            eng.insert_target_pid = pid;
+            eng.insert_target_app = name;
+        }
+    });
     if let Ok(mut eng) = engine.lock() {
-        eng.insert_target_pid = target_pid;
         eng.snapshot.reset();
         let _ = eng.snapshot.transition(PipelineState::Recording);
     }
-    let _ = app.global_shortcut().register("Escape");
     match capture.start(mic) {
         Ok(()) => {
             show_bar(app, engine);
@@ -157,7 +209,6 @@ pub fn cancel(app: &AppHandle, engine: &SharedEngine, capture: &SharedCapture) {
     if let Ok(mut eng) = engine.lock() {
         eng.snapshot.reset();
     }
-    let _ = app.global_shortcut().unregister("Escape");
     emit_state(
         app,
         DictationState {
@@ -291,7 +342,6 @@ fn emit_cancelled(app: &AppHandle, engine: &SharedEngine) {
     if let Some(window) = app.get_webview_window("bar") {
         let _ = window.hide();
     }
-    let _ = app.global_shortcut().unregister("Escape");
 }
 
 fn fail(app: &AppHandle, engine: &SharedEngine, message: &str, duration_ms: u64) {
