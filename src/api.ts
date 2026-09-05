@@ -80,6 +80,14 @@ export interface DictionaryEntry {
   case_sensitive: boolean;
 }
 
+export interface PipelineOutput {
+  raw_transcript: string;
+  dictionary_text: string;
+  personalized_text: string;
+  final_text: string;
+  mode: AppSettings["mode"];
+}
+
 export interface HistoryItem {
   id: string;
   created_at: string;
@@ -188,7 +196,7 @@ export const api = {
   listHistory: () => call<HistoryItem[]>("list_history"),
   deleteHistory: () => call<void>("delete_history"),
   resetPersonalization: () => call<void>("reset_personalization"),
-  processTranscript: (transcript: string) => call("process_transcript", { transcript }),
+  processTranscript: (transcript: string) => call<PipelineOutput>("process_transcript", { transcript }),
   completeOnboarding: () => call<void>("complete_onboarding"),
   privacySummary: () => call<PrivacySummary>("privacy_summary"),
   verifyModel: (modelId: string) => call<string>("verify_model", { modelId }),

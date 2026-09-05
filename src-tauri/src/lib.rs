@@ -23,6 +23,7 @@ pub mod history;
 pub mod injection;
 pub mod integrity;
 pub mod llm;
+pub mod macos_stt;
 pub mod paths;
 pub mod personalization;
 pub mod pipeline;

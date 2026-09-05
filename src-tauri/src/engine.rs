@@ -6,6 +6,7 @@ use crate::error::{LfError, LfResult};
 use crate::history::HistoryItem;
 use crate::injection::{ClipboardInjector, MemoryInjector, TextInjector};
 use crate::integrity::activate_model;
+use crate::integrity::looks_installed;
 use crate::llm::{LanguageModel, NativeLlm, ScriptedLlm};
 use crate::paths::DataPaths;
 use crate::personalization::PersonalizationState;
@@ -118,6 +119,20 @@ impl AppEngine {
         Ok(path)
     }
 
+    fn ready_model_path(&self, kind: &str) -> Option<PathBuf> {
+        let id = match kind {
+            "llm" => self.settings.active_llm_model.as_ref()?,
+            _ => self.settings.active_stt_model.as_ref()?,
+        };
+        let record = self.catalog.get(id).ok()?;
+        let path = self.model_path(record);
+        if looks_installed(&path, record) {
+            Some(path)
+        } else {
+            None
+        }
+    }
+
     pub fn model_status(&self, model_id: &str) -> LfResult<crate::download::ModelInstallStatus> {
         let record = self.catalog.get(model_id)?;
         let path = self.model_path(record);
@@ -170,11 +185,7 @@ impl AppEngine {
         self.snapshot.transition(PipelineState::Recording)?;
         self.snapshot.transition(PipelineState::ProcessingStt)?;
         let raw = if transcript.is_empty() {
-            let model_path = match &self.settings.active_stt_model {
-                Some(id) => self.verified_model(id).ok(),
-                None => None,
-            };
-            stt.transcribe(pcm, model_path.as_deref())?
+            stt.transcribe(pcm, self.ready_model_path("stt").as_deref())?
         } else {
             transcript.to_string()
         };
@@ -183,12 +194,8 @@ impl AppEngine {
         self.snapshot.transition(PipelineState::Personalization)?;
         let personalized_text = self.personalization.apply(&dictionary_text);
         self.snapshot.transition(PipelineState::Llm)?;
-        let llm_path = match &self.settings.active_llm_model {
-            Some(id) => self.verified_model(id).ok(),
-            None => None,
-        };
         let llm_text =
-            match llm.generate(&personalized_text, self.settings.mode, llm_path.as_deref()) {
+            match llm.generate(&personalized_text, self.settings.mode, self.ready_model_path("llm").as_deref()) {
                 Ok(text) => text,
                 Err(LfError::RuntimeUnsupported(_)) | Err(LfError::ModelMissing(_)) => {
                     format_without_remote_llm(self.settings.mode, &personalized_text)

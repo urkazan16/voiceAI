@@ -11,6 +11,7 @@ import {
   type ModelDownloadProgress,
   type ModelInstallStatus,
   type ModelRecord,
+  type PipelineOutput,
   type PrivacySummary,
   type ViewId,
 } from "./api";
@@ -37,6 +38,7 @@ export function App() {
   const [privacy, setPrivacy] = useState<PrivacySummary | null>(null);
   const [status, setStatus] = useState("Hold Control+Shift+Space, speak, release.");
   const [draft, setDraft] = useState("");
+  const [pipelineOut, setPipelineOut] = useState<PipelineOutput | null>(null);
   const [term, setTerm] = useState("");
   const [replacement, setReplacement] = useState("");
   const [configText, setConfigText] = useState("");
@@ -128,6 +130,7 @@ export function App() {
       setStatus(payload.message);
       if (payload.transcript) {
         setDraft(payload.transcript);
+        setPipelineOut(null);
       }
     }).then((fn) => {
       undictation = fn;
@@ -235,8 +238,9 @@ export function App() {
             <h1 className="text-4xl">Dictation pipeline</h1>
             <p className="mt-2 text-paper/70">{status}</p>
             <p className="mt-1 text-sm text-paper/50">
-              Click the target field (browser, editor), then hold the hotkey to record. Release to
-              process and paste. Do not keep Ctrl/Shift held after release.
+              Type a sample below and click Process locally to form text (dictionary, punctuation,
+              history). Or click a browser field, hold the hotkey, speak, and release — macOS Speech
+              Recognition is used until whisper.cpp is linked. Allow Speech Recognition if asked.
             </p>
             <textarea
               className="mt-6 h-32 w-full rounded-2xl border border-paper/15 bg-paper/5 p-4"
@@ -252,16 +256,35 @@ export function App() {
                   return;
                 }
                 try {
-                  await api.processTranscript(draft);
-                  setStatus("Processed locally and recorded in history.");
+                  const output = await api.processTranscript(draft);
+                  setPipelineOut(output);
+                  setDraft(output.final_text);
+                  setStatus(`Formed: ${output.final_text}`);
                   setHistory(await api.listHistory());
                 } catch (error) {
+                  setPipelineOut(null);
                   setStatus(error instanceof Error ? error.message : String(error));
                 }
               }}
             >
               Process locally
             </button>
+            {pipelineOut && (
+              <dl className="mt-6 space-y-2 rounded-2xl border border-paper/10 p-4 text-sm">
+                <div>
+                  <dt className="text-paper/50">Transcript</dt>
+                  <dd>{pipelineOut.raw_transcript}</dd>
+                </div>
+                <div>
+                  <dt className="text-paper/50">After dictionary</dt>
+                  <dd>{pipelineOut.dictionary_text}</dd>
+                </div>
+                <div>
+                  <dt className="text-paper/50">Formed text</dt>
+                  <dd className="text-lg">{pipelineOut.final_text}</dd>
+                </div>
+              </dl>
+            )}
           </section>
         )}
 

@@ -30,6 +30,19 @@ fn main() {
         .include("native/include")
         .warnings(true)
         .compile("localflow_runtime");
+
+    #[cfg(target_os = "macos")]
+    {
+        println!("cargo:rerun-if-changed=native/src/speech.m");
+        println!("cargo:rustc-link-lib=framework=Speech");
+        println!("cargo:rustc-link-lib=framework=Foundation");
+        cc::Build::new()
+            .file("native/src/speech.m")
+            .include("native/include")
+            .flag("-fobjc-arc")
+            .compile("localflow_speech");
+    }
+
     tauri_build::try_build(tauri_build::Attributes::new()).expect("tauri build");
 }
 
