@@ -7,6 +7,8 @@ import {
   type BuildInfo,
   type DictionaryEntry,
   type HistoryItem,
+  type ModelDownloadProgress,
+  type ModelInstallStatus,
   type ModelRecord,
   type PrivacySummary,
   type ViewId,
@@ -38,25 +40,48 @@ export function App() {
   const [replacement, setReplacement] = useState("");
   const [configText, setConfigText] = useState("");
   const [modelMessage, setModelMessage] = useState("");
+  const [modelStatus, setModelStatus] = useState<ModelInstallStatus[]>([]);
+  const [downloadProgress, setDownloadProgress] = useState<Record<string, ModelDownloadProgress>>(
+    {},
+  );
 
   async function refresh() {
     try {
-      const [nextSettings, nextModels, nextDict, nextHistory, nextBuild, nextPrivacy, hotkey] =
-        await Promise.all([
-          api.getSettings(),
-          api.listModels(),
-          api.listDictionary(),
-          api.listHistory(),
-          api.getBuildInfo(),
-          api.privacySummary(),
-          api.getHotkeyStatus(),
-        ]);
+      const [
+        nextSettings,
+        nextModels,
+        nextDict,
+        nextHistory,
+        nextBuild,
+        nextPrivacy,
+        hotkey,
+        nextStatus,
+      ] = await Promise.all([
+        api.getSettings(),
+        api.listModels(),
+        api.listDictionary(),
+        api.listHistory(),
+        api.getBuildInfo(),
+        api.privacySummary(),
+        api.getHotkeyStatus(),
+        api.listModelStatus(),
+      ]);
       setSettings(nextSettings);
       setModels(nextModels);
+      setModelStatus(nextStatus);
       setDictionary(nextDict);
       setHistory(nextHistory);
       setBuild(nextBuild);
       setPrivacy(nextPrivacy);
+      setView((current) => {
+        if (!nextSettings.onboarding_complete) {
+          return "onboarding";
+        }
+        if (current === "onboarding") {
+          return "home";
+        }
+        return current;
+      });
       if (hotkey.registered) {
         setStatus(
           `Hold ${hotkey.registered.replace("Control", "Ctrl").replace("Command", "⌘")}, speak, release.`,
@@ -64,7 +89,15 @@ export function App() {
       } else if (hotkey.error) {
         setStatus(`Hotkey not registered: ${hotkey.error}`);
       }
-      setView(nextSettings.onboarding_complete ? "home" : "onboarding");
+      setView((current) => {
+        if (!nextSettings.onboarding_complete) {
+          return "onboarding";
+        }
+        if (current === "onboarding") {
+          return "home";
+        }
+        return current;
+      });
     } catch {
       setModels(bundledCatalog);
       setView("home");
@@ -94,9 +127,17 @@ export function App() {
     }).then((fn) => {
       unreleased = fn;
     });
+    let unprogress: (() => void) | undefined;
+    void listen<ModelDownloadProgress>("model-download-progress", (event) => {
+      const progress = event.payload;
+      setDownloadProgress((current) => ({ ...current, [progress.model_id]: progress }));
+    }).then((fn) => {
+      unprogress = fn;
+    });
     return () => {
       unpressed?.();
       unreleased?.();
+      unprogress?.();
     };
   }, []);
 
@@ -119,7 +160,9 @@ export function App() {
         <ol className="mt-8 max-w-xl space-y-3 text-lg text-paper/80">
           <li>1. Grant Microphone and Accessibility permissions.</li>
           <li>2. Download Whisper and Qwen models in Model Manager (network, user-initiated).</li>
-          <li>3. Hold Control+Shift+Space, talk, release. Typed Process locally works without models.</li>
+          <li>
+            3. Hold Control+Shift+Space, talk, release. Typed Process locally works without models.
+          </li>
         </ol>
         <button
           className="mt-10 rounded-full bg-copper px-6 py-3 text-ink"
@@ -269,50 +312,101 @@ export function App() {
             </p>
             <p className="mt-2 text-copper">{modelMessage}</p>
             <div className="mt-6 grid gap-4">
-              {models.map((model) => (
-                <article key={model.model_id} className="rounded-2xl border border-paper/10 p-5">
-                  <div className="flex items-baseline justify-between gap-4">
-                    <h2 className="text-2xl">{model.display_name}</h2>
-                    <span className="text-copper text-sm">{model.kind.toUpperCase()}</span>
-                  </div>
-                  <p className="mt-2 text-sm text-paper/70">
-                    {model.format} {model.quantization} · {formatBytes(model.size)}
-                  </p>
-                  <p className="mt-1 text-sm">License: {model.license}</p>
-                  <p className="mt-1 text-sm">Source: {model.source}</p>
-                  <p className="mt-1 break-all font-mono text-xs text-paper/50">
-                    SHA-256: {model.sha256}
-                  </p>
-                  <div className="mt-3 flex gap-3">
-                    <a
-                      className="text-copper underline"
-                      href={model.license_url}
-                      target="_blank"
-                      rel="noreferrer"
-                    >
-                      View License
-                    </a>
-                    <button
-                      className="text-paper/80 underline"
-                      onClick={async () => {
-                        try {
-                          const path = await api.verifyModel(model.model_id);
-                          setModelMessage(`Verified at ${path}`);
-                        } catch (error) {
-                          setModelMessage(String(error));
-                        }
-                      }}
-                    >
-                      Verify local file
-                    </button>
-                  </div>
-                  {model.network_required_to_obtain && (
-                    <p className="mt-3 text-xs uppercase tracking-wide text-copper">
-                      Network required to download
+              {models.map((model) => {
+                const status = modelStatus.find((item) => item.model_id === model.model_id);
+                const progress = downloadProgress[model.model_id];
+                const downloading =
+                  progress?.phase === "downloading" ||
+                  progress?.phase === "verifying" ||
+                  progress?.phase === "installing";
+                const percent =
+                  progress && progress.total_bytes > 0
+                    ? Math.min(
+                        100,
+                        Math.round((progress.bytes_downloaded / progress.total_bytes) * 100),
+                      )
+                    : 0;
+                return (
+                  <article key={model.model_id} className="rounded-2xl border border-paper/10 p-5">
+                    <div className="flex items-baseline justify-between gap-4">
+                      <h2 className="text-2xl">{model.display_name}</h2>
+                      <span className="text-copper text-sm">{model.kind.toUpperCase()}</span>
+                    </div>
+                    <p className="mt-2 text-sm text-paper/70">
+                      {model.format} {model.quantization} · {formatBytes(model.size)}
                     </p>
-                  )}
-                </article>
-              ))}
+                    <p className="mt-1 text-sm">
+                      Status:{" "}
+                      {status?.verified
+                        ? "Installed and verified"
+                        : status?.installed
+                          ? "File present, checksum failed"
+                          : "Not installed"}
+                    </p>
+                    {status?.local_path && (
+                      <p className="mt-1 break-all font-mono text-xs text-paper/50">
+                        {status.local_path}
+                      </p>
+                    )}
+                    <p className="mt-1 text-sm">License: {model.license}</p>
+                    <p className="mt-1 text-sm">Source: {model.source}</p>
+                    <p className="mt-1 break-all font-mono text-xs text-paper/50">
+                      SHA-256: {model.sha256}
+                    </p>
+                    {downloading && (
+                      <p className="mt-3 text-sm text-copper">
+                        {progress.phase} · {percent}% ({formatBytes(progress.bytes_downloaded)} of{" "}
+                        {formatBytes(progress.total_bytes)})
+                      </p>
+                    )}
+                    <div className="mt-3 flex flex-wrap gap-3">
+                      <a
+                        className="text-copper underline"
+                        href={model.license_url}
+                        target="_blank"
+                        rel="noreferrer"
+                      >
+                        View License
+                      </a>
+                      <button
+                        className="rounded-full bg-moss px-4 py-1 text-ink disabled:opacity-40"
+                        disabled={downloading || !model.download_url}
+                        onClick={async () => {
+                          setModelMessage(`Network download started for ${model.display_name}`);
+                          try {
+                            const path = await api.downloadModel(model.model_id);
+                            setModelMessage(`Installed and verified at ${path}`);
+                            await refresh();
+                          } catch (error) {
+                            setModelMessage(String(error));
+                          }
+                        }}
+                      >
+                        {status?.verified ? "Re-download & verify" : "Download & install"}
+                      </button>
+                      <button
+                        className="text-paper/80 underline"
+                        onClick={async () => {
+                          try {
+                            const path = await api.verifyModel(model.model_id);
+                            setModelMessage(`Verified at ${path}`);
+                            await refresh();
+                          } catch (error) {
+                            setModelMessage(String(error));
+                          }
+                        }}
+                      >
+                        Verify local file
+                      </button>
+                    </div>
+                    {model.network_required_to_obtain && (
+                      <p className="mt-3 text-xs uppercase tracking-wide text-copper">
+                        Network required to download (Hugging Face)
+                      </p>
+                    )}
+                  </article>
+                );
+              })}
             </div>
           </section>
         )}

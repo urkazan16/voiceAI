@@ -11,13 +11,14 @@
       "kind": "stt",
       "source": "ggerganov/whisper.cpp",
       "source_url": "https://huggingface.co/ggerganov/whisper.cpp",
-      "download_url": "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.bin",
-      "sha256": "8c2f3b3a9a0f0c3e6b1d0c5a2e4f7a9b1c3d5e7f9a0b1c2d3e4f5a6b7c8d9e0f",
+      "download_url": "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.bin?download=true",
+      "sha256": "60ed5bc3dd14eea856493d334349b405782ddcaf0028d4b5df4088345fba2efe",
       "size": 147951465,
       "license": "MIT",
       "license_url": "https://github.com/ggerganov/whisper.cpp/blob/master/LICENSE",
       "network_required_to_obtain": true,
-      "notes": "Placeholder SHA-256 until the release pipeline records the vendor checksum. Activation still requires a matching local file."
+      "checksum_pinned": true,
+      "notes": "Official whisper.cpp ggml-base.bin. SHA-256 from Hugging Face."
     },
     {
       "model_id": "whisper-small",
@@ -29,13 +30,14 @@
       "kind": "stt",
       "source": "ggerganov/whisper.cpp",
       "source_url": "https://huggingface.co/ggerganov/whisper.cpp",
-      "download_url": "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small.bin",
-      "sha256": "1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2b",
+      "download_url": "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small.bin?download=true",
+      "sha256": "1be3a9b2063867b937e64e2ec7483364a79917e157fa98c5d94b5c1fffea987b",
       "size": 487601967,
       "license": "MIT",
       "license_url": "https://github.com/ggerganov/whisper.cpp/blob/master/LICENSE",
       "network_required_to_obtain": true,
-      "notes": "Placeholder SHA-256 until the release pipeline records the vendor checksum."
+      "checksum_pinned": true,
+      "notes": "Official whisper.cpp ggml-small.bin. SHA-256 from Hugging Face."
     },
     {
       "model_id": "Qwen3-4B-Instruct-2507",
@@ -45,15 +47,16 @@
       "format": "GGUF",
       "quantization": "Q4_K_M",
       "kind": "llm",
-      "source": "Qwen",
-      "source_url": "https://huggingface.co/Qwen/Qwen3-4B-Instruct-2507",
-      "download_url": "",
-      "sha256": "2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2b3c",
-      "size": 2500000000,
+      "source": "Qwen / bartowski GGUF",
+      "source_url": "https://huggingface.co/bartowski/Qwen_Qwen3-4B-Instruct-2507-GGUF",
+      "download_url": "https://huggingface.co/bartowski/Qwen_Qwen3-4B-Instruct-2507-GGUF/resolve/main/Qwen_Qwen3-4B-Instruct-2507-Q4_K_M.gguf?download=true",
+      "sha256": "2fde00ce69dd4899c70d020845e2638353015bba0fdf161b3eb965f2bca4464e",
+      "size": 2497280736,
       "license": "Apache-2.0",
       "license_url": "https://huggingface.co/Qwen/Qwen3-4B-Instruct-2507",
       "network_required_to_obtain": true,
-      "notes": "Not bundled with the installer. SHA-256 is recorded at release after the exact GGUF artifact is chosen."
+      "checksum_pinned": true,
+      "notes": "Not bundled with the installer. GGUF Q4_K_M from bartowski; SHA-256 from Hugging Face LFS."
     },
     {
       "model_id": "Qwen2.5-Coder-7B",
@@ -63,14 +66,15 @@
       "format": "GGUF",
       "quantization": "Q4_K_M",
       "kind": "llm",
-      "source": "Qwen",
-      "source_url": "https://huggingface.co/Qwen/Qwen2.5-Coder-7B-Instruct",
-      "download_url": "",
-      "sha256": "3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2b3c4d",
-      "size": 4400000000,
+      "source": "Qwen / bartowski GGUF",
+      "source_url": "https://huggingface.co/bartowski/Qwen2.5-Coder-7B-Instruct-GGUF",
+      "download_url": "https://huggingface.co/bartowski/Qwen2.5-Coder-7B-Instruct-GGUF/resolve/main/Qwen2.5-Coder-7B-Instruct-Q4_K_M.gguf?download=true",
+      "sha256": "1664fccab734674a50763490a8c6931b70e3f2f8ec10031b54806d30e5f956b6",
+      "size": 4683074336,
       "license": "Apache-2.0",
       "license_url": "https://huggingface.co/Qwen/Qwen2.5-Coder-7B-Instruct",
       "network_required_to_obtain": true,
+      "checksum_pinned": true,
       "notes": "Code mode model. Downloaded on demand after license display."
     }
   ]

@@ -45,12 +45,29 @@ export interface ModelRecord {
   kind: string;
   source: string;
   source_url: string;
+  download_url?: string;
   sha256: string;
   size: number;
   license: string;
   license_url: string;
   network_required_to_obtain: boolean;
+  checksum_pinned?: boolean;
   notes: string;
+}
+
+export interface ModelInstallStatus {
+  model_id: string;
+  installed: boolean;
+  verified: boolean;
+  local_path: string | null;
+  bytes_on_disk: number;
+}
+
+export interface ModelDownloadProgress {
+  model_id: string;
+  phase: string;
+  bytes_downloaded: number;
+  total_bytes: number;
 }
 
 export interface DictionaryEntry {
@@ -126,5 +143,7 @@ export const api = {
   completeOnboarding: () => call<void>("complete_onboarding"),
   privacySummary: () => call<PrivacySummary>("privacy_summary"),
   verifyModel: (modelId: string) => call<string>("verify_model", { modelId }),
+  downloadModel: (modelId: string) => call<string>("download_model", { modelId }),
+  listModelStatus: () => call<ModelInstallStatus[]>("list_model_status"),
   getHotkeyStatus: () => call<HotkeyStatus>("get_hotkey_status"),
 };

@@ -72,6 +72,16 @@ mod tests {
             assert!(!model.source.is_empty());
             assert_eq!(model.sha256.len(), 64);
             assert!(!model.license.is_empty());
+            assert!(
+                model.checksum_pinned,
+                "{} must pin a vendor SHA-256 before download",
+                model.model_id
+            );
+            assert!(
+                !model.download_url.is_empty(),
+                "{} needs a download URL",
+                model.model_id
+            );
         }
     }
 }

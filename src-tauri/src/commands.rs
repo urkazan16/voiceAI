@@ -3,11 +3,15 @@ use crate::build_info::{self, BuildInfo};
 use crate::catalog::ModelRecord;
 use crate::config::AppSettings;
 use crate::dictionary::DictionaryEntry;
+use crate::download::{self, ModelDownloadProgress, ModelInstallStatus};
 use crate::engine::SharedEngine;
 use crate::error::LfError;
 use crate::history::HistoryItem;
 use crate::pipeline::{PipelineOutput, PipelineSnapshot};
 use serde::Serialize;
+use std::collections::HashSet;
+use std::sync::{Mutex, OnceLock};
+use tauri::{AppHandle, Emitter};
 
 #[derive(Serialize)]
 pub struct CommandError {
@@ -182,6 +186,86 @@ pub fn verify_model(
     model_id: String,
 ) -> Result<String, CommandError> {
     let path = lock(&engine)?.verified_model(&model_id)?;
+    Ok(path.display().to_string())
+}
+
+fn inflight_downloads() -> &'static Mutex<HashSet<String>> {
+    static LOCK: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(HashSet::new()))
+}
+
+#[tauri::command]
+pub fn list_model_status(
+    engine: tauri::State<SharedEngine>,
+) -> Result<Vec<ModelInstallStatus>, CommandError> {
+    let eng = lock(&engine)?;
+    eng.catalog
+        .models
+        .iter()
+        .map(|model| eng.model_status(&model.model_id))
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(CommandError::from)
+}
+
+#[tauri::command]
+pub async fn download_model(
+    app: AppHandle,
+    engine: tauri::State<'_, SharedEngine>,
+    model_id: String,
+) -> Result<String, CommandError> {
+    {
+        let mut inflight = inflight_downloads().lock().map_err(|_| CommandError {
+            code: "ERROR".into(),
+            message: "download lock poisoned".into(),
+        })?;
+        if !inflight.insert(model_id.clone()) {
+            return Err(CommandError {
+                code: "ERROR".into(),
+                message: format!("{model_id} is already downloading"),
+            });
+        }
+    }
+
+    let result = download_model_inner(app, engine.inner().clone(), model_id.clone()).await;
+
+    if let Ok(mut inflight) = inflight_downloads().lock() {
+        inflight.remove(&model_id);
+    }
+    result
+}
+
+async fn download_model_inner(
+    app: AppHandle,
+    engine: SharedEngine,
+    model_id: String,
+) -> Result<String, CommandError> {
+    let (record, dest) = {
+        let eng = lock(&engine)?;
+        let record = eng.catalog.get(&model_id)?.clone();
+        let dest = eng.model_path(&record);
+        (record, dest)
+    };
+
+    let app_for_progress = app.clone();
+    let progress_id = record.model_id.clone();
+    download::download_and_install(&record, &dest, move |progress: ModelDownloadProgress| {
+        let _ = app_for_progress.emit("model-download-progress", &progress);
+    })
+    .await
+    .map_err(|err| {
+        let _ = app.emit(
+            "model-download-progress",
+            ModelDownloadProgress {
+                model_id: progress_id.clone(),
+                phase: "error".into(),
+                bytes_downloaded: 0,
+                total_bytes: record.size,
+            },
+        );
+        CommandError::from(err)
+    })?;
+
+    let path = lock(&engine)?.activate_installed(&model_id)?;
     Ok(path.display().to_string())
 }
 

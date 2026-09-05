@@ -70,8 +70,12 @@ pub fn activate_model(path: &Path, record: &ModelRecord) -> LfResult<()> {
     verify_checksum(path, &record.sha256)?;
     validate_format(path, &record.format)?;
     let meta = std::fs::metadata(path)?;
-    if record.size > 0 && meta.len() == 0 {
-        return Err(LfError::ModelFormatInvalid("empty model file".into()));
+    if record.size > 0 && meta.len() != record.size {
+        return Err(LfError::ModelFormatInvalid(format!(
+            "size mismatch: expected {} got {}",
+            record.size,
+            meta.len()
+        )));
     }
     Ok(())
 }

@@ -16,6 +16,7 @@ pub mod commands;
 pub mod config;
 pub mod db;
 pub mod dictionary;
+pub mod download;
 pub mod engine;
 pub mod error;
 pub mod history;
@@ -56,6 +57,8 @@ pub fn run() {
             commands::complete_onboarding,
             commands::privacy_summary,
             commands::verify_model,
+            commands::download_model,
+            commands::list_model_status,
             commands::get_hotkey_status
         ])
         .setup(move |app| {
