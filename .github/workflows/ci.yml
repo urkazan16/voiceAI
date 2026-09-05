@@ -118,7 +118,7 @@ jobs:
           toolchain: 1.88.0
       - run: npm ci
       - run: npm run build:release
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: LocalFlow-macos-x64
           path: release-artifacts/
