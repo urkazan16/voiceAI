@@ -3,7 +3,7 @@ use crate::error::{LfError, LfResult};
 use crate::integrity::activate_model;
 use futures_util::StreamExt;
 use serde::Serialize;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::Instant;
 use tokio::io::AsyncWriteExt;
 
@@ -18,10 +18,63 @@ pub struct ModelDownloadProgress {
 #[derive(Debug, Clone, Serialize)]
 pub struct ModelInstallStatus {
     pub model_id: String,
+    pub state: String,
     pub installed: bool,
     pub verified: bool,
     pub local_path: Option<String>,
     pub bytes_on_disk: u64,
+    pub expected_bytes: u64,
+}
+
+pub fn partial_path(dest: &Path) -> PathBuf {
+    let mut raw = dest.as_os_str().to_os_string();
+    raw.push(".partial");
+    PathBuf::from(raw)
+}
+
+pub fn inspect_install(record: &ModelRecord, dest: &Path) -> ModelInstallStatus {
+    if dest.exists() {
+        let bytes_on_disk = std::fs::metadata(dest).map(|m| m.len()).unwrap_or(0);
+        let verified = activate_model(dest, record).is_ok();
+        return ModelInstallStatus {
+            model_id: record.model_id.clone(),
+            state: if verified {
+                "verified".into()
+            } else {
+                "unverified".into()
+            },
+            installed: true,
+            verified,
+            local_path: Some(dest.display().to_string()),
+            bytes_on_disk,
+            expected_bytes: record.size,
+        };
+    }
+
+    let partial = partial_path(dest);
+    if let Ok(meta) = std::fs::metadata(&partial) {
+        if meta.len() > 0 {
+            return ModelInstallStatus {
+                model_id: record.model_id.clone(),
+                state: "incomplete".into(),
+                installed: false,
+                verified: false,
+                local_path: Some(partial.display().to_string()),
+                bytes_on_disk: meta.len(),
+                expected_bytes: record.size,
+            };
+        }
+    }
+
+    ModelInstallStatus {
+        model_id: record.model_id.clone(),
+        state: "missing".into(),
+        installed: false,
+        verified: false,
+        local_path: None,
+        bytes_on_disk: 0,
+        expected_bytes: record.size,
+    }
 }
 
 pub async fn download_and_install(
@@ -49,16 +102,15 @@ pub async fn download_and_install(
         tokio::fs::create_dir_all(parent).await?;
     }
 
-    let partial = dest.with_extension(format!(
-        "{}.partial",
-        dest.extension().and_then(|e| e.to_str()).unwrap_or("bin")
-    ));
-    let _ = tokio::fs::remove_file(&partial).await;
+    let partial = partial_path(dest);
 
     on_progress(ModelDownloadProgress {
         model_id: record.model_id.clone(),
         phase: "downloading".into(),
-        bytes_downloaded: 0,
+        bytes_downloaded: tokio::fs::metadata(&partial)
+            .await
+            .map(|m| m.len())
+            .unwrap_or(0),
         total_bytes: record.size,
     });
 
@@ -108,35 +160,63 @@ async fn fetch_to_file(
         .build()
         .map_err(|err| LfError::Other(err.to_string()))?;
 
-    let response = client
+    let existing = tokio::fs::metadata(dest)
+        .await
+        .ok()
+        .map(|m| m.len())
+        .unwrap_or(0);
+    let mut request = client
         .get(url)
-        .header(reqwest::header::ACCEPT, "application/octet-stream")
+        .header(reqwest::header::ACCEPT, "application/octet-stream");
+    if existing > 0 && (record.size == 0 || existing < record.size) {
+        request = request.header(reqwest::header::RANGE, format!("bytes={existing}-"));
+    }
+
+    let response = request
         .send()
         .await
         .map_err(|err| LfError::Other(format!("download failed: {err}")))?;
 
-    if !response.status().is_success() {
+    let status = response.status();
+    let resume = status == reqwest::StatusCode::PARTIAL_CONTENT;
+    if !status.is_success() && !resume {
         return Err(LfError::Other(format!(
             "download HTTP {} for {}",
-            response.status(),
-            record.model_id
+            status, record.model_id
         )));
     }
 
-    let total = response
-        .content_length()
-        .unwrap_or(record.size)
-        .max(record.size);
-    let mut file = tokio::fs::File::create(dest).await?;
-    let mut downloaded: u64 = 0;
+    let mut file = if resume {
+        tokio::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(dest)
+            .await?
+    } else {
+        tokio::fs::File::create(dest).await?
+    };
+    let mut downloaded: u64 = if resume { existing } else { 0 };
+    let total = if record.size > 0 {
+        record.size
+    } else {
+        downloaded + response.content_length().unwrap_or(0)
+    };
     let mut last_emit = Instant::now();
     let mut stream = response.bytes_stream();
+
+    on_progress(ModelDownloadProgress {
+        model_id: record.model_id.clone(),
+        phase: "downloading".into(),
+        bytes_downloaded: downloaded,
+        total_bytes: total,
+    });
 
     while let Some(chunk) = stream.next().await {
         let chunk = chunk.map_err(|err| LfError::Other(format!("download stream: {err}")))?;
         file.write_all(&chunk).await?;
         downloaded += chunk.len() as u64;
         if record.size > 0 && downloaded > record.size.saturating_mul(2) {
+            drop(file);
             let _ = tokio::fs::remove_file(dest).await;
             return Err(LfError::ModelFormatInvalid(format!(
                 "{} grew larger than twice the catalog size",
@@ -157,10 +237,9 @@ async fn fetch_to_file(
     drop(file);
 
     if record.size > 0 && downloaded != record.size {
-        let _ = tokio::fs::remove_file(dest).await;
-        return Err(LfError::ModelFormatInvalid(format!(
-            "size mismatch for {}: expected {} got {}",
-            record.model_id, record.size, downloaded
+        return Err(LfError::Other(format!(
+            "download incomplete for {}: {} of {} bytes — resume from Model Manager",
+            record.model_id, downloaded, record.size
         )));
     }
     Ok(())
@@ -217,6 +296,26 @@ mod tests {
         format!("http://{addr}/model.gguf")
     }
 
+    #[test]
+    fn partial_sidecar_keeps_original_name() {
+        assert_eq!(
+            partial_path(Path::new("/models/whisper/ggml-small.bin")),
+            Path::new("/models/whisper/ggml-small.bin.partial")
+        );
+    }
+
+    #[test]
+    fn inspect_reports_incomplete_partial() {
+        let dir = tempdir().unwrap();
+        let dest = dir.path().join("ggml-small.bin");
+        std::fs::write(partial_path(&dest), b"partial").unwrap();
+        let record = record_for(b"GGUFdata", "http://example".into(), "ggml-small.bin");
+        let status = inspect_install(&record, &dest);
+        assert_eq!(status.state, "incomplete");
+        assert!(!status.installed);
+        assert_eq!(status.bytes_on_disk, 7);
+    }
+
     #[tokio::test]
     async fn downloads_verifies_and_installs() {
         let body: &'static [u8] = b"GGUFtestdata";
@@ -227,6 +326,9 @@ mod tests {
         download_and_install(&record, &dest, |_| {}).await.unwrap();
         assert_eq!(std::fs::read(&dest).unwrap(), body);
         activate_model(&dest, &record).unwrap();
+        let status = inspect_install(&record, &dest);
+        assert_eq!(status.state, "verified");
+        assert!(status.installed && status.verified);
     }
 
     #[tokio::test]

@@ -73,15 +73,6 @@ export function App() {
       setHistory(nextHistory);
       setBuild(nextBuild);
       setPrivacy(nextPrivacy);
-      setView((current) => {
-        if (!nextSettings.onboarding_complete) {
-          return "onboarding";
-        }
-        if (current === "onboarding") {
-          return "home";
-        }
-        return current;
-      });
       if (hotkey.registered) {
         setStatus(
           `Hold ${hotkey.registered.replace("Control", "Ctrl").replace("Command", "⌘")}, speak, release.`,
@@ -100,7 +91,6 @@ export function App() {
       });
     } catch {
       setModels(bundledCatalog);
-      setView("home");
     }
   }
 
@@ -140,6 +130,29 @@ export function App() {
       unprogress?.();
     };
   }, []);
+
+  useEffect(() => {
+    if (view !== "models" || !isTauriRuntime()) {
+      return;
+    }
+    let cancelled = false;
+    async function pullStatus() {
+      try {
+        const next = await api.listModelStatus();
+        if (!cancelled) {
+          setModelStatus(next);
+        }
+      } catch {
+        /* status poll is best-effort */
+      }
+    }
+    void pullStatus();
+    const timer = window.setInterval(() => void pullStatus(), 1000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [view]);
 
   async function save(next: AppSettings) {
     setSettings(next);
@@ -315,35 +328,57 @@ export function App() {
               {models.map((model) => {
                 const status = modelStatus.find((item) => item.model_id === model.model_id);
                 const progress = downloadProgress[model.model_id];
-                const downloading =
-                  progress?.phase === "downloading" ||
-                  progress?.phase === "verifying" ||
-                  progress?.phase === "installing";
-                const percent =
-                  progress && progress.total_bytes > 0
-                    ? Math.min(
-                        100,
-                        Math.round((progress.bytes_downloaded / progress.total_bytes) * 100),
-                      )
-                    : 0;
+                const state = status?.state ?? "missing";
+                const busy = state === "downloading" || progress?.phase === "downloading";
+                const bytes = Math.max(status?.bytes_on_disk ?? 0, progress?.bytes_downloaded ?? 0);
+                const total = status?.expected_bytes || model.size || progress?.total_bytes || 0;
+                const percent = total > 0 ? Math.min(100, Math.round((bytes / total) * 100)) : 0;
+                const badge =
+                  state === "verified"
+                    ? { label: "Installed", className: "bg-moss text-ink" }
+                    : state === "downloading"
+                      ? { label: `Downloading ${percent}%`, className: "bg-copper text-ink" }
+                      : state === "incomplete"
+                        ? {
+                            label: `Incomplete ${percent}%`,
+                            className: "bg-copper/30 text-copper",
+                          }
+                        : state === "unverified"
+                          ? { label: "Checksum failed", className: "bg-red-900 text-paper" }
+                          : { label: "Not installed", className: "bg-paper/15 text-paper/70" };
+                const buttonLabel =
+                  state === "verified"
+                    ? "Re-download & verify"
+                    : state === "incomplete" || state === "downloading"
+                      ? "Resume download"
+                      : "Download & install";
                 return (
                   <article key={model.model_id} className="rounded-2xl border border-paper/10 p-5">
                     <div className="flex items-baseline justify-between gap-4">
                       <h2 className="text-2xl">{model.display_name}</h2>
-                      <span className="text-copper text-sm">{model.kind.toUpperCase()}</span>
+                      <span
+                        className={`rounded-full px-3 py-1 text-xs font-semibold uppercase tracking-wide ${badge.className}`}
+                      >
+                        {badge.label}
+                      </span>
                     </div>
                     <p className="mt-2 text-sm text-paper/70">
                       {model.format} {model.quantization} · {formatBytes(model.size)}
                     </p>
-                    <p className="mt-1 text-sm">
-                      Status:{" "}
-                      {status?.verified
-                        ? "Installed and verified"
-                        : status?.installed
-                          ? "File present, checksum failed"
-                          : "Not installed"}
-                    </p>
-                    {status?.local_path && (
+                    {(state === "downloading" || state === "incomplete") && (
+                      <div className="mt-3">
+                        <div className="h-2 overflow-hidden rounded-full bg-paper/10">
+                          <div className="h-full bg-copper" style={{ width: `${percent}%` }} />
+                        </div>
+                        <p className="mt-2 text-sm text-copper">
+                          {formatBytes(bytes)} of {formatBytes(total)}
+                        </p>
+                      </div>
+                    )}
+                    {state === "verified" && (
+                      <p className="mt-2 text-sm text-moss">Ready at {status?.local_path}</p>
+                    )}
+                    {status?.local_path && state !== "verified" && (
                       <p className="mt-1 break-all font-mono text-xs text-paper/50">
                         {status.local_path}
                       </p>
@@ -353,12 +388,6 @@ export function App() {
                     <p className="mt-1 break-all font-mono text-xs text-paper/50">
                       SHA-256: {model.sha256}
                     </p>
-                    {downloading && (
-                      <p className="mt-3 text-sm text-copper">
-                        {progress.phase} · {percent}% ({formatBytes(progress.bytes_downloaded)} of{" "}
-                        {formatBytes(progress.total_bytes)})
-                      </p>
-                    )}
                     <div className="mt-3 flex flex-wrap gap-3">
                       <a
                         className="text-copper underline"
@@ -370,7 +399,7 @@ export function App() {
                       </a>
                       <button
                         className="rounded-full bg-moss px-4 py-1 text-ink disabled:opacity-40"
-                        disabled={downloading || !model.download_url}
+                        disabled={busy || !model.download_url}
                         onClick={async () => {
                           setModelMessage(`Network download started for ${model.display_name}`);
                           try {
@@ -379,10 +408,15 @@ export function App() {
                             await refresh();
                           } catch (error) {
                             setModelMessage(String(error));
+                            try {
+                              setModelStatus(await api.listModelStatus());
+                            } catch {
+                              /* keep last known status */
+                            }
                           }
                         }}
                       >
-                        {status?.verified ? "Re-download & verify" : "Download & install"}
+                        {buttonLabel}
                       </button>
                       <button
                         className="text-paper/80 underline"
@@ -399,7 +433,7 @@ export function App() {
                         Verify local file
                       </button>
                     </div>
-                    {model.network_required_to_obtain && (
+                    {model.network_required_to_obtain && state !== "verified" && (
                       <p className="mt-3 text-xs uppercase tracking-wide text-copper">
                         Network required to download (Hugging Face)
                       </p>

@@ -57,10 +57,12 @@ export interface ModelRecord {
 
 export interface ModelInstallStatus {
   model_id: string;
+  state: "missing" | "downloading" | "incomplete" | "unverified" | "verified" | string;
   installed: boolean;
   verified: boolean;
   local_path: string | null;
   bytes_on_disk: number;
+  expected_bytes: number;
 }
 
 export interface ModelDownloadProgress {

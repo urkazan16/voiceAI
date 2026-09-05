@@ -119,16 +119,7 @@ impl AppEngine {
     pub fn model_status(&self, model_id: &str) -> LfResult<crate::download::ModelInstallStatus> {
         let record = self.catalog.get(model_id)?;
         let path = self.model_path(record);
-        let bytes_on_disk = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
-        let installed = path.exists();
-        let verified = activate_model(&path, record).is_ok();
-        Ok(crate::download::ModelInstallStatus {
-            model_id: record.model_id.clone(),
-            installed,
-            verified,
-            local_path: installed.then(|| path.display().to_string()),
-            bytes_on_disk,
-        })
+        Ok(crate::download::inspect_install(record, &path))
     }
 
     pub fn activate_installed(&mut self, model_id: &str) -> LfResult<PathBuf> {

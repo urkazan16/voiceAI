@@ -198,13 +198,23 @@ fn inflight_downloads() -> &'static Mutex<HashSet<String>> {
 pub fn list_model_status(
     engine: tauri::State<SharedEngine>,
 ) -> Result<Vec<ModelInstallStatus>, CommandError> {
-    let eng = lock(&engine)?;
-    eng.catalog
-        .models
-        .iter()
-        .map(|model| eng.model_status(&model.model_id))
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(CommandError::from)
+    let mut statuses = {
+        let eng = lock(&engine)?;
+        eng.catalog
+            .models
+            .iter()
+            .map(|model| eng.model_status(&model.model_id))
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(CommandError::from)?
+    };
+    if let Ok(inflight) = inflight_downloads().lock() {
+        for status in &mut statuses {
+            if inflight.contains(&status.model_id) && status.state != "verified" {
+                status.state = "downloading".into();
+            }
+        }
+    }
+    Ok(statuses)
 }
 
 #[tauri::command]
