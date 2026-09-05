@@ -30,6 +30,7 @@ pub struct AppEngine {
     pub last_output: Option<PipelineOutput>,
     pub hotkey_registered: Option<String>,
     pub hotkey_error: Option<String>,
+    pub insert_target_pid: Option<i32>,
 }
 
 impl AppEngine {
@@ -54,6 +55,7 @@ impl AppEngine {
             last_output: None,
             hotkey_registered: None,
             hotkey_error: None,
+            insert_target_pid: None,
         };
         engine.load_persisted();
         Ok(engine)
@@ -144,7 +146,15 @@ impl AppEngine {
     }
 
     pub fn process_captured_audio(&mut self, pcm_16k: &[f32]) -> LfResult<PipelineOutput> {
-        self.run_text_pipeline("", &NativeStt, &NativeLlm, &ClipboardInjector, pcm_16k)
+        self.run_text_pipeline(
+            "",
+            &NativeStt,
+            &NativeLlm,
+            &ClipboardInjector {
+                target_pid: self.insert_target_pid,
+            },
+            pcm_16k,
+        )
     }
 
     pub fn run_text_pipeline(

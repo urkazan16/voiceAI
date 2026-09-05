@@ -235,7 +235,8 @@ export function App() {
             <h1 className="text-4xl">Dictation pipeline</h1>
             <p className="mt-2 text-paper/70">{status}</p>
             <p className="mt-1 text-sm text-paper/50">
-              Hold the hotkey to record. Release to process the recording and insert text.
+              Click the target field (browser, editor), then hold the hotkey to record. Release to
+              process and paste. Do not keep Ctrl/Shift held after release.
             </p>
             <textarea
               className="mt-6 h-32 w-full rounded-2xl border border-paper/15 bg-paper/5 p-4"

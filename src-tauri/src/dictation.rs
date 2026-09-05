@@ -27,7 +27,9 @@ pub fn on_hotkey_pressed(app: &AppHandle, engine: &SharedEngine, capture: &Share
         .lock()
         .ok()
         .and_then(|eng| eng.settings.microphone_name.clone());
+    let target_pid = crate::injection::frontmost_unix_id();
     if let Ok(mut eng) = engine.lock() {
+        eng.insert_target_pid = target_pid;
         eng.snapshot.reset();
         let _ = eng.snapshot.transition(PipelineState::Recording);
     }
@@ -76,6 +78,7 @@ pub fn on_hotkey_released(app: &AppHandle, engine: &SharedEngine, capture: &Shar
     let app = app.clone();
     let engine = engine.clone();
     std::thread::spawn(move || {
+        crate::injection::prepare_keyboard_for_insert();
         let duration_ms = audio::duration_ms(&captured);
         let pcm = audio::to_whisper_pcm(&captured);
         if pcm.len() < 1_600 {
