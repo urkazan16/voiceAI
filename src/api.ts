@@ -93,6 +93,12 @@ export function isTauriRuntime(): boolean {
 
 export const bundledCatalog: ModelRecord[] = catalogJson.models as ModelRecord[];
 
+export interface HotkeyStatus {
+  requested: string;
+  registered: string | null;
+  error: string | null;
+}
+
 const BROWSER_HINT =
   "IPC is unavailable. Use the LocalFlow window from the menu bar (npm run tauri dev), not a browser tab on localhost:1420.";
 
@@ -120,4 +126,5 @@ export const api = {
   completeOnboarding: () => call<void>("complete_onboarding"),
   privacySummary: () => call<PrivacySummary>("privacy_summary"),
   verifyModel: (modelId: string) => call<string>("verify_model", { modelId }),
+  getHotkeyStatus: () => call<HotkeyStatus>("get_hotkey_status"),
 };

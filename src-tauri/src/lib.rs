@@ -55,7 +55,8 @@ pub fn run() {
             commands::process_transcript,
             commands::complete_onboarding,
             commands::privacy_summary,
-            commands::verify_model
+            commands::verify_model,
+            commands::get_hotkey_status
         ])
         .setup(move |app| {
             let show = MenuItem::with_id(app, "show", "Open LocalFlow", true, None::<&str>)?;
@@ -79,25 +80,52 @@ pub fn run() {
             }
             tray.build(app)?;
 
-            let handle = app.handle().clone();
             let engine_for_hotkey = shared.clone();
             app.handle().plugin(
                 tauri_plugin_global_shortcut::Builder::new()
-                    .with_handler(move |_app, _shortcut, event| {
+                    .with_handler(move |app, _shortcut, event| {
                         if event.state == tauri_plugin_global_shortcut::ShortcutState::Pressed {
                             if let Ok(mut eng) = engine_for_hotkey.lock() {
                                 let _ = eng.snapshot.transition(PipelineState::Recording);
                             }
+                            if let Some(window) = app.get_webview_window("main") {
+                                let _ = window.show();
+                                let _ = window.set_focus();
+                                let _ = window.emit("hotkey-pressed", ());
+                            }
                         }
                         if event.state == tauri_plugin_global_shortcut::ShortcutState::Released {
-                            if let Some(window) = handle.get_webview_window("main") {
-                                let _ = window.emit("localflow://hotkey-released", ());
+                            if let Some(window) = app.get_webview_window("main") {
+                                let _ = window.emit("hotkey-released", ());
                             }
                         }
                     })
                     .build(),
             )?;
-            app.global_shortcut().register("Alt+Space")?;
+            let requested = shared
+                .lock()
+                .map(|eng| eng.settings.hotkey.clone())
+                .unwrap_or_else(|_| "Control+Shift+Space".into());
+            let candidates = [requested.as_str(), "Control+Shift+Space", "Command+Shift+D"];
+            let mut registered = None;
+            let mut last_err = None;
+            for shortcut in candidates {
+                match app.global_shortcut().register(shortcut) {
+                    Ok(()) => {
+                        registered = Some(shortcut.to_string());
+                        last_err = None;
+                        break;
+                    }
+                    Err(err) => last_err = Some(err.to_string()),
+                }
+            }
+            if let Ok(mut eng) = shared.lock() {
+                eng.hotkey_registered = registered.clone();
+                if let Some(active) = &registered {
+                    eng.settings.hotkey = active.clone();
+                }
+                eng.hotkey_error = last_err;
+            }
             if let Some(window) = app.get_webview_window("main") {
                 let _ = window.show();
                 let _ = window.set_focus();

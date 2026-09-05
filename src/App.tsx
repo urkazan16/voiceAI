@@ -12,9 +12,10 @@ import {
   type ViewId,
 } from "./api";
 import { formatBytes, NAV } from "./ui";
+import { listen } from "@tauri-apps/api/event";
 
 const fallbackSettings = (): AppSettings => ({
-  hotkey: "Alt+Space",
+  hotkey: "Control+Shift+Space",
   mode: "normal",
   microphone_name: null,
   active_stt_model: "whisper-small",
@@ -31,7 +32,7 @@ export function App() {
   const [history, setHistory] = useState<HistoryItem[]>([]);
   const [build, setBuild] = useState<BuildInfo | null>(null);
   const [privacy, setPrivacy] = useState<PrivacySummary | null>(null);
-  const [status, setStatus] = useState("Hold Option+Space, speak, release.");
+  const [status, setStatus] = useState("Hold Control+Shift+Space, speak, release.");
   const [draft, setDraft] = useState("");
   const [term, setTerm] = useState("");
   const [replacement, setReplacement] = useState("");
@@ -40,7 +41,7 @@ export function App() {
 
   async function refresh() {
     try {
-      const [nextSettings, nextModels, nextDict, nextHistory, nextBuild, nextPrivacy] =
+      const [nextSettings, nextModels, nextDict, nextHistory, nextBuild, nextPrivacy, hotkey] =
         await Promise.all([
           api.getSettings(),
           api.listModels(),
@@ -48,6 +49,7 @@ export function App() {
           api.listHistory(),
           api.getBuildInfo(),
           api.privacySummary(),
+          api.getHotkeyStatus(),
         ]);
       setSettings(nextSettings);
       setModels(nextModels);
@@ -55,6 +57,13 @@ export function App() {
       setHistory(nextHistory);
       setBuild(nextBuild);
       setPrivacy(nextPrivacy);
+      if (hotkey.registered) {
+        setStatus(
+          `Hold ${hotkey.registered.replace("Control", "Ctrl").replace("Command", "⌘")}, speak, release.`,
+        );
+      } else if (hotkey.error) {
+        setStatus(`Hotkey not registered: ${hotkey.error}`);
+      }
       setView(nextSettings.onboarding_complete ? "home" : "onboarding");
     } catch {
       setModels(bundledCatalog);
@@ -64,6 +73,31 @@ export function App() {
 
   useEffect(() => {
     void refresh();
+  }, []);
+
+  useEffect(() => {
+    if (!isTauriRuntime()) {
+      return;
+    }
+    let unpressed: (() => void) | undefined;
+    let unreleased: (() => void) | undefined;
+    void listen("hotkey-pressed", () => {
+      setStatus("Hotkey received — recording (release keys to finish).");
+      setView("home");
+    }).then((fn) => {
+      unpressed = fn;
+    });
+    void listen("hotkey-released", () => {
+      setStatus(
+        "Hotkey released. Voice STT needs a verified local model. Type a phrase and click Process locally to test the pipeline.",
+      );
+    }).then((fn) => {
+      unreleased = fn;
+    });
+    return () => {
+      unpressed?.();
+      unreleased?.();
+    };
   }, []);
 
   async function save(next: AppSettings) {
@@ -85,7 +119,7 @@ export function App() {
         <ol className="mt-8 max-w-xl space-y-3 text-lg text-paper/80">
           <li>1. Grant Microphone and Accessibility permissions.</li>
           <li>2. Download Whisper and Qwen models in Model Manager (network, user-initiated).</li>
-          <li>3. Hold Option+Space, talk, release. Text is processed locally and pasted.</li>
+          <li>3. Hold Control+Shift+Space, talk, release. Typed Process locally works without models.</li>
         </ol>
         <button
           className="mt-10 rounded-full bg-copper px-6 py-3 text-ink"
@@ -164,13 +198,18 @@ export function App() {
           <section className="max-w-xl space-y-4">
             <h1 className="text-4xl">Settings</h1>
             <label className="block text-sm text-paper/70">
-              Hotkey
+              Hotkey (Tauri syntax, e.g. Control+Shift+Space)
               <input
                 className="mt-1 w-full rounded-lg bg-paper/10 p-2"
                 value={settings.hotkey}
                 onChange={(e) => void save({ ...settings, hotkey: e.target.value })}
               />
             </label>
+            <p className="text-xs text-paper/60">
+              Option+Space and Control+Space are often taken by macOS (Spotlight / input source).
+              Check System Settings → Keyboard → Keyboard Shortcuts. After changing the hotkey,
+              restart the app.
+            </p>
             <label className="block text-sm text-paper/70">
               Mode
               <select

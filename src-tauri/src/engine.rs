@@ -28,6 +28,8 @@ pub struct AppEngine {
     pub snapshot: PipelineSnapshot,
     pub store: Store,
     pub last_output: Option<PipelineOutput>,
+    pub hotkey_registered: Option<String>,
+    pub hotkey_error: Option<String>,
 }
 
 impl AppEngine {
@@ -50,6 +52,8 @@ impl AppEngine {
             snapshot: PipelineSnapshot::default(),
             store,
             last_output: None,
+            hotkey_registered: None,
+            hotkey_error: None,
         };
         engine.load_persisted();
         Ok(engine)

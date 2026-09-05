@@ -19,7 +19,7 @@ pub struct AppSettings {
 impl Default for AppSettings {
     fn default() -> Self {
         Self {
-            hotkey: "Alt+Space".into(),
+            hotkey: "Control+Shift+Space".into(),
             mode: PipelineMode::Normal,
             microphone_name: None,
             active_stt_model: Some("whisper-small".into()),
@@ -113,6 +113,6 @@ mod tests {
         );
         let json = serde_json::to_string_pretty(&exported).unwrap();
         let imported = import_config(&json, &catalog).unwrap();
-        assert_eq!(imported.settings.hotkey, "Alt+Space");
+        assert_eq!(imported.settings.hotkey, "Control+Shift+Space");
     }
 }

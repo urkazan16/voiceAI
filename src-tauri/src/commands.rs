@@ -184,3 +184,20 @@ pub fn verify_model(
     let path = lock(&engine)?.verified_model(&model_id)?;
     Ok(path.display().to_string())
 }
+
+#[derive(Serialize)]
+pub struct HotkeyStatus {
+    pub requested: String,
+    pub registered: Option<String>,
+    pub error: Option<String>,
+}
+
+#[tauri::command]
+pub fn get_hotkey_status(engine: tauri::State<SharedEngine>) -> Result<HotkeyStatus, CommandError> {
+    let eng = lock(&engine)?;
+    Ok(HotkeyStatus {
+        requested: eng.settings.hotkey.clone(),
+        registered: eng.hotkey_registered.clone(),
+        error: eng.hotkey_error.clone(),
+    })
+}
