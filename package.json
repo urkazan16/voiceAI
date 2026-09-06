@@ -51,7 +51,7 @@
     "@types/react-dom": "18.3.5",
     "@tauri-apps/cli": "2.2.7",
     "@vitejs/plugin-react": "4.3.4",
-    "autoprefixer": "10.4.20",
+    "autoprefixer": "10.5.4",
     "eslint": "9.18.0",
     "eslint-plugin-react-hooks": "5.1.0",
     "eslint-plugin-react-refresh": "0.4.16",
