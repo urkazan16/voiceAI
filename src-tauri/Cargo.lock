@@ -2218,6 +2218,7 @@ dependencies = [
  "cc",
  "chrono",
  "cpal",
+ "dispatch2",
  "futures-util",
  "hex",
  "libc",

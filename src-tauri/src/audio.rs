@@ -54,6 +54,7 @@ enum CaptureCommand {
         reply: std::sync::mpsc::Sender<Option<CapturedAudio>>,
     },
     Peek {
+        max_samples: Option<usize>,
         reply: std::sync::mpsc::Sender<Option<CapturedAudio>>,
     },
     IsRecording {
@@ -96,8 +97,11 @@ impl CaptureHub {
                             let audio = live.take().map(LiveCapture::finish);
                             let _ = reply.send(audio);
                         }
-                        CaptureCommand::Peek { reply } => {
-                            let audio = live.as_ref().map(|cap| cap.peek());
+                        CaptureCommand::Peek { max_samples, reply } => {
+                            let audio = live.as_ref().map(|cap| match max_samples {
+                                Some(n) => cap.peek_tail(n),
+                                None => cap.peek(),
+                            });
                             let _ = reply.send(audio);
                         }
                         CaptureCommand::IsRecording { reply } => {
@@ -126,8 +130,18 @@ impl CaptureHub {
     }
 
     pub fn peek(&self) -> Option<CapturedAudio> {
+        self.peek_limited(None)
+    }
+
+    pub fn peek_tail(&self, max_samples: usize) -> Option<CapturedAudio> {
+        self.peek_limited(Some(max_samples))
+    }
+
+    fn peek_limited(&self, max_samples: Option<usize>) -> Option<CapturedAudio> {
         let (reply, rx) = std::sync::mpsc::channel();
-        self.tx.send(CaptureCommand::Peek { reply }).ok()?;
+        self.tx
+            .send(CaptureCommand::Peek { max_samples, reply })
+            .ok()?;
         rx.recv().ok().flatten()
     }
 
@@ -221,7 +235,17 @@ pub fn start_capture(preferred_name: Option<&str>) -> LfResult<LiveCapture> {
 
 impl LiveCapture {
     pub fn peek(&self) -> CapturedAudio {
-        let samples = self.samples.lock().map(|g| g.clone()).unwrap_or_default();
+        self.peek_tail(usize::MAX)
+    }
+
+    pub fn peek_tail(&self, max_samples: usize) -> CapturedAudio {
+        let samples = match self.samples.lock() {
+            Ok(buf) => {
+                let start = buf.len().saturating_sub(max_samples);
+                buf[start..].to_vec()
+            }
+            Err(_) => Vec::new(),
+        };
         CapturedAudio {
             samples,
             sample_rate: self.sample_rate,
@@ -230,6 +254,8 @@ impl LiveCapture {
     }
 
     pub fn finish(self) -> CapturedAudio {
+        use cpal::traits::StreamTrait;
+        let _ = self.stream.pause();
         drop(self.stream);
         std::thread::sleep(Duration::from_millis(20));
         let samples = self.samples.lock().map(|g| g.clone()).unwrap_or_default();
@@ -343,6 +369,13 @@ mod tests {
         let input: Vec<f32> = (0..16).map(|i| i as f32).collect();
         let out = resample_linear(&input, 32_000, 16_000);
         assert_eq!(out.len(), 8);
+    }
+
+    #[test]
+    fn peek_tail_keeps_only_the_latest_samples() {
+        let buf: Vec<f32> = (0..10).map(|i| i as f32).collect();
+        let start = buf.len().saturating_sub(3);
+        assert_eq!(&buf[start..], &[7.0, 8.0, 9.0]);
     }
 
     #[test]

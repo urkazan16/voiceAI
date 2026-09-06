@@ -38,6 +38,9 @@ describe("copy", () => {
     expect(copy("ru").hotkeyHelp).toMatch(/Spotlight|раскладка/);
     expect(copy("ru").speechLangHelp).not.toBe(copy("en").speechLangHelp);
     expect(copy("ru").settingsTitle).toBe("Настройки");
+    expect(copy("en").speechModel).toMatch(/downloaded/i);
+    expect(copy("ru").speechModel).toMatch(/скачан/i);
+    expect(copy("ru").noDownloadedSpeech).not.toBe(copy("en").noDownloadedSpeech);
     expect(copy("ru").onboardingTitle).toMatch(/Mac/);
     expect(copy("ru").interfaceLanguage).toBe("Язык интерфейса");
   });

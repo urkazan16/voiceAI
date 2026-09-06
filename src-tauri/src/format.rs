@@ -668,10 +668,7 @@ fn collapse_duplicate_words(text: &str) -> String {
         .map(|line| {
             let mut out = Vec::new();
             for token in line.split_whitespace() {
-                if out
-                    .last()
-                    .is_some_and(|prev: &&str| eq_ci(trim_punct(prev), trim_punct(token)))
-                {
+                if out.last().is_some_and(|prev: &&str| eq_ci(prev, token)) {
                     continue;
                 }
                 out.push(token);
@@ -1253,6 +1250,15 @@ mod tests {
         assert_eq!(
             format_smart(PipelineMode::Normal, "это это проверка"),
             "Это проверка."
+        );
+        assert!(format_smart(PipelineMode::Normal, "Раз, раз")
+            .to_lowercase()
+            .contains("раз"),);
+        let repeated = format_smart(PipelineMode::Normal, "Раз, раз");
+        let lower = repeated.to_lowercase();
+        assert!(
+            lower.contains("раз,") && lower.matches("раз").count() >= 2,
+            "{repeated}"
         );
         assert_eq!(
             format_smart(PipelineMode::Normal, "npm install"),

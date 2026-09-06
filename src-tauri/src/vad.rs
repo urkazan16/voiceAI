@@ -2,6 +2,7 @@
 
 const FRAME_MS: u32 = 20;
 const PAD_FRAMES: usize = 16;
+const LEAD_PAD_FRAMES: usize = 24;
 
 pub fn default_threshold() -> f32 {
     0.012
@@ -30,7 +31,7 @@ pub fn trim_silence_at(pcm: &[f32], sample_rate: u32, threshold: f32) -> Vec<f32
     if voiced.is_empty() {
         return Vec::new();
     }
-    let first = voiced[0].saturating_sub(PAD_FRAMES);
+    let first = voiced[0].saturating_sub(LEAD_PAD_FRAMES);
     let last = (voiced[voiced.len() - 1] + PAD_FRAMES)
         .min(pcm.chunks(frame_len).count().saturating_sub(1));
     let start = first * frame_len;
@@ -77,7 +78,7 @@ pub fn split_on_internal_silence(
     clusters
         .into_iter()
         .map(|(first, last)| {
-            let start = first.saturating_sub(PAD_FRAMES) * frame_len;
+            let start = first.saturating_sub(LEAD_PAD_FRAMES) * frame_len;
             let end = ((last + 1 + PAD_FRAMES) * frame_len).min(pcm.len());
             pcm[start..end].to_vec()
         })

@@ -109,6 +109,22 @@ function describeSelectedModel(
   return { id, name, ready: false, detail: t.modelNotInstalled, version };
 }
 
+function modelFileReady(status: ModelInstallStatus | undefined): boolean {
+  return status?.state === "verified" || status?.state === "installed";
+}
+
+function downloadedModels(
+  catalog: ModelRecord[],
+  statuses: ModelInstallStatus[],
+  kind: "stt" | "llm",
+): ModelRecord[] {
+  return catalog.filter(
+    (model) =>
+      model.kind === kind &&
+      modelFileReady(statuses.find((item) => item.model_id === model.model_id)),
+  );
+}
+
 export function App() {
   const [view, setView] = useState<ViewId>("onboarding");
   const [settings, setSettings] = useState<AppSettings>(fallbackSettings);
@@ -365,6 +381,14 @@ export function App() {
     };
   }, [view, settings.active_stt_model, settings.active_llm_model]);
 
+  useEffect(() => {
+    if (view !== "settings" || !isTauriRuntime()) {
+      return;
+    }
+    void api.listModelStatus().then(setModelStatus).catch(() => undefined);
+    void api.listModels().then(setModels).catch(() => undefined);
+  }, [view]);
+
   async function save(next: AppSettings) {
     const previous = settings;
     setSettings(next);
@@ -377,6 +401,28 @@ export function App() {
   }
 
   const t = copy(settings.ui_language);
+  const installedSpeech = downloadedModels(models, modelStatus, "stt");
+  const installedFormatting = downloadedModels(models, modelStatus, "llm");
+  const speechChoices =
+    settings.active_stt_model &&
+    !installedSpeech.some((model) => model.model_id === settings.active_stt_model)
+      ? [
+          ...(models.find((model) => model.model_id === settings.active_stt_model)
+            ? [models.find((model) => model.model_id === settings.active_stt_model)!]
+            : []),
+          ...installedSpeech,
+        ]
+      : installedSpeech;
+
+  async function activateDownloaded(modelId: string) {
+    try {
+      await api.setActiveModel(modelId);
+      await refresh();
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : String(error));
+    }
+  }
+
   const menu = [
     ...(!settings.onboarding_complete
       ? [{ id: "onboarding" as const, label: t.setupNav }]
@@ -698,6 +744,74 @@ export function App() {
             <p className="text-xs text-paper/60">
               {t.speechLangHelp}
             </p>
+            <label className="block text-sm text-paper/70">
+              {t.speechModel}
+              <select
+                className="mt-1 w-full rounded-lg bg-paper/10 p-2"
+                value={settings.active_stt_model ?? ""}
+                disabled={speechChoices.length === 0}
+                onChange={(e) => {
+                  if (e.target.value) {
+                    void activateDownloaded(e.target.value);
+                  }
+                }}
+              >
+                {speechChoices.length === 0 ? (
+                  <option value="">{t.noDownloadedSpeech}</option>
+                ) : (
+                  speechChoices.map((model) => (
+                    <option key={model.model_id} value={model.model_id}>
+                      {model.display_name}
+                      {modelFileReady(
+                        modelStatus.find((item) => item.model_id === model.model_id),
+                      )
+                        ? model.model_id === "whisper-medium"
+                          ? " · default"
+                          : ""
+                        : ` · ${t.modelNotInstalled}`}
+                    </option>
+                  ))
+                )}
+              </select>
+            </label>
+            <p className="text-xs text-paper/60">{t.speechModelHelp}</p>
+            {installedSpeech.length === 0 && (
+              <button
+                type="button"
+                className="rounded-full border border-paper/30 px-4 py-2 text-sm"
+                onClick={() => setView("models")}
+              >
+                {t.openModels}
+              </button>
+            )}
+            <label className="block text-sm text-paper/70">
+              {t.formattingModel}
+              <select
+                className="mt-1 w-full rounded-lg bg-paper/10 p-2"
+                value={
+                  installedFormatting.some((model) => model.model_id === settings.active_llm_model)
+                    ? (settings.active_llm_model ?? "")
+                    : ""
+                }
+                disabled={installedFormatting.length === 0}
+                onChange={(e) => {
+                  if (e.target.value) {
+                    void activateDownloaded(e.target.value);
+                  }
+                }}
+              >
+                {installedFormatting.length === 0 ? (
+                  <option value="">{t.noDownloadedFormatting}</option>
+                ) : (
+                  installedFormatting.map((model) => (
+                    <option key={model.model_id} value={model.model_id}>
+                      {model.display_name}
+                    </option>
+                  ))
+                )}
+              </select>
+            </label>
+            <p className="text-xs text-paper/60">{t.formattingModelHelp}</p>
             <label className="block text-sm text-paper/70">
               {t.interfaceLanguage}
               <select

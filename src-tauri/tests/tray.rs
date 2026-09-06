@@ -207,7 +207,14 @@ fn processing_tooltip_names_the_busy_state() {
 
 #[test]
 fn appearance_tuple_matches_helpers() {
-    for phase in ["pressed", "recording", "released", "processing", "done", "idle"] {
+    for phase in [
+        "pressed",
+        "recording",
+        "released",
+        "processing",
+        "done",
+        "idle",
+    ] {
         let (mark, tip) = tray_appearance(phase);
         assert_eq!(mark, tray_mark_for_phase(phase), "{phase}");
         assert_eq!(tip, tray_tooltip_for_phase(phase), "{phase}");

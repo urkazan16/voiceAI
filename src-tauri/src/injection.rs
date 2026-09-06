@@ -236,6 +236,43 @@ fn frontmost_target_blocking() -> (Option<i32>, Option<String>) {
     }
 }
 
+pub fn space_key_down() -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        macos::key_down(macos::VK_SPACE)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        false
+    }
+}
+
+/// True while the configured talk chord is physically held (including Space).
+pub fn talk_combo_held(hotkey: &str) -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        macos::talk_combo_held(hotkey)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = hotkey;
+        false
+    }
+}
+
+/// True while Control/Shift/Command/Option from the talk hotkey are down (Space ignored).
+pub fn talk_modifiers_held(hotkey: &str) -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        macos::talk_modifiers_held(hotkey)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = hotkey;
+        false
+    }
+}
+
 fn insert_via_clipboard(
     text: &str,
     restore_clipboard: bool,
@@ -282,7 +319,7 @@ mod macos {
     const VK_RIGHT_CONTROL: u16 = 0x3E;
     const VK_OPTION: u16 = 0x3A;
     const VK_RIGHT_OPTION: u16 = 0x3D;
-    const VK_SPACE: u16 = 0x31;
+    pub(super) const VK_SPACE: u16 = 0x31;
     const VK_ANSI_V: u16 = 0x09;
     const COMMAND_FLAG: u64 = 0x0010_0000;
     const SESSION_EVENT_TAP: u32 = 1;
@@ -308,8 +345,101 @@ mod macos {
     }
 
     pub fn prepare_keyboard() {
-        wait_for_modifiers_up(Duration::from_millis(1000));
+        wait_for_modifiers_up(Duration::from_millis(250));
         release_stuck_modifiers();
+    }
+
+    pub(super) fn key_down(vk: u16) -> bool {
+        unsafe {
+            CGEventSourceKeyState(COMBINED_SESSION_STATE, vk)
+                || CGEventSourceKeyState(HID_SYSTEM_STATE, vk)
+        }
+    }
+
+    fn control_down() -> bool {
+        key_down(VK_CONTROL) || key_down(VK_RIGHT_CONTROL)
+    }
+
+    fn shift_down() -> bool {
+        key_down(VK_SHIFT) || key_down(VK_RIGHT_SHIFT)
+    }
+
+    fn command_down() -> bool {
+        key_down(VK_COMMAND) || key_down(VK_RIGHT_COMMAND)
+    }
+
+    fn option_down() -> bool {
+        key_down(VK_OPTION) || key_down(VK_RIGHT_OPTION)
+    }
+
+    pub(super) fn talk_combo_held(hotkey: &str) -> bool {
+        let t = hotkey.to_ascii_lowercase();
+        let mut required = false;
+        if t.contains("control") || t.contains("ctrl") {
+            required = true;
+            if !control_down() {
+                return false;
+            }
+        }
+        if t.contains("shift") {
+            required = true;
+            if !shift_down() {
+                return false;
+            }
+        }
+        if t.contains("command") || t.contains("cmd") || t.contains("super") {
+            required = true;
+            if !command_down() {
+                return false;
+            }
+        }
+        if t.contains("option") || t.contains("alt") {
+            required = true;
+            if !option_down() {
+                return false;
+            }
+        }
+        if t.contains("space") {
+            return required && key_down(VK_SPACE);
+        }
+        required
+    }
+
+    pub(super) fn talk_modifiers_held(hotkey: &str) -> bool {
+        let t = hotkey.to_ascii_lowercase();
+        let mut any = false;
+        if t.contains("control") || t.contains("ctrl") {
+            any = true;
+            if !control_down() {
+                return false;
+            }
+        }
+        if t.contains("shift") {
+            any = true;
+            if !shift_down() {
+                return false;
+            }
+        }
+        if t.contains("command") || t.contains("cmd") || t.contains("super") {
+            any = true;
+            if !command_down() {
+                return false;
+            }
+        }
+        if t.contains("option") || t.contains("alt") {
+            any = true;
+            if !option_down() {
+                return false;
+            }
+        }
+        any
+    }
+
+    pub(super) fn on_main<T: Send>(f: impl FnOnce() -> T + Send) -> T {
+        if cfg!(test) {
+            return f();
+        }
+        dispatch2::run_on_main(|_| f())
     }
 
     pub fn insert_text(
@@ -328,7 +458,7 @@ mod macos {
         focus_pid(target_pid);
         let delay = insert_delay_ms.max(40);
         let extra = if is_editor_or_terminal(target_app) {
-            delay.saturating_add(120)
+            delay.saturating_add(40)
         } else {
             delay
         };
@@ -347,13 +477,16 @@ mod macos {
         }
 
         write_pasteboard_string(text)?;
+        std::thread::sleep(Duration::from_millis(16));
         let paste_result = post_paste();
         release_stuck_modifiers();
 
         if let Some(prev) = previous {
-            std::thread::sleep(Duration::from_millis(100));
-            restore_pasteboard(&prev);
-            super::clear_clipboard_backups();
+            std::thread::spawn(move || {
+                std::thread::sleep(Duration::from_millis(80));
+                restore_pasteboard(&prev);
+                super::clear_clipboard_backups();
+            });
         }
         paste_result
     }
@@ -383,12 +516,24 @@ mod macos {
     }
 
     fn snapshot_pasteboard() -> PasteboardSnapshot {
+        on_main(snapshot_pasteboard_on_main)
+    }
+
+    fn snapshot_pasteboard_on_main() -> PasteboardSnapshot {
         use objc2_app_kit::NSPasteboard;
         let pb = NSPasteboard::generalPasteboard();
         let mut items = Vec::new();
         let mut total = 0usize;
         if let Some(types) = pb.types() {
             for ty in types.iter() {
+                let name = ty.to_string();
+                let keep = name == "public.utf8-plain-text"
+                    || name == "NSStringPboardType"
+                    || name == "public.utf16-plain-text"
+                    || name.contains("plain-text");
+                if !keep {
+                    continue;
+                }
                 let Some(data) = pb.dataForType(&ty) else {
                     continue;
                 };
@@ -404,6 +549,13 @@ mod macos {
     }
 
     fn restore_pasteboard(snapshot: &PasteboardSnapshot) {
+        let snapshot = PasteboardSnapshot {
+            items: snapshot.items.clone(),
+        };
+        on_main(move || restore_pasteboard_on_main(&snapshot));
+    }
+
+    fn restore_pasteboard_on_main(snapshot: &PasteboardSnapshot) {
         use objc2_app_kit::NSPasteboard;
         use objc2_foundation::{NSData, NSString};
         let pb = NSPasteboard::generalPasteboard();
@@ -427,11 +579,25 @@ mod macos {
     }
 
     fn write_pasteboard_string(text: &str) -> LfResult<()> {
+        let text = text.to_string();
+        on_main(move || write_pasteboard_string_on_main(&text))
+    }
+
+    fn write_pasteboard_string_on_main(text: &str) -> LfResult<()> {
         use objc2_app_kit::{NSPasteboard, NSPasteboardTypeString};
         use objc2_foundation::NSString;
         let pb = NSPasteboard::generalPasteboard();
         pb.clearContents();
-        if pb.setString_forType(&NSString::from_str(text), unsafe { NSPasteboardTypeString }) {
+        let ns = NSString::from_str(text);
+        let ok = pb.setString_forType(&ns, unsafe { NSPasteboardTypeString });
+        if !ok {
+            return super::write_pasteboard(text);
+        }
+        let got = pb
+            .stringForType(unsafe { NSPasteboardTypeString })
+            .map(|s| s.to_string())
+            .unwrap_or_default();
+        if got == text {
             Ok(())
         } else {
             super::write_pasteboard(text)
@@ -466,9 +632,14 @@ mod macos {
         let script = format!(
             "tell application \"System Events\" to set frontmost of first application process whose unix id is {pid} to true"
         );
-        let _ = std::process::Command::new("osascript")
-            .args(["-e", &script])
-            .status();
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = std::process::Command::new("osascript")
+                .args(["-e", &script])
+                .status();
+            let _ = tx.send(());
+        });
+        let _ = rx.recv_timeout(Duration::from_millis(150));
     }
 
     fn modifier_down() -> bool {
@@ -481,7 +652,6 @@ mod macos {
                 || CGEventSourceKeyState(COMBINED_SESSION_STATE, VK_RIGHT_COMMAND)
                 || CGEventSourceKeyState(COMBINED_SESSION_STATE, VK_OPTION)
                 || CGEventSourceKeyState(COMBINED_SESSION_STATE, VK_RIGHT_OPTION)
-                || CGEventSourceKeyState(COMBINED_SESSION_STATE, VK_SPACE)
         }
     }
 
@@ -620,6 +790,10 @@ mod tests {
             !prod.contains("VK_ANSI_A"),
             "Select-All would wipe the field and break mid-text insert"
         );
+        assert!(
+            prod.contains("Duration::from_millis(250)"),
+            "do not wait a full second for leftover modifiers"
+        );
     }
 
     #[test]
@@ -634,6 +808,13 @@ mod tests {
         let snap = take_clipboard_snapshot().unwrap();
         assert_eq!(snap[0].1, b"rtf-or-img");
         assert!(take_clipboard_snapshot().is_none());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn pasteboard_main_hop_runs_when_already_on_main() {
+        let n = macos::on_main(|| 7);
+        assert_eq!(n, 7);
     }
 
     #[cfg(target_os = "macos")]

@@ -3,70 +3,15 @@ use crate::pipeline::TranscriptCue;
 use std::ffi::c_void;
 use std::os::raw::c_char;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Sender};
 use std::sync::{Mutex, Once, OnceLock};
 use whisper_rs::{FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters};
-
-static SKIP_PARTIAL: AtomicBool = AtomicBool::new(false);
-static BUSY: AtomicBool = AtomicBool::new(false);
-static LAST_PARTIAL: OnceLock<Mutex<Option<String>>> = OnceLock::new();
 
 struct TranscribeJob {
     model_path: PathBuf,
     pcm: Vec<f32>,
     language: String,
     reply: Sender<LfResult<String>>,
-    partial: bool,
-}
-
-fn last_partial_slot() -> &'static Mutex<Option<String>> {
-    LAST_PARTIAL.get_or_init(|| Mutex::new(None))
-}
-
-pub fn last_partial() -> Option<String> {
-    last_partial_slot().lock().ok().and_then(|g| g.clone())
-}
-
-pub fn clear_partial() {
-    if let Ok(mut slot) = last_partial_slot().lock() {
-        *slot = None;
-    }
-}
-
-pub fn allow_partial() {
-    SKIP_PARTIAL.store(false, Ordering::Relaxed);
-    clear_partial();
-}
-
-pub fn try_partial(model_path: &Path, pcm: &[f32], language: &str) {
-    if SKIP_PARTIAL.load(Ordering::Relaxed) || BUSY.load(Ordering::Relaxed) {
-        return;
-    }
-    if pcm.len() < 16_000 || !model_path.is_file() {
-        return;
-    }
-    let tx = worker();
-    let (reply_tx, reply_rx) = mpsc::channel();
-    let job = TranscribeJob {
-        model_path: model_path.to_path_buf(),
-        pcm: pad_to_whisper_window(&pcm[pcm.len().saturating_sub(8 * 16_000)..]),
-        language: language.to_string(),
-        reply: reply_tx,
-        partial: true,
-    };
-    if tx.send(job).is_err() {
-        return;
-    }
-    std::thread::spawn(move || {
-        if let Ok(Ok(text)) = reply_rx.recv() {
-            if !text.is_empty() {
-                if let Ok(mut slot) = last_partial_slot().lock() {
-                    *slot = Some(text);
-                }
-            }
-        }
-    });
 }
 
 static JOBS: OnceLock<Sender<TranscribeJob>> = OnceLock::new();
@@ -86,6 +31,21 @@ pub fn store_cues(cues: Vec<TranscriptCue>) {
     }
 }
 
+/// Load the ggml file into the worker so the first dictation is not a cold mmap.
+pub fn preload(model_path: PathBuf) {
+    std::thread::Builder::new()
+        .name("localflow-whisper-preload".into())
+        .spawn(move || {
+            let _ = transcribe(
+                &model_path,
+                &[0.0; 16_000],
+                crate::dictation::cancel_flag(),
+                "ru",
+            );
+        })
+        .ok();
+}
+
 pub fn transcribe(
     model_path: &Path,
     pcm: &[f32],
@@ -98,7 +58,7 @@ pub fn transcribe(
     if pcm.is_empty() {
         return Ok(String::new());
     }
-    SKIP_PARTIAL.store(true, Ordering::Relaxed);
+    store_cues(Vec::new());
     let tx = worker();
     let (reply_tx, reply_rx) = mpsc::channel();
     tx.send(TranscribeJob {
@@ -106,14 +66,11 @@ pub fn transcribe(
         pcm: pad_to_whisper_window(pcm),
         language: language.to_string(),
         reply: reply_tx,
-        partial: false,
     })
     .map_err(|_| LfError::RuntimeUnsupported("whisper worker stopped".into()))?;
-    let result = reply_rx
+    reply_rx
         .recv()
-        .map_err(|_| LfError::RuntimeUnsupported("whisper worker stopped".into()))?;
-    SKIP_PARTIAL.store(false, Ordering::Relaxed);
-    result
+        .map_err(|_| LfError::RuntimeUnsupported("whisper worker stopped".into()))?
 }
 
 fn worker() -> Sender<TranscribeJob> {
@@ -125,13 +82,7 @@ fn worker() -> Sender<TranscribeJob> {
             .spawn(move || {
                 let mut loaded: Option<(PathBuf, WhisperContext)> = None;
                 while let Ok(job) = rx.recv() {
-                    if job.partial && SKIP_PARTIAL.load(Ordering::Relaxed) {
-                        let _ = job.reply.send(Ok(String::new()));
-                        continue;
-                    }
-                    BUSY.store(true, Ordering::Relaxed);
                     let result = run_job(&mut loaded, job.model_path, &job.pcm, &job.language);
-                    BUSY.store(false, Ordering::Relaxed);
                     let _ = job.reply.send(result);
                 }
             })
@@ -196,11 +147,16 @@ fn decode(ctx: &WhisperContext, pcm: &[f32], language: &str) -> LfResult<String>
     params.set_print_progress(false);
     params.set_print_realtime(false);
     params.set_print_timestamps(false);
-    params.set_no_timestamps(false);
+    // Token timestamps roughly double CPU time. Paragraphs already come from VAD.
+    params.set_no_timestamps(true);
+    params.set_single_segment(pcm.len() < 16_000 * 15);
     params.set_suppress_blank(true);
     params.set_suppress_non_speech_tokens(true);
     params.set_no_speech_thold(0.6);
     params.set_no_context(true);
+    params.set_initial_prompt("");
+    let no_prompt_tokens: [std::os::raw::c_int; 0] = [];
+    params.set_tokens(&no_prompt_tokens);
     params.set_abort_callback_safe(crate::dictation::is_cancelled);
     state
         .full(params, pcm)

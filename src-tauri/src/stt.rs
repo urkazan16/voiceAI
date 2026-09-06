@@ -47,34 +47,10 @@ pub fn transcribe_with_paragraph_pauses(
     language: &str,
     vad_threshold: f32,
 ) -> LfResult<String> {
-    let chunks = crate::vad::split_on_internal_silence(
-        pcm,
-        16_000,
-        vad_threshold,
-        crate::pipeline::PARAGRAPH_PAUSE_MS,
-    );
-    if chunks.len() <= 1 {
-        return stt.transcribe(pcm, model_path, language);
-    }
-    let mut parts = Vec::new();
-    let mut all_cues = Vec::new();
-    let mut offset_ms = 0u64;
-    for chunk in &chunks {
-        let text = stt.transcribe(chunk, model_path, language)?;
-        let trimmed = text.trim();
-        if !trimmed.is_empty() {
-            parts.push(trimmed.to_string());
-        }
-        let mut cues = crate::whisper_stt::last_cues();
-        for cue in &mut cues {
-            cue.start_ms = cue.start_ms.saturating_add(offset_ms);
-            cue.end_ms = cue.end_ms.saturating_add(offset_ms);
-        }
-        all_cues.extend(cues);
-        offset_ms = offset_ms.saturating_add((chunk.len() as u64 * 1000) / 16_000);
-    }
-    crate::whisper_stt::store_cues(all_cues);
-    Ok(parts.join("\n\n"))
+    let _ = vad_threshold;
+    // One Whisper `full()` per utterance. Extra passes on VAD chunks used to
+    // multiply CPU on pauses; paragraph breaks still come from segment cues.
+    stt.transcribe(pcm, model_path, language)
 }
 
 pub struct ScriptedStt {
@@ -118,5 +94,38 @@ mod tests {
     fn native_stt_without_model_path_does_not_use_macos_speech() {
         let err = NativeStt.transcribe(&[0.1; 800], None, "ru").unwrap_err();
         assert_eq!(err.code(), "MODEL_MISSING");
+    }
+
+    #[test]
+    fn paragraph_helper_runs_stt_once_even_with_a_long_pause() {
+        use std::sync::atomic::{AtomicU32, Ordering};
+        struct CountStt {
+            hits: AtomicU32,
+        }
+        impl SpeechToText for CountStt {
+            fn transcribe(
+                &self,
+                _pcm: &[f32],
+                _model_path: Option<&Path>,
+                _language: &str,
+            ) -> LfResult<String> {
+                self.hits.fetch_add(1, Ordering::Relaxed);
+                Ok("один два".into())
+            }
+        }
+        let sr = 16_000usize;
+        let mut pcm = vec![0.0; sr * 6];
+        for sample in pcm.iter_mut().take(sr / 2) {
+            *sample = 0.2;
+        }
+        for sample in pcm.iter_mut().skip(sr * 4) {
+            *sample = 0.2;
+        }
+        let stt = CountStt {
+            hits: AtomicU32::new(0),
+        };
+        let text = transcribe_with_paragraph_pauses(&stt, &pcm, None, "ru", 0.012).unwrap();
+        assert_eq!(text, "один два");
+        assert_eq!(stt.hits.load(Ordering::Relaxed), 1);
     }
 }

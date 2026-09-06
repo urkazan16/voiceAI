@@ -334,13 +334,15 @@ impl AppEngine {
         let dictionary_text = if skip_llm {
             working.clone()
         } else {
-            crate::phrases::recover(&self.dictionary.apply(&working))
+            self.dictionary.apply(&working)
         };
         self.snapshot.transition(PipelineState::Backtrack)?;
         let backtrack_text = if skip_llm || mode == PipelineMode::Raw {
             dictionary_text.clone()
         } else {
-            crate::backtrack::apply(&dictionary_text, &self.session_text)
+            // Each PTT insert is only the new utterance. Session is used for
+            // leading-space between pastes, not spliced into the transcript.
+            crate::backtrack::apply(&dictionary_text, "")
         };
         self.snapshot.transition(PipelineState::Formatting)?;
         let formatted_text = if skip_llm {
@@ -632,6 +634,23 @@ mod tests {
         assert!(out.final_text.contains("JUnit 5"));
         assert!(out.final_text.contains("McKenzie"));
         assert_eq!(eng.snapshot.state, PipelineState::Idle);
+    }
+
+    #[test]
+    fn second_utterance_is_not_the_previous_transcript() {
+        let (_dir, mut eng) = engine();
+        let first = eng.run_scripted("Привет команда").unwrap();
+        assert!(
+            first.final_text.to_lowercase().contains("привет"),
+            "{first:?}"
+        );
+        let second = eng.run_scripted("Как дела сегодня").unwrap();
+        let lower = second.final_text.to_lowercase();
+        assert!(lower.contains("дела"), "{lower}");
+        assert!(
+            !lower.contains("привет"),
+            "new dictation reinserted previous text: {lower}"
+        );
     }
 
     #[test]

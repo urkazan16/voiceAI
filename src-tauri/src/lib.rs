@@ -231,6 +231,9 @@ pub fn run() {
                         }
                         if shortcut_matches(shortcut, &talk) || shortcut_matches(shortcut, &edit) {
                             if pressed {
+                                if dictation::is_busy() {
+                                    return;
+                                }
                                 dictation::notify_hotkey(app, "pressed");
                                 dictation::enqueue(dictation::DictationCmd::Pressed);
                             }
@@ -288,19 +291,28 @@ fn shortcut_matches(event: &Shortcut, configured: &str) -> bool {
 }
 
 pub fn apply_shortcuts(app: &AppHandle, engine: &SharedEngine) -> Option<String> {
-    let (talk, copy, paste, edit, previous) = match engine.lock() {
-        Ok(eng) => {
-            dictation::remember_microphone(eng.settings.microphone_name.clone());
-            (
-                eng.settings.hotkey.clone(),
-                eng.settings.copy_last_hotkey.clone(),
-                eng.settings.paste_last_hotkey.clone(),
-                eng.settings.edit_hotkey.clone(),
-                eng.hotkey_registered.clone(),
-            )
-        }
+    let (talk, copy, paste, edit, previous, hands_free, vad, mic) = match engine.lock() {
+        Ok(eng) => (
+            eng.settings.hotkey.clone(),
+            eng.settings.copy_last_hotkey.clone(),
+            eng.settings.paste_last_hotkey.clone(),
+            eng.settings.edit_hotkey.clone(),
+            eng.hotkey_registered.clone(),
+            eng.settings.hands_free,
+            eng.settings.vad_threshold,
+            eng.settings.microphone_name.clone(),
+        ),
         Err(_) => return Some("engine lock poisoned".into()),
     };
+    dictation::remember_microphone(mic);
+    dictation::remember_hands_free(hands_free);
+    dictation::remember_vad(vad);
+    let already = dictation::bound_hotkeys();
+    if previous.as_deref() == Some(talk.as_str())
+        && already == (talk.clone(), copy.clone(), paste.clone(), edit.clone())
+    {
+        return None;
+    }
     for old in [
         previous.as_deref(),
         Some(talk.as_str()),

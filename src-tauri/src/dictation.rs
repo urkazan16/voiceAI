@@ -13,13 +13,13 @@ use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter, Manager};
 
 static CANCEL: AtomicBool = AtomicBool::new(false);
+static BUSY: AtomicBool = AtomicBool::new(false);
 static PRESS_AT: Mutex<Option<Instant>> = Mutex::new(None);
 static WORKER: OnceLock<Sender<DictationCmd>> = OnceLock::new();
 static BOUND_HOTKEYS: Mutex<(String, String, String, String)> =
     Mutex::new((String::new(), String::new(), String::new(), String::new()));
 static MICROPHONE: Mutex<Option<String>> = Mutex::new(None);
 static VAD_BITS: AtomicU32 = AtomicU32::new(0);
-static LAST_RMS_BITS: AtomicU32 = AtomicU32::new(0);
 static HANDS_FREE: AtomicBool = AtomicBool::new(false);
 static TRAY_MARK: Mutex<String> = Mutex::new(String::new());
 static TRAY_TIP: Mutex<String> = Mutex::new(String::new());
@@ -82,11 +82,16 @@ pub fn classify_release(held: Duration, is_recording: bool) -> ReleaseAction {
 }
 
 pub fn classify_release_ex(held: Duration, is_recording: bool, hands_free: bool) -> ReleaseAction {
-    if hands_free && is_recording {
-        ReleaseAction::StayRecording
-    } else if is_recording && held < MIN_PTT_HOLD {
-        ReleaseAction::DiscardTooShort
+    if !is_recording {
+        ReleaseAction::Process
+    } else if held < MIN_PTT_HOLD {
+        if hands_free {
+            ReleaseAction::StayRecording
+        } else {
+            ReleaseAction::DiscardTooShort
+        }
     } else {
+        // Hold-to-talk always processes on release, even if hands-free is enabled.
         ReleaseAction::Process
     }
 }
@@ -145,14 +150,6 @@ fn cached_vad() -> f32 {
     }
 }
 
-fn cached_rms() -> f32 {
-    f32::from_bits(LAST_RMS_BITS.load(Ordering::Relaxed))
-}
-
-fn remember_rms(rms: f32) {
-    LAST_RMS_BITS.store(rms.to_bits(), Ordering::Relaxed);
-}
-
 fn cached_microphone() -> Option<String> {
     MICROPHONE.lock().ok().and_then(|g| g.clone())
 }
@@ -209,6 +206,18 @@ pub fn cancel_flag() -> &'static AtomicBool {
 
 pub fn is_cancelled() -> bool {
     CANCEL.load(Ordering::Relaxed)
+}
+
+pub fn is_busy() -> bool {
+    BUSY.load(Ordering::Relaxed)
+}
+
+struct BusyGuard;
+
+impl Drop for BusyGuard {
+    fn drop(&mut self) {
+        BUSY.store(false, Ordering::Relaxed);
+    }
 }
 
 pub fn clear_cancel() {
@@ -316,7 +325,7 @@ pub fn show_bar(app: &AppHandle, engine: &SharedEngine) {
 pub fn hide_bar_later(app: &AppHandle) {
     let app = app.clone();
     std::thread::spawn(move || {
-        std::thread::sleep(Duration::from_millis(2400));
+        std::thread::sleep(Duration::from_millis(1200));
         if CANCEL.load(Ordering::Relaxed) {
             return;
         }
@@ -343,16 +352,29 @@ pub fn on_hotkey_pressed(app: &AppHandle, engine: &SharedEngine, capture: &Share
         );
         return;
     }
+    if BUSY.load(Ordering::Relaxed) && !capture.is_recording() {
+        return;
+    }
     if capture.is_recording() {
-        let too_soon = PRESS_AT
-            .lock()
-            .ok()
-            .and_then(|g| *g)
-            .map(|t| t.elapsed() < REPEAT_PRESS_GUARD)
-            .unwrap_or(false);
-        if too_soon {
+        if cached_hands_free() {
+            let too_soon = PRESS_AT
+                .lock()
+                .ok()
+                .and_then(|g| *g)
+                .map(|t| t.elapsed() < REPEAT_PRESS_GUARD)
+                .unwrap_or(false);
+            if too_soon {
+                return;
+            }
+            stop_and_process(app, engine, capture);
             return;
         }
+        let (talk, _, _, _) = bound_hotkeys();
+        if crate::injection::talk_modifiers_held(&talk) {
+            // Key-repeat while the chord is still down.
+            return;
+        }
+        // Chord already up but the stream is still open (missed Released).
         stop_and_process(app, engine, capture);
         return;
     }
@@ -388,8 +410,8 @@ pub fn on_hotkey_pressed(app: &AppHandle, engine: &SharedEngine, capture: &Share
                 }
             }
             show_bar(app, engine);
-            spawn_streaming_preview(app, engine, capture);
             spawn_level_meter(app, capture);
+            spawn_ptt_release_watch(capture);
             emit_state(
                 app,
                 DictationState {
@@ -449,6 +471,7 @@ pub fn cancel(app: &AppHandle, engine: &SharedEngine, capture: &SharedCapture) {
         *slot = None;
     }
     let _ = capture.stop();
+    BUSY.store(false, Ordering::Relaxed);
     if let Ok(mut eng) = engine.lock() {
         eng.snapshot.reset();
     }
@@ -470,16 +493,49 @@ pub fn cancel(app: &AppHandle, engine: &SharedEngine, capture: &SharedCapture) {
     }
 }
 
+fn spawn_ptt_release_watch(capture: &SharedCapture) {
+    let capture = capture.clone();
+    std::thread::spawn(move || {
+        let mut saw_space = false;
+        let began = std::time::Instant::now();
+        loop {
+            std::thread::sleep(Duration::from_millis(20));
+            if !capture.is_recording() || CANCEL.load(Ordering::Relaxed) {
+                break;
+            }
+            if cached_hands_free() {
+                continue;
+            }
+            if began.elapsed() < Duration::from_millis(80) {
+                continue;
+            }
+            let (talk, _, _, _) = bound_hotkeys();
+            if crate::injection::space_key_down() {
+                saw_space = true;
+            }
+            if crate::injection::talk_combo_held(&talk) {
+                continue;
+            }
+            // Space often missing from the event tap; keep the stream only while
+            // modifiers stay down, and only until we have seen Space go up.
+            if !saw_space && crate::injection::talk_modifiers_held(&talk) {
+                continue;
+            }
+            enqueue(DictationCmd::Released);
+            break;
+        }
+    });
+}
+
 fn spawn_level_meter(app: &AppHandle, capture: &SharedCapture) {
     let app = app.clone();
     let capture = capture.clone();
     std::thread::spawn(move || loop {
         std::thread::sleep(Duration::from_millis(80));
         if !capture.is_recording() || CANCEL.load(Ordering::Relaxed) {
-            remember_rms(0.0);
             break;
         }
-        let Some(peeked) = capture.peek() else {
+        let Some(peeked) = capture.peek_tail(8_000) else {
             continue;
         };
         let pcm = audio::to_whisper_pcm(&peeked);
@@ -489,7 +545,6 @@ fn spawn_level_meter(app: &AppHandle, capture: &SharedCapture) {
             pcm.as_slice()
         };
         let rms = crate::vad::rms(window);
-        remember_rms(rms);
         if let Some(err) = crate::audio::take_stream_error() {
             emit_state(
                 &app,
@@ -514,18 +569,17 @@ fn spawn_level_meter(app: &AppHandle, capture: &SharedCapture) {
             .unwrap_or_default();
         let quiet = rms < cached_vad() * 0.45;
         let warn = held > Duration::from_millis(700) && quiet;
-        let partial = crate::whisper_stt::last_partial();
         let message = if warn {
             "No mic signal — check the input device.".into()
         } else {
-            partial.clone().unwrap_or_else(|| "Listening…".into())
+            "Listening…".into()
         };
         emit_state(
             &app,
             DictationState {
                 phase: "recording".into(),
                 message,
-                transcript: partial,
+                transcript: None,
                 raw_transcript: None,
                 duration_ms: audio::duration_ms(&peeked),
                 insert_ok: true,
@@ -533,51 +587,6 @@ fn spawn_level_meter(app: &AppHandle, capture: &SharedCapture) {
                 wpm: None,
             },
         );
-    });
-}
-
-fn spawn_streaming_preview(app: &AppHandle, engine: &SharedEngine, capture: &SharedCapture) {
-    crate::whisper_stt::allow_partial();
-    let app = app.clone();
-    let engine = engine.clone();
-    let capture = capture.clone();
-    std::thread::spawn(move || loop {
-        std::thread::sleep(Duration::from_millis(1100));
-        if !capture.is_recording() || CANCEL.load(Ordering::Relaxed) {
-            break;
-        }
-        let Some(peeked) = capture.peek() else {
-            continue;
-        };
-        let pcm = audio::to_whisper_pcm(&peeked);
-        if pcm.len() < 16_000 {
-            continue;
-        }
-        let (path, lang) = match engine.try_lock() {
-            Ok(eng) => (
-                eng.ready_model_path("stt"),
-                eng.settings.stt_language.clone(),
-            ),
-            Err(_) => continue,
-        };
-        if let Some(path) = path {
-            crate::whisper_stt::try_partial(&path, &pcm, &lang);
-        }
-        if let Some(text) = crate::whisper_stt::last_partial() {
-            emit_state(
-                &app,
-                DictationState {
-                    phase: "recording".into(),
-                    message: text.clone(),
-                    transcript: Some(text),
-                    raw_transcript: None,
-                    duration_ms: audio::duration_ms(&peeked),
-                    insert_ok: true,
-                    rms: cached_rms(),
-                    wpm: None,
-                },
-            );
-        }
     });
 }
 
@@ -617,14 +626,34 @@ fn finish_recording(app: &AppHandle, engine: &SharedEngine, capture: &SharedCapt
     }
     let Some(captured) = capture.stop() else {
         crate::journal::log("record_stop", "microphone off (empty)");
+        if BUSY.load(Ordering::Relaxed) {
+            return;
+        }
+        emit_state(
+            app,
+            DictationState {
+                phase: "idle".into(),
+                message: "Ready.".into(),
+                transcript: last_processed(engine),
+                raw_transcript: last_raw(engine),
+                duration_ms: 0,
+                insert_ok: true,
+                rms: 0.0,
+                wpm: None,
+            },
+        );
+        if let Some(window) = app.get_webview_window("bar") {
+            let _ = window.hide();
+        }
         return;
     };
     crate::journal::log("record_stop", "microphone off");
+    BUSY.store(true, Ordering::Relaxed);
     emit_state(
         app,
         DictationState {
             phase: "processing".into(),
-            message: "Processing…".into(),
+            message: "Microphone off. Processing…".into(),
             transcript: None,
             raw_transcript: None,
             duration_ms: 0,
@@ -636,7 +665,7 @@ fn finish_recording(app: &AppHandle, engine: &SharedEngine, capture: &SharedCapt
     let app = app.clone();
     let engine = engine.clone();
     std::thread::spawn(move || {
-        crate::injection::prepare_keyboard_for_insert();
+        let _busy = BusyGuard;
         if CANCEL.load(Ordering::Relaxed) {
             emit_cancelled(&app, &engine);
             return;
@@ -943,7 +972,7 @@ mod tests {
         );
         assert_eq!(
             classify_release_ex(Duration::from_millis(800), true, true),
-            ReleaseAction::StayRecording
+            ReleaseAction::Process
         );
         assert_eq!(
             classify_release_ex(Duration::from_millis(80), true, false),
@@ -952,9 +981,23 @@ mod tests {
     }
 
     #[test]
-    fn default_talk_hotkey_cache_is_control_shift_space() {
+    fn hold_to_talk_processes_even_if_hands_free_is_on() {
+        assert_eq!(
+            classify_release_ex(MIN_PTT_HOLD, true, true),
+            ReleaseAction::Process
+        );
+    }
+
+    #[test]
+    fn ptt_combo_release_is_space_up_for_default_hotkey() {
+        remember_hotkeys(
+            "Control+Shift+Space".into(),
+            "Command+Control+C".into(),
+            "Command+Control+V".into(),
+            "Command+Control+E".into(),
+        );
         let (talk, copy, paste, edit) = bound_hotkeys();
-        assert!(talk.to_lowercase().contains("space") || talk == "Control+Shift+Space");
+        assert!(talk.to_ascii_lowercase().contains("space"));
         assert!(!copy.is_empty());
         assert!(!paste.is_empty());
         assert!(!edit.is_empty());
@@ -1009,5 +1052,10 @@ mod tests {
         assert_eq!(tray_kind_for_phase("released"), TrayKind::Processing);
         assert_eq!(tray_kind_for_phase("processing"), TrayKind::Processing);
         assert_eq!(tray_kind_for_phase("done"), TrayKind::Idle);
+    }
+
+    #[test]
+    fn busy_flag_is_clear_when_idle() {
+        assert!(!is_busy());
     }
 }

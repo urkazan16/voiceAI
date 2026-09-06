@@ -515,17 +515,22 @@ pub fn skip_auto_model_download() -> bool {
 }
 
 pub fn spawn_required_stt_download(app: AppHandle, engine: SharedEngine) {
-    if skip_auto_model_download() {
-        return;
-    }
     tauri::async_runtime::spawn(async move {
+        let ready = engine
+            .lock()
+            .ok()
+            .and_then(|eng| eng.ready_model_path("stt"));
+        if let Some(path) = ready {
+            crate::whisper_stt::preload(path);
+            return;
+        }
+        if skip_auto_model_download() {
+            return;
+        }
         let id = {
             let Ok(eng) = engine.lock() else {
                 return;
             };
-            if eng.ready_model_path("stt").is_some() {
-                return;
-            }
             eng.settings
                 .active_stt_model
                 .clone()
@@ -596,6 +601,7 @@ async fn download_model_inner(
         let record = eng.catalog.get(&model_id)?.clone();
         eng.model_path(&record)
     };
+    crate::whisper_stt::preload(path.clone());
     Ok(path.display().to_string())
 }
 
@@ -622,6 +628,7 @@ pub async fn set_active_model(
         .map_err(CommandError::from)?;
     }
     lock(&engine)?.mark_active(&model_id)?;
+    crate::whisper_stt::preload(path.clone());
     Ok(path.display().to_string())
 }
 

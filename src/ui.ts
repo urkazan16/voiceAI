@@ -93,6 +93,14 @@ const EN = {
   langAuto: "Auto-detect",
   speechLangHelp:
     "Russian is more accurate for Russian-only speech. Use Auto-detect when a replica mixes Russian and English so Whisper can switch language inside the clip.",
+  speechModel: "Speech model (downloaded)",
+  speechModelHelp:
+    "Only Whisper files already on this Mac are listed. Small/Base are faster; Medium is more accurate. Download others on the Models page.",
+  formattingModel: "Formatting model (downloaded)",
+  formattingModelHelp:
+    "Optional Qwen/LLM files that are installed. Dictation still works if none are selected.",
+  noDownloadedSpeech: "No speech model is installed yet.",
+  noDownloadedFormatting: "No formatting model is installed yet.",
   interfaceLanguage: "Interface language",
   refreshDevices: "Refresh devices",
   micPermission: "Microphone permission",
@@ -219,6 +227,14 @@ const RU: typeof EN = {
   langAuto: "Автоопределение",
   speechLangHelp:
     "Русский точнее для только русской речи. Автоопределение нужно, когда в одной реплике смешаны русский и английский.",
+  speechModel: "Модель речи (скачанные)",
+  speechModelHelp:
+    "В списке только Whisper, уже лежащие на этом Mac. Small/Base быстрее, Medium точнее. Остальные скачиваются в разделе «Модели».",
+  formattingModel: "Модель форматирования (скачанные)",
+  formattingModelHelp:
+    "Необязательные установленные Qwen/LLM. Диктовка работает и без них.",
+  noDownloadedSpeech: "Пока нет установленной модели речи.",
+  noDownloadedFormatting: "Пока нет установленной модели форматирования.",
   interfaceLanguage: "Язык интерфейса",
   refreshDevices: "Обновить устройства",
   micPermission: "Право на микрофон",
