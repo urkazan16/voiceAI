@@ -29,6 +29,47 @@ static TRAY_TIP: Mutex<String> = Mutex::new(String::new());
 pub const MIN_PTT_HOLD: Duration = Duration::from_millis(500);
 pub const REPEAT_PRESS_GUARD: Duration = Duration::from_millis(250);
 
+/// Menu-bar title marks. Idle is empty so the template icon stays clean.
+pub const TRAY_MARK_IDLE: &str = "";
+pub const TRAY_MARK_RECORDING: &str = "●";
+pub const TRAY_MARK_PROCESSING: &str = "◐";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TrayKind {
+    Idle,
+    Recording,
+    Processing,
+}
+
+/// Map a dictation phase to one of three tray states.
+pub fn tray_kind_for_phase(phase: &str) -> TrayKind {
+    match phase {
+        "recording" | "pressed" => TrayKind::Recording,
+        "processing" | "released" => TrayKind::Processing,
+        _ => TrayKind::Idle,
+    }
+}
+
+pub fn tray_mark_for_phase(phase: &str) -> &'static str {
+    match tray_kind_for_phase(phase) {
+        TrayKind::Recording => TRAY_MARK_RECORDING,
+        TrayKind::Processing => TRAY_MARK_PROCESSING,
+        TrayKind::Idle => TRAY_MARK_IDLE,
+    }
+}
+
+pub fn tray_tooltip_for_phase(phase: &str) -> &'static str {
+    match tray_kind_for_phase(phase) {
+        TrayKind::Recording => "LocalFlow — recording",
+        TrayKind::Processing => "LocalFlow — processing",
+        TrayKind::Idle => "LocalFlow",
+    }
+}
+
+pub fn tray_appearance(phase: &str) -> (&'static str, &'static str) {
+    (tray_mark_for_phase(phase), tray_tooltip_for_phase(phase))
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ReleaseAction {
     DiscardTooShort,
@@ -239,15 +280,7 @@ pub fn notify_hotkey(app: &AppHandle, edge: &str) {
 
 fn sync_tray(app: &AppHandle, phase: &str) {
     if let Some(tray) = app.tray_by_id("localflow") {
-        let recording = phase == "recording" || phase == "pressed";
-        let mark = if recording { "●" } else { "" };
-        let tooltip = if recording {
-            "LocalFlow — recording"
-        } else if phase == "processing" {
-            "LocalFlow — processing"
-        } else {
-            "LocalFlow"
-        };
+        let (mark, tooltip) = tray_appearance(phase);
         let mut same = false;
         if let (Ok(mut last_mark), Ok(mut last_tip)) = (TRAY_MARK.lock(), TRAY_TIP.lock()) {
             same = last_mark.as_str() == mark && last_tip.as_str() == tooltip;
@@ -925,5 +958,56 @@ mod tests {
         assert!(!copy.is_empty());
         assert!(!paste.is_empty());
         assert!(!edit.is_empty());
+    }
+
+    #[test]
+    fn tray_has_three_distinct_marks() {
+        let marks = [TRAY_MARK_IDLE, TRAY_MARK_RECORDING, TRAY_MARK_PROCESSING];
+        assert_eq!(marks.len(), 3);
+        assert_ne!(TRAY_MARK_RECORDING, TRAY_MARK_PROCESSING);
+        assert_ne!(TRAY_MARK_RECORDING, TRAY_MARK_IDLE);
+        assert_ne!(TRAY_MARK_PROCESSING, TRAY_MARK_IDLE);
+        assert_eq!(TRAY_MARK_RECORDING, "●");
+        assert_eq!(TRAY_MARK_PROCESSING, "◐");
+        assert!(TRAY_MARK_IDLE.is_empty());
+    }
+
+    #[test]
+    fn tray_recording_phases_use_filled_dot() {
+        for phase in ["recording", "pressed"] {
+            assert_eq!(tray_kind_for_phase(phase), TrayKind::Recording, "{phase}");
+            let (mark, tip) = tray_appearance(phase);
+            assert_eq!(mark, TRAY_MARK_RECORDING, "{phase}");
+            assert_eq!(tip, "LocalFlow — recording", "{phase}");
+        }
+    }
+
+    #[test]
+    fn tray_processing_phases_use_half_dot() {
+        for phase in ["processing", "released"] {
+            assert_eq!(tray_kind_for_phase(phase), TrayKind::Processing, "{phase}");
+            let (mark, tip) = tray_appearance(phase);
+            assert_eq!(mark, TRAY_MARK_PROCESSING, "{phase}");
+            assert_eq!(tip, "LocalFlow — processing", "{phase}");
+        }
+    }
+
+    #[test]
+    fn tray_idle_phases_clear_the_title_mark() {
+        for phase in ["idle", "done", "cancelled", "error", ""] {
+            assert_eq!(tray_kind_for_phase(phase), TrayKind::Idle, "{phase}");
+            let (mark, tip) = tray_appearance(phase);
+            assert_eq!(mark, TRAY_MARK_IDLE, "{phase}");
+            assert_eq!(tip, "LocalFlow", "{phase}");
+        }
+    }
+
+    #[test]
+    fn tray_kind_covers_the_hold_speak_release_cycle() {
+        assert_eq!(tray_kind_for_phase("pressed"), TrayKind::Recording);
+        assert_eq!(tray_kind_for_phase("recording"), TrayKind::Recording);
+        assert_eq!(tray_kind_for_phase("released"), TrayKind::Processing);
+        assert_eq!(tray_kind_for_phase("processing"), TrayKind::Processing);
+        assert_eq!(tray_kind_for_phase("done"), TrayKind::Idle);
     }
 }

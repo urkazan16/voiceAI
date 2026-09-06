@@ -296,10 +296,25 @@ mod tests {
     }
 
     #[test]
-    fn session_fragment_corrects_previous() {
+    fn actually_and_rather_replace_the_tail() {
+        assert_eq!(apply("Meet at five, actually six", ""), "Meet at six");
+        assert_eq!(apply("Meet at five rather six", ""), "Meet at six");
+        assert_eq!(apply("забудь это", "Черновик письма"), "");
         assert_eq!(
-            apply("нет, в шесть", "Давай встретимся в пять"),
-            "Давай встретимся в шесть"
+            apply("Первая мысль. Вторая мысль never mind", ""),
+            "Первая мысль."
+        );
+    }
+
+    #[test]
+    fn russian_tochnee_replaces_time() {
+        assert_eq!(
+            apply("Давай встретимся в пять, точнее в семь.", ""),
+            "Давай встретимся в семь."
+        );
+        assert_eq!(
+            apply("Сегодня встречаемся в четыре, нет, в пять.", ""),
+            "Сегодня встречаемся в пять."
         );
     }
 }

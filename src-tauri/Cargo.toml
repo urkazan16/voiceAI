@@ -28,6 +28,10 @@ path = "tests/acceptance.rs"
 name = "performance"
 path = "../tests/performance/latency.rs"
 
+[[test]]
+name = "tray"
+path = "tests/tray.rs"
+
 [features]
 default = []
 ai-bench = []

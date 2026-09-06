@@ -165,4 +165,38 @@ mod tests {
         book.remove("s");
         assert!(book.expand("sig", "").is_none());
     }
+
+    #[test]
+    fn in_sentence_trigger_still_skips_llm() {
+        let mut book = SnippetBook::default();
+        book.upsert(Snippet::new("s", "мой адрес", "ул. Ленина, 1"));
+        let (out, skip) = book.expand("добавь мой адрес в письмо", "").unwrap();
+        assert!(skip);
+        assert!(out.contains("ул. Ленина, 1"));
+        assert!(out.contains("добавь"));
+        assert!(out.contains("в письмо"));
+    }
+
+    #[test]
+    fn profile_scoped_snippet_does_not_fire_on_other_profile() {
+        let mut book = SnippetBook::default();
+        let mut work = Snippet::new("w", "sig", "Work signature");
+        work.profile = "work".into();
+        book.upsert(work);
+        assert!(book.expand("sig", "personal").is_none());
+        let (out, skip) = book.expand("sig", "work").unwrap();
+        assert!(skip);
+        assert_eq!(out, "Work signature");
+    }
+
+    #[test]
+    fn trigger_and_content_are_capped() {
+        let mut book = SnippetBook::default();
+        let long_trigger: String = "a".repeat(80);
+        let long_content: String = "b".repeat(5000);
+        book.upsert(Snippet::new("cap", &long_trigger, &long_content));
+        let item = &book.items[0];
+        assert!(item.trigger.chars().count() <= 60);
+        assert!(item.content.chars().count() <= 4000);
+    }
 }

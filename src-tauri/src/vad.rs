@@ -161,4 +161,23 @@ mod tests {
         let chunks = split_on_internal_silence(&pcm, sr, 0.012, 2000);
         assert_eq!(chunks.len(), 2, "{}", chunks.len());
     }
+
+    #[test]
+    fn trailing_silence_counts_quiet_tail() {
+        let sr = 16_000u32;
+        let mut pcm = vec![0.2; sr as usize];
+        pcm.extend(std::iter::repeat(0.0).take(sr as usize));
+        let ms = trailing_silence_ms(&pcm, sr);
+        assert!(ms >= 900, "{ms}");
+        assert_eq!(trailing_silence_ms(&[], sr), 0);
+        assert_eq!(trailing_silence_ms(&[0.2; 320], 0), 0);
+    }
+
+    #[test]
+    fn had_speech_false_on_silence() {
+        assert!(!had_speech(&[0.0; 8_000], 16_000));
+        assert!(had_speech(&[0.2; 8_000], 16_000));
+        assert_eq!(clamp_threshold(0.0), 0.002);
+        assert_eq!(clamp_threshold(1.0), 0.08);
+    }
 }

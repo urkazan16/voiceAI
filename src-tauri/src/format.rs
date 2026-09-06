@@ -642,7 +642,10 @@ pub fn normalize_spoken_values(
 }
 
 fn map_lines(text: &str, map_line: impl FnMut(&str) -> String) -> String {
-    text.split('\n').map(map_line).collect::<Vec<_>>().join("\n")
+    text.split('\n')
+        .map(map_line)
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 fn looks_like_identifier(text: &str) -> bool {
