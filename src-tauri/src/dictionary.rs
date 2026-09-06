@@ -130,10 +130,7 @@ impl Dictionary {
             return re
                 .replace_all(input, |caps: &regex::Captures| {
                     let matched = caps.get(0).map(|m| m.as_str()).unwrap_or("");
-                    map.get(matched)
-                        .or_else(|| map.get(&matched.to_lowercase()))
-                        .cloned()
-                        .unwrap_or_else(|| matched.to_string())
+                    canonical_for_match(matched, &map)
                 })
                 .into_owned();
         }
@@ -143,7 +140,9 @@ impl Dictionary {
     fn apply_linear(&self, input: &str) -> String {
         let mut output = input.to_string();
         for (pattern, target, case_sensitive) in self.pattern_list() {
-            if case_sensitive {
+            if let Ok(re) = Regex::new(&bounded_alt(&pattern, case_sensitive)) {
+                output = re.replace_all(&output, target.as_str()).into_owned();
+            } else if case_sensitive {
                 output = output.replace(&pattern, &target);
             } else {
                 output = replace_case_insensitive(&output, &pattern, &target);
@@ -182,12 +181,7 @@ impl Dictionary {
         for (pattern, target, case_sensitive) in &patterns {
             map.insert(pattern.clone(), target.clone());
             map.insert(pattern.to_lowercase(), target.clone());
-            let escaped = regex::escape(pattern);
-            if *case_sensitive {
-                alts.push(escaped);
-            } else {
-                alts.push(format!("(?i:{escaped})"));
-            }
+            alts.push(bounded_alt(pattern, *case_sensitive));
         }
         let compiled = {
             let mut slot = self.cache.lock().unwrap_or_else(|e| e.into_inner());
@@ -312,6 +306,49 @@ pub fn builtin_developer_terms() -> Vec<DictionaryEntry> {
     ]
 }
 
+fn bounded_alt(pattern: &str, case_sensitive: bool) -> String {
+    let escaped = regex::escape(pattern);
+    let body = if case_sensitive {
+        escaped
+    } else {
+        format!("(?i:{escaped})")
+    };
+    let inflect = if !case_sensitive && pattern.chars().any(is_cyrillic) {
+        r"(?:ами|ями|ах|ях|ов|ев|ам|ям|ом|ем|ой|ей|[аяуюоыиеё])?"
+    } else {
+        ""
+    };
+    format!(r"\b{body}{inflect}\b")
+}
+
+fn is_cyrillic(ch: char) -> bool {
+    ('\u{0400}'..='\u{04FF}').contains(&ch)
+}
+
+fn canonical_for_match(matched: &str, map: &HashMap<String, String>) -> String {
+    if let Some(target) = map
+        .get(matched)
+        .or_else(|| map.get(&matched.to_lowercase()))
+    {
+        return target.clone();
+    }
+    let lower = matched.to_lowercase();
+    const SUFFIXES: &[&str] = &[
+        "ами", "ями", "ах", "ях", "ов", "ев", "ам", "ям", "ом", "ем", "ой", "ей", "а", "я", "у",
+        "ю", "о", "е", "и", "ы", "ё",
+    ];
+    for suffix in SUFFIXES {
+        if let Some(stem) = lower.strip_suffix(suffix) {
+            if stem.chars().count() >= 3 {
+                if let Some(target) = map.get(stem) {
+                    return target.clone();
+                }
+            }
+        }
+    }
+    matched.to_string()
+}
+
 fn replace_case_insensitive(haystack: &str, needle: &str, replacement: &str) -> String {
     if needle.is_empty() {
         return haystack.to_string();
@@ -380,6 +417,24 @@ mod tests {
             dict.apply("создай тест на рест ашуред"),
             "создай тест на RestAssured"
         );
+    }
+
+    #[test]
+    fn inflected_cyrillic_alias_maps_to_canonical() {
+        let dict =
+            Dictionary::from_entries(vec![DictionaryEntry::rule("1", "пострес", "PostgreSQL")]);
+        assert_eq!(dict.apply("Подними пострес"), "Подними PostgreSQL");
+        assert_eq!(dict.apply("в постресе"), "в PostgreSQL");
+        assert_eq!(dict.apply("без постреса"), "без PostgreSQL");
+        assert_eq!(dict.apply("суперпострес рядом"), "суперпострес рядом");
+    }
+
+    #[test]
+    fn latin_identifier_does_not_match_inside_words() {
+        let mut dict = Dictionary::default();
+        dict.ensure_builtins();
+        assert!(dict.apply("select from users").contains("SELECT"));
+        assert_eq!(dict.apply("ideal candidate"), "ideal candidate");
     }
 
     #[test]

@@ -4,7 +4,7 @@ use crate::error::LfError;
 use crate::injection::ClipboardInjector;
 use crate::llm::NativeLlm;
 use crate::pipeline::PipelineState;
-use crate::stt::{NativeStt, SpeechToText};
+use crate::stt::NativeStt;
 use serde::Serialize;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::mpsc::{self, Sender};
@@ -644,7 +644,13 @@ fn finish_recording(app: &AppHandle, engine: &SharedEngine, capture: &SharedCapt
             );
             return;
         };
-        let raw = match NativeStt.transcribe(&pcm, Some(&stt_path), &lang) {
+        let raw = match crate::stt::transcribe_with_paragraph_pauses(
+            &NativeStt,
+            &pcm,
+            Some(&stt_path),
+            &lang,
+            cached_vad(),
+        ) {
             Ok(text) => crate::sanitize::strip_model_tags(&text),
             Err(err) => {
                 fail(

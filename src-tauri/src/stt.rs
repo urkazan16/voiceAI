@@ -40,6 +40,43 @@ impl SpeechToText for NativeStt {
     }
 }
 
+pub fn transcribe_with_paragraph_pauses(
+    stt: &dyn SpeechToText,
+    pcm: &[f32],
+    model_path: Option<&Path>,
+    language: &str,
+    vad_threshold: f32,
+) -> LfResult<String> {
+    let chunks = crate::vad::split_on_internal_silence(
+        pcm,
+        16_000,
+        vad_threshold,
+        crate::pipeline::PARAGRAPH_PAUSE_MS,
+    );
+    if chunks.len() <= 1 {
+        return stt.transcribe(pcm, model_path, language);
+    }
+    let mut parts = Vec::new();
+    let mut all_cues = Vec::new();
+    let mut offset_ms = 0u64;
+    for chunk in &chunks {
+        let text = stt.transcribe(chunk, model_path, language)?;
+        let trimmed = text.trim();
+        if !trimmed.is_empty() {
+            parts.push(trimmed.to_string());
+        }
+        let mut cues = crate::whisper_stt::last_cues();
+        for cue in &mut cues {
+            cue.start_ms = cue.start_ms.saturating_add(offset_ms);
+            cue.end_ms = cue.end_ms.saturating_add(offset_ms);
+        }
+        all_cues.extend(cues);
+        offset_ms = offset_ms.saturating_add((chunk.len() as u64 * 1000) / 16_000);
+    }
+    crate::whisper_stt::store_cues(all_cues);
+    Ok(parts.join("\n\n"))
+}
+
 pub struct ScriptedStt {
     pub transcript: String,
 }

@@ -682,8 +682,8 @@ export function App() {
               </select>
             </label>
             <p className="text-xs text-paper/60">
-              Russian is more accurate for Russian speech. Auto-detect can slip into Ukrainian or
-              English and mangle similar-sounding words.
+              Russian is more accurate for Russian-only speech. Use Auto-detect when a replica
+              mixes Russian and English so Whisper can switch language inside the clip.
             </p>
             <label className="block text-sm text-paper/70">
               Microphone

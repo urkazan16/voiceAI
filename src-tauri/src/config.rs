@@ -122,9 +122,6 @@ impl AppSettings {
             }
             _ => {}
         }
-        if self.stt_language.eq_ignore_ascii_case("auto") {
-            self.stt_language = "ru".into();
-        }
     }
 }
 
@@ -259,7 +256,7 @@ mod tests {
         };
         settings.apply_shipped_stt_default();
         assert_eq!(settings.active_stt_model.as_deref(), Some("whisper-medium"));
-        assert_eq!(settings.stt_language, "ru");
+        assert_eq!(settings.stt_language, "auto");
         settings.active_stt_model = Some("whisper-large-v3-turbo".into());
         settings.apply_shipped_stt_default();
         assert_eq!(

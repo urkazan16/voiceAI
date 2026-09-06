@@ -127,6 +127,33 @@ pub fn cues_to_srt(cues: &[TranscriptCue]) -> String {
     out
 }
 
+pub const PARAGRAPH_PAUSE_MS: u64 = 2000;
+
+pub fn join_cues_with_pauses(cues: &[TranscriptCue], pause_ms: u64) -> String {
+    let mut out = String::new();
+    let mut prev_end: Option<u64> = None;
+    for cue in cues {
+        let text = cue.text.trim();
+        if text.is_empty() {
+            continue;
+        }
+        if let Some(end) = prev_end {
+            let gap = cue.start_ms.saturating_sub(end);
+            if gap >= pause_ms {
+                while out.ends_with(' ') {
+                    out.pop();
+                }
+                out.push_str("\n\n");
+            } else if !out.is_empty() && !out.ends_with([' ', '\n']) {
+                out.push(' ');
+            }
+        }
+        out.push_str(text);
+        prev_end = Some(cue.end_ms.max(cue.start_ms));
+    }
+    out
+}
+
 fn ms_stamp(ms: u64) -> String {
     let s = ms / 1000;
     let rem = ms % 1000;
@@ -183,6 +210,26 @@ mod tests {
         }]);
         assert!(srt.contains("00:00:00,000 --> 00:00:01,500"));
         assert!(srt.contains("Привет"));
+    }
+
+    #[test]
+    fn pause_over_two_seconds_becomes_paragraph() {
+        let text = join_cues_with_pauses(
+            &[
+                TranscriptCue {
+                    start_ms: 0,
+                    end_ms: 800,
+                    text: "Первый абзац".into(),
+                },
+                TranscriptCue {
+                    start_ms: 3100,
+                    end_ms: 4000,
+                    text: "Второй абзац".into(),
+                },
+            ],
+            PARAGRAPH_PAUSE_MS,
+        );
+        assert_eq!(text, "Первый абзац\n\nВторой абзац");
     }
 
     #[test]

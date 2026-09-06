@@ -38,6 +38,52 @@ pub fn trim_silence_at(pcm: &[f32], sample_rate: u32, threshold: f32) -> Vec<f32
     pcm[start..end].to_vec()
 }
 
+pub fn split_on_internal_silence(
+    pcm: &[f32],
+    sample_rate: u32,
+    threshold: f32,
+    gap_ms: u64,
+) -> Vec<Vec<f32>> {
+    if pcm.is_empty() || sample_rate == 0 {
+        return Vec::new();
+    }
+    let threshold = clamp_threshold(threshold);
+    let frame_len = ((sample_rate * FRAME_MS) / 1000).max(1) as usize;
+    let gap_frames = (gap_ms / u64::from(FRAME_MS)).max(1) as usize;
+    let frames: Vec<bool> = pcm
+        .chunks(frame_len)
+        .map(|frame| rms(frame) >= threshold)
+        .collect();
+    let voiced: Vec<usize> = frames
+        .iter()
+        .enumerate()
+        .filter_map(|(i, voiced)| voiced.then_some(i))
+        .collect();
+    if voiced.is_empty() {
+        return Vec::new();
+    }
+    let mut clusters: Vec<(usize, usize)> = vec![(voiced[0], voiced[0])];
+    for &idx in &voiced[1..] {
+        let last = clusters.last_mut().expect("cluster");
+        if idx.saturating_sub(last.1) > gap_frames {
+            clusters.push((idx, idx));
+        } else {
+            last.1 = idx;
+        }
+    }
+    if clusters.len() <= 1 {
+        return Vec::new();
+    }
+    clusters
+        .into_iter()
+        .map(|(first, last)| {
+            let start = first.saturating_sub(PAD_FRAMES) * frame_len;
+            let end = ((last + 1 + PAD_FRAMES) * frame_len).min(pcm.len());
+            pcm[start..end].to_vec()
+        })
+        .collect()
+}
+
 pub fn had_speech(pcm: &[f32], sample_rate: u32) -> bool {
     had_speech_at(pcm, sample_rate, default_threshold())
 }
@@ -100,5 +146,19 @@ mod tests {
         let pcm = vec![0.02; 8_000];
         assert!(!trim_silence_at(&pcm, 16_000, 0.012).is_empty());
         assert!(trim_silence_at(&pcm, 16_000, 0.05).is_empty());
+    }
+
+    #[test]
+    fn splits_when_internal_pause_exceeds_two_seconds() {
+        let sr = 16_000u32;
+        let mut pcm = vec![0.0; sr as usize * 6];
+        for sample in pcm.iter_mut().take(sr as usize / 2) {
+            *sample = 0.2;
+        }
+        for sample in pcm.iter_mut().skip(sr as usize * 4) {
+            *sample = 0.2;
+        }
+        let chunks = split_on_internal_silence(&pcm, sr, 0.012, 2000);
+        assert_eq!(chunks.len(), 2, "{}", chunks.len());
     }
 }

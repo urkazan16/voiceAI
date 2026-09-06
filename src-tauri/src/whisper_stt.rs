@@ -80,6 +80,12 @@ pub fn last_cues() -> Vec<TranscriptCue> {
     cues_slot().lock().map(|g| g.clone()).unwrap_or_default()
 }
 
+pub fn store_cues(cues: Vec<TranscriptCue>) {
+    if let Ok(mut slot) = cues_slot().lock() {
+        *slot = cues;
+    }
+}
+
 pub fn transcribe(
     model_path: &Path,
     pcm: &[f32],
@@ -190,7 +196,7 @@ fn decode(ctx: &WhisperContext, pcm: &[f32], language: &str) -> LfResult<String>
     params.set_print_progress(false);
     params.set_print_realtime(false);
     params.set_print_timestamps(false);
-    params.set_no_timestamps(true);
+    params.set_no_timestamps(false);
     params.set_suppress_blank(true);
     params.set_suppress_non_speech_tokens(true);
     params.set_no_speech_thold(0.6);
@@ -220,12 +226,12 @@ fn decode(ctx: &WhisperContext, pcm: &[f32], language: &str) -> LfResult<String>
                 end_ms: t1.max(t0),
                 text: text.clone(),
             });
-            if !out.is_empty() {
-                out.push(' ');
-            }
-            out.push_str(&text);
         }
     }
+    out.push_str(&crate::pipeline::join_cues_with_pauses(
+        &cues,
+        crate::pipeline::PARAGRAPH_PAUSE_MS,
+    ));
     if let Ok(mut slot) = cues_slot().lock() {
         *slot = cues;
     }

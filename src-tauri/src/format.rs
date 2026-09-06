@@ -26,7 +26,19 @@ fn apply_voice_punctuation(text: &str) -> String {
         ("восклицательный знак", "!"),
         ("точка с запятой", ";"),
         ("новый абзац", "\n\n"),
+        ("с новой строки", "\n"),
+        ("перенос строки", "\n"),
         ("новая строка", "\n"),
+        ("открыть кавычки", "«"),
+        ("закрыть кавычки", "»"),
+        ("открыть кавычку", "«"),
+        ("закрыть кавычку", "»"),
+        ("open quotes", "«"),
+        ("close quotes", "»"),
+        ("open quote", "«"),
+        ("close quote", "»"),
+        ("многоточие", "…"),
+        ("ellipsis", "…"),
         ("question mark", "?"),
         ("exclamation point", "!"),
         ("exclamation mark", "!"),
@@ -48,9 +60,13 @@ fn apply_voice_punctuation(text: &str) -> String {
     ];
     rules.sort_by(|a, b| b.0.len().cmp(&a.0.len()));
     for (phrase, replacement) in rules {
+        if matches!(phrase, "тире" | "dash") && phrase_count(&out, phrase) >= 2 {
+            continue;
+        }
         out = replace_phrase_ci(&out, phrase, replacement);
     }
-    out
+    out = replace_quote_toggles(&out);
+    pair_guillemets(&out)
 }
 
 fn replace_phrase_ci(haystack: &str, needle: &str, replacement: &str) -> String {
@@ -85,6 +101,66 @@ fn is_phrase_boundary(text: &str, start: usize, end: usize) -> bool {
             .next()
             .is_some_and(|c| !c.is_alphanumeric());
     before_ok && after_ok
+}
+
+fn phrase_count(text: &str, needle: &str) -> usize {
+    let lower = text.to_lowercase();
+    let needle_l = needle.to_lowercase();
+    let mut idx = 0;
+    let mut n = 0;
+    while let Some(found) = lower[idx..].find(&needle_l) {
+        let abs = idx + found;
+        if is_phrase_boundary(text, abs, abs + needle.len()) {
+            n += 1;
+        }
+        idx = abs + needle.len();
+    }
+    n
+}
+
+fn replace_quote_toggles(text: &str) -> String {
+    let lower = text.to_lowercase();
+    let needles = ["кавычки", "кавычка", "quotes", "quote"];
+    let mut marks: Vec<(usize, usize)> = Vec::new();
+    for needle in needles {
+        let mut idx = 0;
+        while let Some(found) = lower[idx..].find(needle) {
+            let abs = idx + found;
+            let end = abs + needle.len();
+            if is_phrase_boundary(text, abs, end)
+                && !marks.iter().any(|(s, e)| abs < *e && end > *s)
+            {
+                marks.push((abs, end));
+            }
+            idx = abs + needle.len();
+        }
+    }
+    marks.sort_by_key(|(s, _)| *s);
+    let mut out = String::new();
+    let mut idx = 0;
+    let mut open = true;
+    for (start, end) in marks {
+        out.push_str(&text[idx..start]);
+        out.push(if open { '«' } else { '»' });
+        open = !open;
+        idx = end;
+    }
+    out.push_str(&text[idx..]);
+    out
+}
+
+fn pair_guillemets(text: &str) -> String {
+    let opens = text.chars().filter(|c| *c == '«').count();
+    let closes = text.chars().filter(|c| *c == '»').count();
+    if opens > closes {
+        let mut out = text.to_string();
+        for _ in 0..(opens - closes) {
+            out.push('»');
+        }
+        out
+    } else {
+        text.to_string()
+    }
 }
 
 fn remove_fillers(text: &str) -> String {
@@ -134,6 +210,13 @@ fn strip_filler_phrase(text: &str, phrase: &str) -> String {
 }
 
 fn strip_like_filler(text: &str) -> String {
+    text.split('\n')
+        .map(strip_like_filler_line)
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn strip_like_filler_line(text: &str) -> String {
     let tokens: Vec<&str> = text.split_whitespace().collect();
     let mut kept = Vec::new();
     for (i, token) in tokens.iter().enumerate() {
@@ -161,6 +244,13 @@ fn strip_like_filler(text: &str) -> String {
 }
 
 fn apply_lists(text: &str) -> String {
+    if let Some((kind, rest)) = strip_list_command(text) {
+        let items = split_list_items(&rest, true);
+        if items.is_empty() {
+            return rest;
+        }
+        return render_list(kind, &items, "");
+    }
     if let Some(bullets) = extract_bullets(text) {
         return bullets;
     }
@@ -170,7 +260,101 @@ fn apply_lists(text: &str) -> String {
     text.to_string()
 }
 
+#[derive(Clone, Copy)]
+enum ListKind {
+    Bullet,
+    Numbered,
+}
+
+fn strip_list_command(text: &str) -> Option<(ListKind, String)> {
+    let commands = [
+        ("нумерованный список", ListKind::Numbered),
+        ("маркированный список", ListKind::Bullet),
+        ("numbered list", ListKind::Numbered),
+        ("bullet list", ListKind::Bullet),
+    ];
+    let lower = text.to_lowercase();
+    for (phrase, kind) in commands {
+        if let Some(idx) = lower.find(phrase) {
+            if !is_phrase_boundary(text, idx, idx + phrase.len()) {
+                continue;
+            }
+            let mut rest = String::new();
+            rest.push_str(text[..idx].trim());
+            let after = text[idx + phrase.len()..].trim_start_matches([' ', ',']);
+            if !rest.is_empty() && !after.is_empty() {
+                rest.push(' ');
+            }
+            rest.push_str(after.trim());
+            return Some((kind, rest.trim().to_string()));
+        }
+    }
+    None
+}
+
+fn split_list_items(text: &str, forced: bool) -> Vec<String> {
+    let min = if forced { 1 } else { 2 };
+    if let Some(items) = numbered_items(text, min) {
+        return items;
+    }
+    if let Some(items) = bullet_items(text, min) {
+        return items;
+    }
+    if forced {
+        let comma: Vec<String> = text
+            .split(',')
+            .map(|s| s.trim().trim_matches(':').trim())
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_string())
+            .collect();
+        if comma.len() >= 2 {
+            return comma;
+        }
+        if !text.trim().is_empty() {
+            return vec![text.trim().to_string()];
+        }
+    }
+    Vec::new()
+}
+
+fn render_list(kind: ListKind, items: &[String], prefix: &str) -> String {
+    let mut out = String::new();
+    if !prefix.is_empty() {
+        out.push_str(prefix.trim_end_matches(':'));
+        out.push_str(":\n\n");
+    }
+    match kind {
+        ListKind::Bullet => {
+            for item in items {
+                out.push_str(&format!("• {}\n", capitalize_first(item)));
+            }
+        }
+        ListKind::Numbered => {
+            for (i, item) in items.iter().enumerate() {
+                out.push_str(&format!("{}. {}\n", i + 1, capitalize_first(item)));
+            }
+        }
+    }
+    out.trim().to_string()
+}
+
 fn extract_numbered(text: &str) -> Option<String> {
+    let tokens: Vec<&str> = text.split_whitespace().collect();
+    let items = numbered_items(text, 2)?;
+    let cuts: Vec<usize> = tokens
+        .iter()
+        .enumerate()
+        .filter_map(|(i, token)| ordinal_value(trim_punct(token)).map(|_| i))
+        .collect();
+    let prefix = if cuts.is_empty() {
+        String::new()
+    } else {
+        tokens[..cuts[0]].join(" ")
+    };
+    Some(render_list(ListKind::Numbered, &items, &prefix))
+}
+
+fn numbered_items(text: &str, min_items: usize) -> Option<Vec<String>> {
     let tokens: Vec<&str> = text.split_whitespace().collect();
     let mut cuts: Vec<usize> = Vec::new();
     for (i, token) in tokens.iter().enumerate() {
@@ -178,7 +362,7 @@ fn extract_numbered(text: &str) -> Option<String> {
             cuts.push(i);
         }
     }
-    if cuts.len() < 2 {
+    if cuts.len() < min_items {
         return None;
     }
     let mut items: Vec<String> = Vec::new();
@@ -190,21 +374,23 @@ fn extract_numbered(text: &str) -> Option<String> {
         }
         items.push(body);
     }
-    let prefix = tokens[..cuts[0]].join(" ");
-    let mut out = String::new();
-    if !prefix.is_empty() {
-        out.push_str(prefix.trim_end_matches(':'));
-        out.push_str(":\n\n");
+    if items.len() < min_items {
+        return None;
     }
-    for (i, item) in items.iter().enumerate() {
-        out.push_str(&format!("{}. {}\n", i + 1, capitalize_first(item)));
-    }
-    Some(out.trim().to_string())
+    Some(items)
 }
 
 fn extract_bullets(text: &str) -> Option<String> {
+    let items = bullet_items(text, 2)?;
+    Some(render_list(ListKind::Bullet, &items, ""))
+}
+
+fn bullet_items(text: &str, min_items: usize) -> Option<Vec<String>> {
     let lower = text.to_lowercase();
-    if !lower.contains("bullet ") && !lower.contains("пункт ") && !lower.contains("маркер ")
+    if !lower.contains("bullet ")
+        && !lower.contains("пункт ")
+        && !lower.contains("маркер ")
+        && !lower.contains("тире ")
     {
         return None;
     }
@@ -214,11 +400,12 @@ fn extract_bullets(text: &str) -> Option<String> {
         if eq_ci(trim_punct(token), "bullet")
             || eq_ci(trim_punct(token), "пункт")
             || eq_ci(trim_punct(token), "маркер")
+            || eq_ci(trim_punct(token), "тире")
         {
             cuts.push(i);
         }
     }
-    if cuts.len() < 2 {
+    if cuts.len() < min_items {
         return None;
     }
     let mut items = Vec::new();
@@ -236,14 +423,10 @@ fn extract_bullets(text: &str) -> Option<String> {
             items.push(body);
         }
     }
-    if items.len() < 2 {
+    if items.len() < min_items {
         return None;
     }
-    let mut out = String::new();
-    for item in items {
-        out.push_str(&format!("• {}\n", capitalize_first(&item)));
-    }
-    Some(out.trim().to_string())
+    Some(items)
 }
 
 fn ordinal_value(token: &str) -> Option<u32> {
@@ -259,6 +442,17 @@ fn ordinal_value(token: &str) -> Option<u32> {
         ("восемь", 8),
         ("девять", 9),
         ("десять", 10),
+        ("первый", 1),
+        ("второй", 2),
+        ("третий", 3),
+        ("четвертый", 4),
+        ("четвёртый", 4),
+        ("пятый", 5),
+        ("шестой", 6),
+        ("седьмой", 7),
+        ("восьмой", 8),
+        ("девятый", 9),
+        ("десятый", 10),
         ("one", 1),
         ("two", 2),
         ("three", 3),
@@ -300,9 +494,25 @@ fn tidy_spacing(text: &str) -> String {
         if *ch == '(' && !out.ends_with([' ', '\n', '(']) && !out.is_empty() {
             out.push(' ');
         }
+        if *ch == '«' {
+            if !out.ends_with([' ', '\n', '«']) && !out.is_empty() {
+                out.push(' ');
+            }
+            out.push('«');
+            continue;
+        }
+        if *ch == '»' {
+            while out.ends_with(' ') {
+                out.pop();
+            }
+            out.push('»');
+            continue;
+        }
         out.push(*ch);
     }
     collapse_ws_keep_newlines(&out)
+        .replace("« ", "«")
+        .replace(" »", "»")
 }
 
 fn finalize_sentences(text: &str) -> String {
@@ -704,5 +914,46 @@ mod tests {
         assert_eq!(space_between_utterances("Привет", "мир"), " мир");
         assert_eq!(space_between_utterances("Привет ", "мир"), "мир");
         assert_eq!(space_between_utterances("Привет", ","), ",");
+    }
+
+    #[test]
+    fn spoken_newline_and_paired_quotes() {
+        let out = format_smart(
+            PipelineMode::Normal,
+            "первая с новой строки вторая открыть кавычки цитата закрыть кавычки",
+        );
+        assert!(out.contains('\n'), "{out}");
+        assert!(out.contains('«') && out.contains('»'), "{out}");
+        assert!(
+            out.chars().filter(|c| *c == '«').count() == out.chars().filter(|c| *c == '»').count(),
+            "{out}"
+        );
+        let toggled = format_smart(PipelineMode::Normal, "кавычка слово кавычка");
+        assert!(toggled.contains('«') && toggled.contains('»'), "{toggled}");
+        assert!(toggled.to_lowercase().contains("слово"), "{toggled}");
+        let dots = format_smart(PipelineMode::Normal, "дальше многоточие");
+        assert!(dots.contains('…'), "{dots}");
+    }
+
+    #[test]
+    fn voice_list_commands() {
+        let bullets = format_smart(
+            PipelineMode::Normal,
+            "маркированный список пункт молоко пункт хлеб",
+        );
+        assert!(bullets.contains('•'), "{bullets}");
+        assert!(bullets.to_lowercase().contains("молоко"), "{bullets}");
+        assert!(bullets.to_lowercase().contains("хлеб"), "{bullets}");
+        let numbered = format_smart(
+            PipelineMode::Normal,
+            "нумерованный список первый API второй UI",
+        );
+        assert!(numbered.contains("1."), "{numbered}");
+        assert!(numbered.contains("2."), "{numbered}");
+        let dashes = format_smart(
+            PipelineMode::Normal,
+            "маркированный список тире молоко тире хлеб",
+        );
+        assert!(dashes.contains('•'), "{dashes}");
     }
 }

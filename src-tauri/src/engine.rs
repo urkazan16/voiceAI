@@ -298,7 +298,13 @@ impl AppEngine {
                         .unwrap_or_else(|| crate::config::DEFAULT_STT_MODEL.to_string()),
                 )
             })?;
-            stt.transcribe(pcm, Some(path.as_path()), &self.settings.stt_language)?
+            crate::stt::transcribe_with_paragraph_pauses(
+                stt,
+                pcm,
+                Some(path.as_path()),
+                &self.settings.stt_language,
+                self.settings.vad_threshold,
+            )?
         } else {
             transcript.to_string()
         };
