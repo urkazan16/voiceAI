@@ -129,6 +129,7 @@ pub fn run() {
             commands::paste_text,
             commands::uninstall_localflow,
             commands::reset_stats,
+            commands::reset_settings,
             commands::get_stats,
             commands::export_history_timecodes,
             commands::install_dictate_macro,
@@ -219,7 +220,7 @@ pub fn run() {
                             dictation::enqueue(dictation::DictationCmd::Cancel);
                             return;
                         }
-                        let (talk, copy, paste) = dictation::bound_hotkeys();
+                        let (talk, copy, paste, edit) = dictation::bound_hotkeys();
                         if shortcut_matches(shortcut, &copy) && pressed {
                             dictation::enqueue(dictation::DictationCmd::CopyLast);
                             return;
@@ -228,7 +229,7 @@ pub fn run() {
                             dictation::enqueue(dictation::DictationCmd::PasteLast);
                             return;
                         }
-                        if shortcut_matches(shortcut, &talk) {
+                        if shortcut_matches(shortcut, &talk) || shortcut_matches(shortcut, &edit) {
                             if pressed {
                                 dictation::notify_hotkey(app, "pressed");
                                 dictation::enqueue(dictation::DictationCmd::Pressed);
@@ -248,8 +249,21 @@ pub fn run() {
             }
             Ok(())
         })
-        .run(tauri::generate_context!())
-        .expect("error while running LocalFlow");
+        .build(tauri::generate_context!())
+        .expect("error while running LocalFlow")
+        .run(|app, event| {
+            if matches!(
+                event,
+                tauri::RunEvent::Exit | tauri::RunEvent::ExitRequested { .. }
+            ) {
+                let (talk, copy, paste, edit) = dictation::bound_hotkeys();
+                for shortcut in [talk, copy, paste, edit, "Escape".into()] {
+                    if let Ok(parsed) = shortcut.parse::<Shortcut>() {
+                        let _ = app.global_shortcut().unregister(parsed);
+                    }
+                }
+            }
+        });
 }
 
 pub(crate) fn position_flow_bar(bar: &WebviewWindow) {
@@ -274,13 +288,14 @@ fn shortcut_matches(event: &Shortcut, configured: &str) -> bool {
 }
 
 pub fn apply_shortcuts(app: &AppHandle, engine: &SharedEngine) -> Option<String> {
-    let (talk, copy, paste, previous) = match engine.lock() {
+    let (talk, copy, paste, edit, previous) = match engine.lock() {
         Ok(eng) => {
             dictation::remember_microphone(eng.settings.microphone_name.clone());
             (
                 eng.settings.hotkey.clone(),
                 eng.settings.copy_last_hotkey.clone(),
                 eng.settings.paste_last_hotkey.clone(),
+                eng.settings.edit_hotkey.clone(),
                 eng.hotkey_registered.clone(),
             )
         }
@@ -291,6 +306,7 @@ pub fn apply_shortcuts(app: &AppHandle, engine: &SharedEngine) -> Option<String>
         Some(talk.as_str()),
         Some(copy.as_str()),
         Some(paste.as_str()),
+        Some(edit.as_str()),
     ]
     .into_iter()
     .flatten()
@@ -307,14 +323,19 @@ pub fn apply_shortcuts(app: &AppHandle, engine: &SharedEngine) -> Option<String>
                 last_err = None;
                 break;
             }
-            Err(err) => last_err = Some(err.to_string()),
+            Err(err) => {
+                last_err = Some(format!(
+                    "Hotkey {shortcut} is already used by macOS or another app ({err})"
+                ));
+            }
         }
     }
     let _ = app.global_shortcut().register(copy.as_str());
     let _ = app.global_shortcut().register(paste.as_str());
+    let _ = app.global_shortcut().register(edit.as_str());
     let _ = app.global_shortcut().register("Escape");
     let talk_active = registered.clone().unwrap_or(talk);
-    dictation::remember_hotkeys(talk_active.clone(), copy, paste);
+    dictation::remember_hotkeys(talk_active.clone(), copy, paste, edit);
     if let Ok(mut eng) = engine.lock() {
         eng.hotkey_registered = registered.clone();
         if let Some(active) = &registered {

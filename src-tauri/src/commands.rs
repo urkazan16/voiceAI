@@ -67,14 +67,15 @@ pub fn get_settings(engine: tauri::State<SharedEngine>) -> Result<AppSettings, C
 pub fn save_settings(
     app: tauri::AppHandle,
     engine: tauri::State<SharedEngine>,
-    settings: AppSettings,
+    mut settings: AppSettings,
 ) -> Result<(), CommandError> {
+    settings.validate()?;
+    settings.normalize();
     {
         let mut eng = lock(&engine)?;
+        crate::journal::set_max_bytes(settings.log_max_bytes);
+        let autostart = settings.autostart;
         eng.settings = settings;
-        eng.settings.normalize();
-        crate::journal::set_max_bytes(eng.settings.log_max_bytes);
-        let autostart = eng.settings.autostart;
         eng.persist()?;
         drop(eng);
         crate::autostart::apply(autostart)?;
@@ -717,6 +718,37 @@ pub fn reset_stats(engine: tauri::State<SharedEngine>) -> Result<(), CommandErro
         .put_kv("stats_epoch", &crate::uttlog::now_rfc3339())?;
     crate::journal::log("stats_reset", "ok");
     Ok(())
+}
+
+#[tauri::command]
+pub fn reset_settings(
+    app: tauri::AppHandle,
+    engine: tauri::State<SharedEngine>,
+) -> Result<AppSettings, CommandError> {
+    let onboarding;
+    let models;
+    {
+        let mut eng = lock(&engine)?;
+        onboarding = eng.settings.onboarding_complete;
+        models = (
+            eng.settings.active_stt_model.clone(),
+            eng.settings.active_llm_model.clone(),
+        );
+        let mut next = AppSettings {
+            onboarding_complete: onboarding,
+            active_stt_model: models.0,
+            active_llm_model: models.1,
+            ..AppSettings::default()
+        };
+        next.apply_shipped_stt_default();
+        eng.settings = next;
+        let autostart = eng.settings.autostart;
+        eng.persist()?;
+        drop(eng);
+        crate::autostart::apply(autostart)?;
+    }
+    crate::apply_shortcuts(&app, &engine);
+    Ok(lock(&engine)?.settings.clone())
 }
 
 #[tauri::command]

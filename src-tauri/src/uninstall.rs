@@ -11,6 +11,7 @@ pub struct UninstallReport {
 }
 
 pub fn uninstall(keep_history: bool) -> LfResult<UninstallReport> {
+    let _ = crate::autostart::apply(false);
     let paths = DataPaths::detect();
     let mut removed = Vec::new();
     let mut skipped = Vec::new();

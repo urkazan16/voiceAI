@@ -363,7 +363,8 @@ impl AppEngine {
         };
         self.snapshot.transition(PipelineState::Llm)?;
         let timed_out = started.elapsed() > timeout;
-        let llm_text = if skip_llm || timed_out {
+        let llm_text = if skip_llm || timed_out || personalized_text.split_whitespace().count() < 10
+        {
             personalized_text.clone()
         } else {
             match mode {

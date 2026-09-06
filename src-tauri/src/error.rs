@@ -97,12 +97,27 @@ pub fn user_guidance(err: &LfError) -> String {
         LfError::PermissionDenied(msg) if msg.to_lowercase().contains("speech") => {
             "Whisper is not ready. Open Models and download the speech model, then try again.".into()
         }
+        LfError::DeviceUnavailable(msg)
+            if msg.to_lowercase().contains("busy")
+                || msg.to_lowercase().contains("in use")
+                || msg.to_lowercase().contains("occupied") =>
+        {
+            "This microphone is in use by another app. Close the other app or pick a different input in Settings.".into()
+        }
+        LfError::DeviceUnavailable(msg)
+            if msg.to_lowercase().contains("unplug")
+                || msg.to_lowercase().contains("disconnect")
+                || msg.to_lowercase().contains("removed") =>
+        {
+            "The microphone was disconnected during recording. Plug it back in or choose another device.".into()
+        }
         LfError::PermissionDenied(_) | LfError::DeviceUnavailable(_) => {
             "Microphone is unavailable. System Settings → Privacy & Security → Microphone → LocalFlow, then pick the device in Settings.".into()
         }
         LfError::InjectionFailed(_) => {
             "Text is ready but could not paste into the other app. Use Copy last / Paste last, and enable Accessibility if paste still fails.".into()
         }
+        LfError::ConfigInvalid(msg) => msg.clone(),
         other => other.to_string(),
     }
 }
@@ -157,5 +172,17 @@ mod tests {
         let text = user_guidance(&LfError::ModelMissing("whisper-small".into()));
         assert!(text.contains("Models"));
         assert!(text.contains("Whisper"));
+    }
+
+    #[test]
+    fn user_guidance_explains_busy_and_disconnected_mics() {
+        let busy = user_guidance(&LfError::DeviceUnavailable("busy: device in use".into()));
+        assert!(busy.to_lowercase().contains("another app"), "{busy}");
+        let gone = user_guidance(&LfError::DeviceUnavailable(
+            "disconnected: unplugged".into(),
+        ));
+        assert!(gone.to_lowercase().contains("disconnected"), "{gone}");
+        let invalid = user_guidance(&LfError::ConfigInvalid("Hotkeys cannot be empty.".into()));
+        assert!(invalid.contains("Hotkeys"));
     }
 }

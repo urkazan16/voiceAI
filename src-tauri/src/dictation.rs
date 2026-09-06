@@ -15,8 +15,8 @@ use tauri::{AppHandle, Emitter, Manager};
 static CANCEL: AtomicBool = AtomicBool::new(false);
 static PRESS_AT: Mutex<Option<Instant>> = Mutex::new(None);
 static WORKER: OnceLock<Sender<DictationCmd>> = OnceLock::new();
-static BOUND_HOTKEYS: Mutex<(String, String, String)> =
-    Mutex::new((String::new(), String::new(), String::new()));
+static BOUND_HOTKEYS: Mutex<(String, String, String, String)> =
+    Mutex::new((String::new(), String::new(), String::new(), String::new()));
 static MICROPHONE: Mutex<Option<String>> = Mutex::new(None);
 static VAD_BITS: AtomicU32 = AtomicU32::new(0);
 static LAST_RMS_BITS: AtomicU32 = AtomicU32::new(0);
@@ -52,23 +52,24 @@ pub fn classify_release_ex(held: Duration, is_recording: bool, hands_free: bool)
 
 /// Cached shortcuts so the Carbon/hotkey callback never waits on the engine mutex
 /// (Whisper can hold that lock for tens of seconds).
-pub fn remember_hotkeys(talk: String, copy: String, paste: String) {
+pub fn remember_hotkeys(talk: String, copy: String, paste: String, edit: String) {
     if let Ok(mut slot) = BOUND_HOTKEYS.lock() {
-        *slot = (talk, copy, paste);
+        *slot = (talk, copy, paste, edit);
     }
 }
 
-pub fn bound_hotkeys() -> (String, String, String) {
+pub fn bound_hotkeys() -> (String, String, String, String) {
     BOUND_HOTKEYS
         .lock()
         .ok()
         .map(|g| g.clone())
-        .filter(|(talk, _, _)| !talk.is_empty())
+        .filter(|(talk, _, _, _)| !talk.is_empty())
         .unwrap_or_else(|| {
             (
                 "Control+Shift+Space".into(),
                 "Command+Control+C".into(),
                 "Command+Control+V".into(),
+                "Command+Control+E".into(),
             )
         })
 }
@@ -456,6 +457,22 @@ fn spawn_level_meter(app: &AppHandle, capture: &SharedCapture) {
         };
         let rms = crate::vad::rms(window);
         remember_rms(rms);
+        if let Some(err) = crate::audio::take_stream_error() {
+            emit_state(
+                &app,
+                DictationState {
+                    phase: "error".into(),
+                    message: crate::error::user_guidance(&LfError::DeviceUnavailable(err)),
+                    transcript: None,
+                    raw_transcript: None,
+                    duration_ms: audio::duration_ms(&peeked),
+                    insert_ok: true,
+                    rms,
+                    wpm: None,
+                },
+            );
+            continue;
+        }
         let held = PRESS_AT
             .lock()
             .ok()
@@ -616,25 +633,40 @@ fn finish_recording(app: &AppHandle, engine: &SharedEngine, capture: &SharedCapt
             );
             return;
         }
-        let (stt_path, lang, pid, app_name, delay_ms, timeout_ms, sounds, cue_vol, last_wav) =
-            match engine.lock() {
-                Ok(eng) => (
-                    eng.ready_model_path("stt"),
-                    eng.settings.stt_language.clone(),
-                    eng.insert_target_pid,
-                    eng.insert_target_app.clone(),
-                    eng.settings.insert_delay_ms,
-                    eng.settings.postprocess_timeout_ms,
-                    eng.settings.sound_cues,
-                    eng.settings.sound_cue_volume,
-                    eng.paths.last_utterance(),
-                ),
-                Err(_) => {
-                    fail(&app, &engine, "engine lock poisoned", duration_ms);
-                    return;
-                }
-            };
-        let _ = crate::macos_stt::write_wav_s16le_mono(&last_wav, 16_000, &pcm);
+        let (
+            stt_path,
+            lang,
+            pid,
+            app_name,
+            delay_ms,
+            timeout_ms,
+            sounds,
+            cue_vol,
+            last_wav,
+            keep_audio,
+        ) = match engine.lock() {
+            Ok(eng) => (
+                eng.ready_model_path("stt"),
+                eng.settings.stt_language.clone(),
+                eng.insert_target_pid,
+                eng.insert_target_app.clone(),
+                eng.settings.insert_delay_ms,
+                eng.settings.postprocess_timeout_ms,
+                eng.settings.sound_cues,
+                eng.settings.sound_cue_volume,
+                eng.paths.last_utterance(),
+                eng.settings.keep_last_audio,
+            ),
+            Err(_) => {
+                fail(&app, &engine, "engine lock poisoned", duration_ms);
+                return;
+            }
+        };
+        if keep_audio {
+            let _ = crate::macos_stt::write_wav_s16le_mono(&last_wav, 16_000, &pcm);
+        } else {
+            let _ = std::fs::remove_file(&last_wav);
+        }
         let Some(stt_path) = stt_path else {
             fail(
                 &app,
@@ -888,9 +920,10 @@ mod tests {
 
     #[test]
     fn default_talk_hotkey_cache_is_control_shift_space() {
-        let (talk, copy, paste) = bound_hotkeys();
+        let (talk, copy, paste, edit) = bound_hotkeys();
         assert!(talk.to_lowercase().contains("space") || talk == "Control+Shift+Space");
         assert!(!copy.is_empty());
         assert!(!paste.is_empty());
+        assert!(!edit.is_empty());
     }
 }

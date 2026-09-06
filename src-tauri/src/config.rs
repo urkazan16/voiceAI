@@ -52,6 +52,12 @@ pub struct AppSettings {
     pub date_format: String,
     #[serde(default = "default_compute")]
     pub compute_device: String,
+    #[serde(default = "default_true")]
+    pub keep_last_audio: bool,
+    #[serde(default = "default_edit_hotkey")]
+    pub edit_hotkey: String,
+    #[serde(default = "default_ui_language")]
+    pub ui_language: String,
 }
 
 fn default_true() -> bool {
@@ -90,6 +96,14 @@ fn default_cue_volume() -> f32 {
     0.25
 }
 
+fn default_edit_hotkey() -> String {
+    "Command+Control+E".into()
+}
+
+fn default_ui_language() -> String {
+    "en".into()
+}
+
 pub fn clamp_cue_volume(volume: f32) -> f32 {
     if !volume.is_finite() {
         return default_cue_volume();
@@ -112,6 +126,43 @@ impl AppSettings {
             self.insert_delay_ms = 40;
         }
         self.sound_cue_volume = clamp_cue_volume(self.sound_cue_volume);
+        let lang = self.stt_language.trim().to_ascii_lowercase();
+        if !matches!(lang.as_str(), "ru" | "en" | "auto") {
+            self.stt_language = "ru".into();
+        } else {
+            self.stt_language = lang;
+        }
+        let ui = self.ui_language.trim().to_ascii_lowercase();
+        self.ui_language = if ui == "ru" { "ru".into() } else { "en".into() };
+    }
+
+    pub fn validate(&self) -> LfResult<()> {
+        let lang = self.stt_language.trim().to_ascii_lowercase();
+        if !matches!(lang.as_str(), "ru" | "en" | "auto") {
+            return Err(LfError::ConfigInvalid(
+                "Speech language must be ru, en, or auto.".into(),
+            ));
+        }
+        if self.hotkey.trim().is_empty()
+            || self.copy_last_hotkey.trim().is_empty()
+            || self.paste_last_hotkey.trim().is_empty()
+            || self.edit_hotkey.trim().is_empty()
+        {
+            return Err(LfError::ConfigInvalid(
+                "Hotkeys cannot be empty. Use Tauri syntax such as Control+Shift+Space.".into(),
+            ));
+        }
+        if self.postprocess_timeout_ms < 1_000 {
+            return Err(LfError::ConfigInvalid(
+                "Post-process timeout must be at least 1000 ms.".into(),
+            ));
+        }
+        if self.insert_delay_ms > 5_000 {
+            return Err(LfError::ConfigInvalid(
+                "Insert delay must be 5000 ms or less.".into(),
+            ));
+        }
+        Ok(())
     }
 
     /// First install / first launch: speech model is Medium unless the user already picked Turbo or another catalog id.
@@ -155,6 +206,9 @@ impl Default for AppSettings {
             digits_from_speech: true,
             date_format: default_date_format(),
             compute_device: default_compute(),
+            keep_last_audio: true,
+            edit_hotkey: default_edit_hotkey(),
+            ui_language: default_ui_language(),
         }
     }
 }
@@ -281,5 +335,30 @@ mod tests {
         );
         let json = serde_json::to_string(&exported).unwrap();
         assert!(import_config(&json, &catalog).is_err());
+    }
+
+    #[test]
+    fn invalid_hotkey_is_config_error() {
+        let mut settings = AppSettings::default();
+        settings.hotkey.clear();
+        let err = settings.validate().unwrap_err();
+        assert_eq!(err.code(), "CONFIG_INVALID");
+    }
+
+    #[test]
+    fn invalid_language_and_timeout_are_config_errors() {
+        let mut settings = AppSettings {
+            stt_language: "de".into(),
+            ..AppSettings::default()
+        };
+        assert_eq!(settings.validate().unwrap_err().code(), "CONFIG_INVALID");
+        settings.stt_language = "ru".into();
+        settings.postprocess_timeout_ms = 100;
+        assert_eq!(settings.validate().unwrap_err().code(), "CONFIG_INVALID");
+        settings.postprocess_timeout_ms = 8_000;
+        settings.insert_delay_ms = 9_000;
+        assert_eq!(settings.validate().unwrap_err().code(), "CONFIG_INVALID");
+        settings.insert_delay_ms = 80;
+        settings.validate().unwrap();
     }
 }

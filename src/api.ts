@@ -54,6 +54,9 @@ export interface AppSettings {
   digits_from_speech: boolean;
   date_format: string;
   compute_device: string;
+  keep_last_audio: boolean;
+  edit_hotkey: string;
+  ui_language: string;
 }
 
 export interface ModelRecord {
@@ -309,6 +312,7 @@ export const api = {
   getBuildInfo: () => call<BuildInfo>("get_build_info"),
   getSettings: () => call<AppSettings>("get_settings"),
   saveSettings: (settings: AppSettings) => call<void>("save_settings", { settings }),
+  resetSettings: () => call<AppSettings>("reset_settings"),
   listModels: () => call<ModelRecord[]>("list_models"),
   listMicrophones: () => call<AudioDevice[]>("list_microphones"),
   listDictionary: () => call<DictionaryEntry[]>("list_dictionary"),

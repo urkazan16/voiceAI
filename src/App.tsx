@@ -23,7 +23,7 @@ import {
   type DiskUsage,
   type ViewId,
 } from "./api";
-import { formatBytes, NAV } from "./ui";
+import { formatBytes, navItems } from "./ui";
 import { listen } from "@tauri-apps/api/event";
 
 const fallbackSettings = (): AppSettings => ({
@@ -54,6 +54,9 @@ const fallbackSettings = (): AppSettings => ({
   digits_from_speech: true,
   date_format: "DMY",
   compute_device: "cpu",
+  keep_last_audio: true,
+  edit_hotkey: "Command+Control+E",
+  ui_language: "en",
 });
 
 function isToday(iso: string): boolean {
@@ -366,11 +369,13 @@ export function App() {
   }, [view, settings.active_stt_model, settings.active_llm_model]);
 
   async function save(next: AppSettings) {
+    const previous = settings;
     setSettings(next);
     try {
       await api.saveSettings(next);
-    } catch {
-      setStatus("Settings saved locally in this preview session.");
+    } catch (err) {
+      setSettings(previous);
+      setStatus(err instanceof Error ? err.message : String(err));
     }
   }
 
@@ -485,7 +490,7 @@ export function App() {
           </p>
         )}
         <nav className="mt-8 space-y-1">
-          {NAV.map((item) => (
+          {navItems(settings.ui_language).map((item) => (
             <button
               key={item.id}
               onClick={() => setView(item.id as ViewId)}
@@ -686,6 +691,17 @@ export function App() {
               mixes Russian and English so Whisper can switch language inside the clip.
             </p>
             <label className="block text-sm text-paper/70">
+              Interface language
+              <select
+                className="mt-1 w-full rounded-lg bg-paper/10 p-2"
+                value={settings.ui_language ?? "en"}
+                onChange={(e) => void save({ ...settings, ui_language: e.target.value })}
+              >
+                <option value="en">English</option>
+                <option value="ru">Русский</option>
+              </select>
+            </label>
+            <label className="block text-sm text-paper/70">
               Microphone
               <select
                 className="mt-1 w-full rounded-lg bg-paper/10 p-2"
@@ -759,6 +775,32 @@ export function App() {
               />
               Keep utterance history and JSONL journal
             </label>
+            <label className="flex items-center gap-2 text-sm">
+              <input
+                type="checkbox"
+                checked={settings.keep_last_audio ?? true}
+                onChange={(e) => void save({ ...settings, keep_last_audio: e.target.checked })}
+              />
+              Keep last utterance WAV for Repeat
+            </label>
+            <button
+              className="rounded-full border border-paper/30 px-4 py-2 text-sm"
+              onClick={async () => {
+                try {
+                  const next = await api.resetSettings();
+                  setSettings(next);
+                  setStatus(
+                    settings.ui_language === "ru"
+                      ? "Настройки сброшены к значениям по умолчанию."
+                      : "Settings restored to defaults.",
+                  );
+                } catch (err) {
+                  setStatus(err instanceof Error ? err.message : String(err));
+                }
+              }}
+            >
+              {settings.ui_language === "ru" ? "Сбросить настройки" : "Reset settings to defaults"}
+            </button>
             <label className="block text-sm text-paper/70">
               History size (oldest rows are dropped)
               <input
@@ -960,6 +1002,14 @@ export function App() {
                 className="mt-1 w-full rounded-lg bg-paper/10 p-2"
                 value={settings.paste_last_hotkey}
                 onChange={(e) => void save({ ...settings, paste_last_hotkey: e.target.value })}
+              />
+            </label>
+            <label className="block text-sm text-paper/70">
+              Edit selection (same hold-to-talk; paste replaces the highlight)
+              <input
+                className="mt-1 w-full rounded-lg bg-paper/10 p-2"
+                value={settings.edit_hotkey ?? "Command+Control+E"}
+                onChange={(e) => void save({ ...settings, edit_hotkey: e.target.value })}
               />
             </label>
             <div className="flex gap-3">

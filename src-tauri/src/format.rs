@@ -13,7 +13,8 @@ pub fn format_smart(mode: PipelineMode, text: &str) -> String {
             let punctuated = apply_voice_punctuation(text);
             let without_fillers = remove_fillers(&punctuated);
             let listed = apply_lists(&without_fillers);
-            let spaced = tidy_spacing(&listed);
+            let deduped = collapse_duplicate_words(&listed);
+            let spaced = tidy_spacing(&deduped);
             finalize_sentences(&spaced)
         }
     }
@@ -49,6 +50,12 @@ fn apply_voice_punctuation(text: &str) -> String {
         ("закрыть скобку", ")"),
         ("open parenthesis", "("),
         ("close parenthesis", ")"),
+        ("процент", "%"),
+        ("percent", "%"),
+        ("собака", "@"),
+        ("at sign", "@"),
+        ("слэш", "/"),
+        ("slash", "/"),
         ("запятая", ","),
         ("двоеточие", ":"),
         ("точка", "."),
@@ -546,7 +553,11 @@ fn capitalize_lines(text: &str) -> String {
 }
 
 fn capitalize_first(text: &str) -> String {
-    let mut chars: Vec<char> = text.trim().chars().collect();
+    let trimmed = text.trim();
+    if looks_like_identifier(trimmed) {
+        return trimmed.to_string();
+    }
+    let mut chars: Vec<char> = trimmed.chars().collect();
     if let Some(first) = chars.iter_mut().find(|c| c.is_alphabetic()) {
         let up = first.to_uppercase().next().unwrap_or(*first);
         *first = up;
@@ -620,7 +631,263 @@ pub fn normalize_spoken_values(
     }
     out = normalize_clock(&out);
     out = normalize_dates(&out, date_format);
+    out = squeeze_emails_and_urls(&out);
+    out = collapse_phone_runs(&out);
+    out = collapse_fractions(&out);
+    out = uppercase_abbreviations(&out);
+    out = strip_cyrillic_tail_on_latin(&out);
+    out = normalize_money(&out);
+    out = apply_nbsp_units(&out);
     out
+}
+
+fn map_lines(text: &str, map_line: impl FnMut(&str) -> String) -> String {
+    text.split('\n').map(map_line).collect::<Vec<_>>().join("\n")
+}
+
+fn looks_like_identifier(text: &str) -> bool {
+    let word = text
+        .split_whitespace()
+        .next()
+        .unwrap_or("")
+        .trim_matches(|c: char| !(c.is_alphanumeric() || c == '_' || c == '$'));
+    if word.is_empty() {
+        return false;
+    }
+    if word.contains('_') || word.contains('$') {
+        return true;
+    }
+    word.chars().next().is_some_and(|c| c.is_ascii_lowercase())
+}
+
+fn collapse_duplicate_words(text: &str) -> String {
+    text.split('\n')
+        .map(|line| {
+            let mut out = Vec::new();
+            for token in line.split_whitespace() {
+                if out
+                    .last()
+                    .is_some_and(|prev: &&str| eq_ci(trim_punct(prev), trim_punct(token)))
+                {
+                    continue;
+                }
+                out.push(token);
+            }
+            out.join(" ")
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn squeeze_emails_and_urls(text: &str) -> String {
+    let mut out = text
+        .replace(" @ ", "@")
+        .replace(" @", "@")
+        .replace("@ ", "@");
+    out = out.replace("www .", "www.").replace("www. ", "www.");
+    out = out
+        .replace("https ://", "https://")
+        .replace("http ://", "http://")
+        .replace("https:// ", "https://")
+        .replace("http:// ", "http://");
+    out = out
+        .replace(" / ", "/")
+        .replace(" /", "/")
+        .replace("/ ", "/");
+    for _ in 0..3 {
+        for tld in ["com", "ru", "org", "net", "io", "dev"] {
+            let tight = format!(".{tld}");
+            out = out.replace(&format!(" .{tld}"), &tight);
+            out = out.replace(&format!(". {tld}"), &tight);
+            out = out.replace(&format!(" . {tld}"), &tight);
+        }
+    }
+    out
+}
+
+fn normalize_money(text: &str) -> String {
+    let mut out = text.to_string();
+    let pairs = [
+        ("рублей", "₽"),
+        ("рубля", "₽"),
+        ("рубль", "₽"),
+        ("rubles", "₽"),
+        ("ruble", "₽"),
+        ("долларов", "$"),
+        ("доллара", "$"),
+        ("доллар", "$"),
+        ("dollars", "$"),
+        ("dollar", "$"),
+        ("евро", "€"),
+        ("euro", "€"),
+        ("euros", "€"),
+    ];
+    for (word, symbol) in pairs {
+        out = replace_amount_unit(&out, word, symbol);
+    }
+    out
+}
+
+fn replace_amount_unit(text: &str, unit: &str, symbol: &str) -> String {
+    map_lines(text, |line| replace_amount_unit_line(line, unit, symbol))
+}
+
+fn replace_amount_unit_line(text: &str, unit: &str, symbol: &str) -> String {
+    let tokens: Vec<&str> = text.split(' ').filter(|t| !t.is_empty()).collect();
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < tokens.len() {
+        if i + 1 < tokens.len()
+            && tokens[i]
+                .chars()
+                .all(|c| c.is_ascii_digit() || c == '.' || c == ',')
+            && eq_ci(trim_punct(tokens[i + 1]), unit)
+        {
+            out.push(format!("{}\u{00a0}{symbol}", tokens[i]));
+            i += 2;
+            continue;
+        }
+        out.push(tokens[i].to_string());
+        i += 1;
+    }
+    out.join(" ")
+}
+
+fn collapse_phone_runs(text: &str) -> String {
+    map_lines(text, collapse_phone_runs_line)
+}
+
+fn collapse_phone_runs_line(text: &str) -> String {
+    let tokens: Vec<&str> = text.split_whitespace().collect();
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < tokens.len() {
+        let mut j = i;
+        let mut digits = String::new();
+        while j < tokens.len() {
+            let token = tokens[j];
+            let d: String = token.chars().filter(|c| c.is_ascii_digit()).collect();
+            let phoneish = !d.is_empty()
+                && token
+                    .chars()
+                    .all(|c| c.is_ascii_digit() || matches!(c, '+' | '-' | '(' | ')'));
+            if !phoneish {
+                break;
+            }
+            digits.push_str(&d);
+            j += 1;
+            if digits.len() > 15 {
+                break;
+            }
+        }
+        if (10..=15).contains(&digits.len()) && j > i + 1 {
+            out.push(digits);
+            i = j;
+            continue;
+        }
+        out.push(tokens[i].to_string());
+        i += 1;
+    }
+    out.join(" ")
+}
+
+fn collapse_fractions(text: &str) -> String {
+    map_lines(text, collapse_fractions_line)
+}
+
+fn collapse_fractions_line(text: &str) -> String {
+    let tokens: Vec<&str> = text.split_whitespace().collect();
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < tokens.len() {
+        if i + 2 < tokens.len()
+            && tokens[i].chars().all(|c| c.is_ascii_digit())
+            && tokens[i + 1] == "/"
+            && tokens[i + 2].chars().all(|c| c.is_ascii_digit())
+        {
+            out.push(format!("{}/{}", tokens[i], tokens[i + 2]));
+            i += 3;
+            continue;
+        }
+        out.push(tokens[i].to_string());
+        i += 1;
+    }
+    out.join(" ")
+}
+
+fn apply_nbsp_units(text: &str) -> String {
+    map_lines(text, apply_nbsp_units_line)
+}
+
+fn apply_nbsp_units_line(text: &str) -> String {
+    const UNITS: &[&str] = &[
+        "кг", "км", "см", "мм", "мг", "мл", "квт", "мб", "гб", "тб", "мс", "мин", "кгс", "%", "₽",
+        "$", "€", "kg", "km", "mb", "gb", "ms",
+    ];
+    let tokens: Vec<&str> = text.split(' ').filter(|t| !t.is_empty()).collect();
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < tokens.len() {
+        if i + 1 < tokens.len()
+            && tokens[i].chars().next().is_some_and(|c| c.is_ascii_digit())
+            && UNITS.iter().any(|u| eq_ci(trim_punct(tokens[i + 1]), u))
+        {
+            out.push(format!("{}\u{00a0}{}", tokens[i], tokens[i + 1]));
+            i += 2;
+            continue;
+        }
+        out.push(tokens[i].to_string());
+        i += 1;
+    }
+    out.join(" ")
+}
+
+fn uppercase_abbreviations(text: &str) -> String {
+    map_lines(text, uppercase_abbreviations_line)
+}
+
+fn uppercase_abbreviations_line(text: &str) -> String {
+    const KNOWN: &[&str] = &[
+        "ооо", "зао", "оао", "сша", "рф", "api", "sql", "http", "https", "url", "cpu", "gpu",
+        "ram", "ssd", "usb", "html", "css", "json",
+    ];
+    text.split_whitespace()
+        .map(|token| {
+            let core = trim_punct(token);
+            if KNOWN.iter().any(|k| eq_ci(core, k)) {
+                token.replace(core, &core.to_uppercase())
+            } else {
+                token.to_string()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn strip_cyrillic_tail_on_latin(text: &str) -> String {
+    map_lines(text, strip_cyrillic_tail_on_latin_line)
+}
+
+fn strip_cyrillic_tail_on_latin_line(text: &str) -> String {
+    text.split_whitespace()
+        .map(|token| {
+            let chars: Vec<char> = token.chars().collect();
+            let latin = chars.iter().filter(|c| c.is_ascii_alphabetic()).count();
+            let cyr = chars
+                .iter()
+                .filter(|c| ('\u{0400}'..='\u{04FF}').contains(*c))
+                .count();
+            if latin >= 3 && cyr > 0 && cyr <= 2 {
+                chars
+                    .into_iter()
+                    .filter(|c| !('\u{0400}'..='\u{04FF}').contains(c))
+                    .collect()
+            } else {
+                token.to_string()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 fn spoken_numbers_to_digits(text: &str) -> String {
@@ -955,5 +1222,42 @@ mod tests {
             "маркированный список тире молоко тире хлеб",
         );
         assert!(dashes.contains('•'), "{dashes}");
+    }
+
+    #[test]
+    fn money_email_url_phone_and_units() {
+        assert_eq!(
+            normalize_spoken_values("оплата 100 рублей", PipelineMode::Normal, true, "DMY"),
+            "оплата 100\u{00a0}₽"
+        );
+        let mail = normalize_spoken_values(
+            &format_smart(PipelineMode::Normal, "user собака gmail точка com"),
+            PipelineMode::Normal,
+            true,
+            "DMY",
+        );
+        assert!(mail.to_lowercase().contains("user@gmail.com"), "{mail}");
+        let url = normalize_spoken_values("www . example . com", PipelineMode::Normal, true, "DMY");
+        assert!(url.contains("www.example.com"), "{url}");
+        assert_eq!(
+            normalize_spoken_values("8 900 123 45 67", PipelineMode::Normal, true, "DMY"),
+            "89001234567"
+        );
+        assert!(
+            normalize_spoken_values("10 кг", PipelineMode::Normal, true, "DMY")
+                .contains('\u{00a0}')
+        );
+        assert_eq!(
+            format_smart(PipelineMode::Normal, "это это проверка"),
+            "Это проверка."
+        );
+        assert_eq!(
+            format_smart(PipelineMode::Normal, "npm install"),
+            "npm install."
+        );
+        assert_eq!(
+            strip_cyrillic_tail_on_latin("GitHubе рядом"),
+            "GitHub рядом"
+        );
     }
 }

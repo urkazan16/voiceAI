@@ -4,8 +4,24 @@
 
 use crate::error::{LfError, LfResult};
 use serde::{Deserialize, Serialize};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
+
+static LAST_STREAM_ERROR: OnceLock<Mutex<Option<String>>> = OnceLock::new();
+
+fn stream_error_slot() -> &'static Mutex<Option<String>> {
+    LAST_STREAM_ERROR.get_or_init(|| Mutex::new(None))
+}
+
+pub fn take_stream_error() -> Option<String> {
+    stream_error_slot().lock().ok().and_then(|mut g| g.take())
+}
+
+fn remember_stream_error(message: String) {
+    if let Ok(mut slot) = stream_error_slot().lock() {
+        *slot = Some(message);
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct AudioDevice {
@@ -156,7 +172,11 @@ pub fn start_capture(preferred_name: Option<&str>) -> LfResult<LiveCapture> {
     let channels = config.channels();
     let samples = Arc::new(Mutex::new(Vec::new()));
     let writer = samples.clone();
-    let err_fn = |err| eprintln!("audio stream error: {err}");
+    let err_fn = |err: cpal::StreamError| {
+        let message = err.to_string();
+        remember_stream_error(message.clone());
+        eprintln!("audio stream error: {message}");
+    };
     let stream = match config.sample_format() {
         cpal::SampleFormat::F32 => device
             .build_input_stream(
@@ -273,8 +293,21 @@ fn map_capture_error(message: String) -> LfError {
         || lower.contains("not authorized")
         || lower.contains("errorkisdenied")
         || lower.contains("-54")
+        || lower.contains("busy")
+        || lower.contains("in use")
+        || lower.contains("occupied")
     {
-        LfError::PermissionDenied("Microphone permission is required for dictation".into())
+        if lower.contains("busy") || lower.contains("in use") || lower.contains("occupied") {
+            LfError::DeviceUnavailable(format!("busy: {message}"))
+        } else {
+            LfError::PermissionDenied("Microphone permission is required for dictation".into())
+        }
+    } else if lower.contains("unplug")
+        || lower.contains("disconnect")
+        || lower.contains("not connected")
+        || lower.contains("removed")
+    {
+        LfError::DeviceUnavailable(format!("disconnected: {message}"))
     } else {
         LfError::DeviceUnavailable(message)
     }
@@ -316,5 +349,15 @@ mod tests {
     fn permission_errors_are_not_generic_device_unavailable() {
         let err = map_capture_error("PermissionDenied".into());
         assert_eq!(err.code(), "PERMISSION_DENIED");
+    }
+
+    #[test]
+    fn busy_and_disconnect_errors_keep_device_unavailable_code() {
+        let busy = map_capture_error("Device is busy".into());
+        assert_eq!(busy.code(), "DEVICE_UNAVAILABLE");
+        assert!(busy.to_string().to_lowercase().contains("busy"));
+        let gone = map_capture_error("device disconnected".into());
+        assert_eq!(gone.code(), "DEVICE_UNAVAILABLE");
+        assert!(gone.to_string().to_lowercase().contains("disconnect"));
     }
 }

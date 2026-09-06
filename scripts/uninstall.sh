@@ -10,7 +10,13 @@ elif [[ -t 0 ]]; then
   fi
 fi
 ROOT="${LOCALFLOW_DATA_DIR:-$HOME/Library/Application Support/LocalFlow}"
+AGENT="${HOME}/Library/LaunchAgents/app.localflow.desktop.plist"
 echo "Uninstalling LocalFlow data in $ROOT"
+if [[ -f "$AGENT" ]]; then
+  launchctl unload -w "$AGENT" 2>/dev/null || true
+  rm -f "$AGENT"
+  echo "removed autostart $AGENT"
+fi
 REMOVED=()
 skip_rm() { echo "skip $1"; }
 rm_path() {
