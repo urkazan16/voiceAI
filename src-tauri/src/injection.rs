@@ -83,6 +83,18 @@ pub fn take_clipboard_backup() -> Option<String> {
     Some(text)
 }
 
+/// Cmd+V contract used by macOS insertion: insert at the caret, or replace an
+/// existing selection. LocalFlow never Select-All before paste.
+pub fn apply_native_paste(haystack: &str, sel_start: usize, sel_end: usize, clip: &str) -> String {
+    let chars: Vec<char> = haystack.chars().collect();
+    let start = sel_start.min(chars.len());
+    let end = sel_end.min(chars.len()).max(start);
+    let mut out: String = chars[..start].iter().collect();
+    out.push_str(clip);
+    out.extend(chars[end..].iter().copied());
+    out
+}
+
 pub fn restore_orphaned_clipboard() {
     #[cfg(target_os = "macos")]
     {
@@ -574,6 +586,40 @@ mod tests {
         let inj = MemoryInjector::default();
         inj.insert_text("hello", true).unwrap();
         assert_eq!(inj.last.lock().unwrap().clone(), Some("hello".into()));
+    }
+
+    #[test]
+    fn k17_paste_inserts_in_the_middle_of_existing_text() {
+        assert_eq!(
+            apply_native_paste("LEFT RIGHT", 5, 5, "MID "),
+            "LEFT MID RIGHT"
+        );
+        assert_eq!(apply_native_paste("абв", 1, 1, "—"), "а—бв");
+    }
+
+    #[test]
+    fn k18_paste_replaces_the_selection() {
+        assert_eq!(
+            apply_native_paste("hello world", 6, 11, "there"),
+            "hello there"
+        );
+        assert_eq!(
+            apply_native_paste("раз два три", 4, 7, "ДВА"),
+            "раз ДВА три"
+        );
+    }
+
+    #[test]
+    fn paste_posts_command_v_and_never_select_all() {
+        let prod = include_str!("injection.rs")
+            .split("#[cfg(test)]")
+            .next()
+            .unwrap();
+        assert!(prod.contains("VK_ANSI_V"), "paste must send Command+V");
+        assert!(
+            !prod.contains("VK_ANSI_A"),
+            "Select-All would wipe the field and break mid-text insert"
+        );
     }
 
     #[test]

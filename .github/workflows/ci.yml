@@ -62,6 +62,7 @@ jobs:
       - run: npm ci
       - run: cargo fetch --manifest-path src-tauri/Cargo.toml --locked
       - run: npm run license:check
+      - run: npm run uniqueness:check
 
   security:
     name: security

@@ -104,6 +104,11 @@ const metadata = JSON.parse(cargo.stdout);
 for (const item of metadata.packages) {
   if (!item.source) continue;
   const license = item.license ?? "";
+  const licenseFile = item.license_file ?? "";
+  if (!license && !licenseFile) {
+    console.error(`LICENSE FAIL cargo ${item.name}: missing license and license-file`);
+    process.exit(1);
+  }
   if (!license) continue;
   if (failCopyleft(license, item.name)) process.exit(1);
   if (!allowed(license)) {

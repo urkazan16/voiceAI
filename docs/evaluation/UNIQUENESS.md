@@ -79,4 +79,5 @@ PY
 - [x] Report lives in the solution: `docs/evaluation/UNIQUENESS.md`
 - [x] Linked from `README.md` (License)
 - [x] Third-party texts: `NOTICE`, `licenses/`
+- [x] CI step `npm run uniqueness:check` (job `license`) fails if the report is missing or unlinked
 - [ ] External anti-plagiarism PDF — add here only if a university portal export is required

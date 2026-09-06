@@ -61,6 +61,7 @@ There are no secret environment variables and no absolute developer paths in the
 | `npm run build:release` | Checks UI, builds Rust, packages `.app`/`.dmg`, SBOM, SHA-256    |
 | `npm run check:local`   | Offline checker (WER + VAD SNR 15 dB), no network                |
 | `npm run license:check` | Dependency license allowlist                                     |
+| `npm run uniqueness:check` | Confirms `docs/evaluation/UNIQUENESS.md` is attached           |
 
 Headless CLI (no window):
 

@@ -9,6 +9,7 @@ Pull requests must pass:
 - tests
 - formatter / lint (`npm run check`)
 - license scan (`npm run license:check`)
+- uniqueness report attached (`npm run uniqueness:check`)
 - security scan (`npm audit` / `cargo audit` when available)
 - build
 
