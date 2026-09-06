@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { formatBytes, NAV } from "../../src/ui";
+import { formatBytes, NAV, navItems } from "../../src/ui";
 
 describe("ui helpers", () => {
   it("formats gigabyte model sizes", () => {
@@ -20,5 +20,9 @@ describe("ui helpers", () => {
         "Privacy",
       ]),
     );
+  });
+
+  it("keeps the same screens in Russian", () => {
+    expect(navItems("ru").map((item) => item.id)).toEqual(NAV.map((item) => item.id));
   });
 });

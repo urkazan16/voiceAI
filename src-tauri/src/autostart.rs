@@ -1,6 +1,7 @@
 use crate::error::{LfError, LfResult};
 use std::fs;
 use std::path::PathBuf;
+use std::process::{Command, Stdio};
 
 const LABEL: &str = "app.localflow.desktop";
 
@@ -14,6 +15,16 @@ pub fn apply(enabled: bool) -> LfResult<()> {
         let _ = enabled;
         Ok(())
     }
+}
+
+#[cfg(target_os = "macos")]
+fn launchctl(args: &[&str]) {
+    let _ = Command::new("launchctl")
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
 }
 
 #[cfg(target_os = "macos")]
@@ -41,29 +52,24 @@ fn apply_macos(enabled: bool) -> LfResult<()> {
             fs::create_dir_all(parent)?;
         }
         fs::write(&plist, body)?;
-        let _ = std::process::Command::new("launchctl")
-            .args(["bootout", &domain])
-            .status();
-        let status = std::process::Command::new("launchctl")
+        launchctl(&["bootout", &domain]);
+        let status = Command::new("launchctl")
             .args([
                 "bootstrap",
                 &format!("gui/{uid}"),
                 plist.to_str().unwrap_or(""),
             ])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
             .status()
             .map_err(|e| LfError::Other(e.to_string()))?;
         if !status.success() {
-            let _ = std::process::Command::new("launchctl")
-                .args(["load", "-w", plist.to_str().unwrap_or("")])
-                .status();
+            launchctl(&["load", "-w", plist.to_str().unwrap_or("")]);
         }
-    } else {
-        let _ = std::process::Command::new("launchctl")
-            .args(["bootout", &domain])
-            .status();
-        let _ = std::process::Command::new("launchctl")
-            .args(["unload", "-w", plist.to_str().unwrap_or("")])
-            .status();
+    } else if plist.exists() {
+        launchctl(&["bootout", &domain]);
+        launchctl(&["unload", "-w", plist.to_str().unwrap_or("")]);
         let _ = fs::remove_file(&plist);
     }
     Ok(())
@@ -96,6 +102,12 @@ fn libc_getuid() -> u32 {
 mod tests {
     #[test]
     fn disable_is_idempotent() {
+        super::apply(false).unwrap();
+    }
+
+    #[test]
+    fn disable_when_agent_missing_is_silent_ok() {
+        super::apply(false).unwrap();
         super::apply(false).unwrap();
     }
 }

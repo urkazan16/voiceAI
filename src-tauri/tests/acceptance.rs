@@ -318,3 +318,15 @@ fn scripted_pipeline_writes_jsonl_journal() {
     assert!(rows[0].timezone.starts_with('+') || rows[0].timezone.starts_with('-'));
     assert_eq!(rows[0].insert_method, "clipboard");
 }
+
+#[test]
+fn first_install_open_is_local_and_unonboarded() {
+    let dir = tempdir().unwrap();
+    let eng =
+        localflow_lib::engine::AppEngine::open(DataPaths::from_override(dir.path().to_path_buf()))
+            .unwrap();
+    assert!(!eng.settings.onboarding_complete);
+    assert!(eng.paths.settings_file().exists());
+    assert!(eng.paths.database_dir().is_dir());
+    localflow_lib::autostart::apply(false).unwrap();
+}

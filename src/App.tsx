@@ -23,7 +23,7 @@ import {
   type DiskUsage,
   type ViewId,
 } from "./api";
-import { formatBytes, navItems } from "./ui";
+import { copy, formatBytes, navItems } from "./ui";
 import { listen } from "@tauri-apps/api/event";
 
 const fallbackSettings = (): AppSettings => ({
@@ -80,33 +80,33 @@ function describeSelectedModel(
   id: string | null | undefined,
   models: ModelRecord[],
   statuses: ModelInstallStatus[],
+  lang: string,
 ): { id: string | null; name: string; ready: boolean; detail: string; version: string } {
+  const t = copy(lang);
   if (!id) {
     return {
       id: null,
-      name: "Not selected",
+      name: t.modelNotSelected,
       ready: false,
-      detail: "Choose a model below.",
+      detail: t.modelChoose,
       version: "",
     };
   }
   const record = models.find((model) => model.model_id === id);
   const status = statuses.find((item) => item.model_id === id);
   const name = record?.display_name ?? id;
-  const version = record
-    ? `${record.version} · ${record.filename}`
-    : "";
+  const version = record ? `${record.version} · ${record.filename}` : "";
   const ready = status?.state === "verified" || status?.state === "installed";
   if (ready) {
-    return { id, name, ready: true, detail: "Ready on this Mac.", version };
+    return { id, name, ready: true, detail: t.modelReady, version };
   }
   if (status?.state === "downloading" || status?.state === "incomplete") {
-    return { id, name, ready: false, detail: "Download in progress — not used yet.", version };
+    return { id, name, ready: false, detail: t.modelDownloading, version };
   }
   if (status?.state === "unverified") {
-    return { id, name, ready: false, detail: "File failed checksum — not used.", version };
+    return { id, name, ready: false, detail: t.modelChecksum, version };
   }
-  return { id, name, ready: false, detail: "Selected but not installed.", version };
+  return { id, name, ready: false, detail: t.modelNotInstalled, version };
 }
 
 export function App() {
@@ -213,10 +213,7 @@ export function App() {
         setStatus(`Hotkey not registered: ${hotkey.error}`);
       }
       setView((current) => {
-        if (!nextSettings.onboarding_complete) {
-          return "onboarding";
-        }
-        if (current === "onboarding") {
+        if (current === "onboarding" && nextSettings.onboarding_complete) {
           return "home";
         }
         return current;
@@ -379,120 +376,29 @@ export function App() {
     }
   }
 
-  if (view === "onboarding") {
-    const sttId = settings.active_stt_model;
-    const sttRecord = models.find((model) => model.model_id === sttId);
-    const sttStatus = modelStatus.find((item) => item.model_id === sttId);
-    const sttProgress = sttId ? downloadProgress[sttId] : undefined;
-    const sttReady = Boolean(
-      sttStatus &&
-        (sttStatus.verified || sttStatus.state === "verified" || sttStatus.state === "installed") &&
-        sttStatus.active,
-    );
-    const sttBusy =
-      sttStatus?.state === "downloading" ||
-      sttStatus?.state === "incomplete" ||
-      sttProgress?.phase === "downloading" ||
-      sttProgress?.phase === "verifying" ||
-      sttProgress?.phase === "installing";
-    const bytes = Math.max(sttStatus?.bytes_on_disk ?? 0, sttProgress?.bytes_downloaded ?? 0);
-    const total = sttStatus?.expected_bytes || sttRecord?.size || sttProgress?.total_bytes || 0;
-    const percent = total > 0 ? Math.min(100, Math.round((bytes / total) * 100)) : 0;
-    return (
-      <div className="min-h-screen bg-ink px-10 py-12 text-paper">
-        <p className="text-copper tracking-[0.3em] text-xs uppercase">LocalFlow</p>
-        <h1 className="mt-4 max-w-2xl text-5xl leading-tight">
-          Speak. Release. Insert — entirely on this Mac.
-        </h1>
-        <ol className="mt-8 max-w-xl space-y-3 text-lg text-paper/80">
-          <li>1. Allow Microphone and Accessibility (paste into other apps).</li>
-          <li>2. Whisper Medium (~1.5 GB) downloads automatically on this screen (Hugging Face, checksum checked).</li>
-          <li>3. Hold Control+Shift+Space over a text field, talk, release.</li>
-        </ol>
-        <div className="mt-8 flex flex-wrap gap-3">
-          <button
-            className="rounded-full border border-paper/30 px-4 py-2"
-            onClick={() => void api.openPrivacyPane("microphone")}
-          >
-            Open Microphone settings
-          </button>
-          <button
-            className="rounded-full border border-paper/30 px-4 py-2"
-            onClick={() => void api.openPrivacyPane("accessibility")}
-          >
-            Open Accessibility settings
-          </button>
-        </div>
-        <label className="mt-8 block max-w-xl text-sm text-paper/70">
-          Microphone
-          <select
-            className="mt-1 w-full rounded-lg bg-paper/10 p-2 text-paper"
-            value={settings.microphone_name ?? ""}
-            onChange={(e) =>
-              void save({
-                ...settings,
-                microphone_name: e.target.value === "" ? null : e.target.value,
-              })
-            }
-          >
-            <option value="">System default</option>
-            {microphones.map((device) => (
-              <option key={device.name} value={device.name}>
-                {device.name}
-                {device.is_default ? " (OS default)" : ""}
-              </option>
-            ))}
-          </select>
-        </label>
-        <p className="mt-3 max-w-xl text-sm text-paper/50">
-          {sttReady
-            ? `${sttRecord?.display_name ?? "Whisper"} is installed and will be used for dictation.`
-            : sttBusy
-              ? `Downloading ${sttRecord?.display_name ?? "Whisper"} from Hugging Face… ${percent}%`
-              : "Whisper will download automatically. You can continue and let it finish in the background."}
-          {permissions
-            ? ` Accessibility: ${permissions.accessibility_trusted ? "trusted" : "not trusted yet"}.`
-            : ""}
-        </p>
-        {sttBusy && (
-          <div className="mt-3 max-w-xl">
-            <div className="h-2 overflow-hidden rounded-full bg-paper/10">
-              <div className="h-full bg-copper" style={{ width: `${percent}%` }} />
-            </div>
-          </div>
-        )}
-        <button
-          className="mt-10 rounded-full bg-copper px-6 py-3 text-ink"
-          onClick={async () => {
-            try {
-              await api.completeOnboarding();
-            } catch {
-              /* preview */
-            }
-            setView("home");
-          }}
-        >
-          Continue
-        </button>
-      </div>
-    );
-  }
+  const t = copy(settings.ui_language);
+  const menu = [
+    ...(!settings.onboarding_complete
+      ? [{ id: "onboarding" as const, label: t.setupNav }]
+      : []),
+    ...navItems(settings.ui_language),
+  ];
 
   return (
-    <div className="flex min-h-screen bg-ink text-paper">
-      <aside className="w-56 border-r border-paper/10 px-5 py-8">
+    <div className="flex h-screen overflow-hidden bg-ink text-paper">
+      <aside className="w-56 shrink-0 overflow-y-auto border-r border-paper/10 px-5 py-8">
         <p className="text-copper text-xs tracking-[0.25em] uppercase">LocalFlow</p>
         <p className="mt-3 text-xs leading-relaxed text-paper/70">{status}</p>
         {!isTauriRuntime() && (
           <p className="mt-4 rounded-lg bg-copper/20 p-3 text-xs leading-relaxed text-paper">
-            This browser tab cannot talk to Rust. Keep <code>npm run tauri dev</code> running and
-            use the LocalFlow window (it should open itself).
+            {t.browserHint}
           </p>
         )}
         <nav className="mt-8 space-y-1">
-          {navItems(settings.ui_language).map((item) => (
+          {menu.map((item) => (
             <button
               key={item.id}
+              type="button"
               onClick={() => setView(item.id as ViewId)}
               className={`block w-full rounded-lg px-3 py-2 text-left ${
                 view === item.id ? "bg-paper/10 text-paper" : "text-paper/60 hover:text-paper"
@@ -503,10 +409,117 @@ export function App() {
           ))}
         </nav>
       </aside>
-      <main className="flex-1 px-10 py-8">
+      <main className="min-w-0 flex-1 overflow-y-auto px-10 py-8">
+        {view === "onboarding" && (
+          <section>
+            <h1 className="max-w-2xl text-5xl leading-tight">{t.onboardingTitle}</h1>
+            <ol className="mt-8 max-w-xl space-y-3 text-lg text-paper/80">
+              <li>{t.onboarding1}</li>
+              <li>{t.onboarding2}</li>
+              <li>{t.onboarding3}</li>
+            </ol>
+            <div className="mt-8 flex flex-wrap gap-3">
+              <button
+                className="rounded-full border border-paper/30 px-4 py-2"
+                onClick={() => void api.openPrivacyPane("microphone")}
+              >
+                {t.openMicSettings}
+              </button>
+              <button
+                className="rounded-full border border-paper/30 px-4 py-2"
+                onClick={() => void api.openPrivacyPane("accessibility")}
+              >
+                {t.openAccessSettings}
+              </button>
+            </div>
+            <label className="mt-8 block max-w-xl text-sm text-paper/70">
+              {t.microphone}
+              <select
+                className="mt-1 w-full rounded-lg bg-paper/10 p-2 text-paper"
+                value={settings.microphone_name ?? ""}
+                onChange={(e) =>
+                  void save({
+                    ...settings,
+                    microphone_name: e.target.value === "" ? null : e.target.value,
+                  })
+                }
+              >
+                <option value="">{t.systemDefault}</option>
+                {microphones.map((device) => (
+                  <option key={device.name} value={device.name}>
+                    {device.name}
+                    {device.is_default ? t.osDefault : ""}
+                  </option>
+                ))}
+              </select>
+            </label>
+            {(() => {
+              const sttId = settings.active_stt_model;
+              const sttRecord = models.find((model) => model.model_id === sttId);
+              const sttStatus = modelStatus.find((item) => item.model_id === sttId);
+              const sttProgress = sttId ? downloadProgress[sttId] : undefined;
+              const sttReady = Boolean(
+                sttStatus &&
+                  (sttStatus.verified ||
+                    sttStatus.state === "verified" ||
+                    sttStatus.state === "installed") &&
+                  sttStatus.active,
+              );
+              const sttBusy =
+                sttStatus?.state === "downloading" ||
+                sttStatus?.state === "incomplete" ||
+                sttProgress?.phase === "downloading" ||
+                sttProgress?.phase === "verifying" ||
+                sttProgress?.phase === "installing";
+              const bytes = Math.max(
+                sttStatus?.bytes_on_disk ?? 0,
+                sttProgress?.bytes_downloaded ?? 0,
+              );
+              const total =
+                sttStatus?.expected_bytes || sttRecord?.size || sttProgress?.total_bytes || 0;
+              const percent = total > 0 ? Math.min(100, Math.round((bytes / total) * 100)) : 0;
+              return (
+                <>
+                  <p className="mt-3 max-w-xl text-sm text-paper/50">
+                    {sttReady
+                      ? `${sttRecord?.display_name ?? "Whisper"} ${t.sttReady}`
+                      : sttBusy
+                        ? `${t.sttDownloading} ${percent}%`
+                        : t.sttWillDownload}
+                    {permissions
+                      ? permissions.accessibility_trusted
+                        ? t.accessibilityTrusted
+                        : t.accessibilityNotTrusted
+                      : ""}
+                  </p>
+                  {sttBusy && (
+                    <div className="mt-3 max-w-xl">
+                      <div className="h-2 overflow-hidden rounded-full bg-paper/10">
+                        <div className="h-full bg-copper" style={{ width: `${percent}%` }} />
+                      </div>
+                    </div>
+                  )}
+                </>
+              );
+            })()}
+            <button
+              className="mt-10 rounded-full bg-copper px-6 py-3 text-ink"
+              onClick={async () => {
+                try {
+                  await api.completeOnboarding();
+                } catch {
+                  /* preview */
+                }
+                setView("home");
+              }}
+            >
+              {t.continue}
+            </button>
+          </section>
+        )}
         {view === "home" && (
           <section>
-            <h1 className="text-4xl">Dictation pipeline</h1>
+            <h1 className="text-4xl">{t.homeTitle}</h1>
             {(() => {
               const sttId = settings.active_stt_model;
               const sttRecord = models.find((model) => model.model_id === sttId);
@@ -533,29 +546,27 @@ export function App() {
               return (
                 <p className="mt-3 rounded-xl border border-copper/40 bg-copper/10 px-4 py-3 text-sm">
                   {busy
-                    ? `Downloading ${sttRecord?.display_name ?? "Whisper"} (${percent}%). Dictation starts when the checksum passes.`
-                    : "Whisper is not ready. LocalFlow downloads it automatically — stay online, or open Models to retry."}
+                    ? `${t.downloadBusy} ${sttRecord?.display_name ?? "Whisper"} (${percent}%). ${t.downloadWait}`
+                    : t.whisperNotReady}
                   <button className="ml-3 underline" onClick={() => setView("models")}>
-                    Open Models
+                    {t.openModels}
                   </button>
                 </p>
               );
             })()}
             {context && (
               <p className="mt-3 rounded-xl bg-paper/5 px-4 py-2 text-sm text-paper/80">
-                Current app: {context.app_name || "—"} / Profile: {context.profile_name} (
+                {t.currentApp}: {context.app_name || "—"} / {t.profile}: {context.profile_name} (
                 {context.style || context.mode}, {context.source})
               </p>
             )}
             <p className="mt-2 text-paper/70">{status}</p>
             <p className="mt-1 text-sm text-paper/50">
-              Type a sample and click Process locally, or hold the hotkey over a field. Whisper.cpp
-              transcribes when the model is installed. Escape cancels. Cmd+Ctrl+C/V copy or paste
-              the last transcript.
+              {t.homeHelp}
             </p>
             <textarea
               className="mt-6 h-32 w-full rounded-2xl border border-paper/15 bg-paper/5 p-4"
-              placeholder="Preview a transcript without the microphone"
+              placeholder={t.homePlaceholder}
               value={draft}
               onChange={(e) => setDraft(e.target.value)}
             />
@@ -578,20 +589,20 @@ export function App() {
                 }
               }}
             >
-              Process locally
+              {t.processLocally}
             </button>
             {pipelineOut && (
               <dl className="mt-6 space-y-2 rounded-2xl border border-paper/10 p-4 text-sm">
                 <div>
-                  <dt className="text-paper/50">Transcript</dt>
+                  <dt className="text-paper/50">{t.transcript}</dt>
                   <dd>{pipelineOut.raw_transcript}</dd>
                 </div>
                 <div>
-                  <dt className="text-paper/50">After dictionary</dt>
+                  <dt className="text-paper/50">{t.afterDictionary}</dt>
                   <dd>{pipelineOut.dictionary_text}</dd>
                 </div>
                 <div>
-                  <dt className="text-paper/50">Formed text</dt>
+                  <dt className="text-paper/50">{t.formedText}</dt>
                   <dd className="text-lg">{pipelineOut.final_text}</dd>
                 </div>
                 {pipelineOut.insert_ok === false && pipelineOut.final_text && (
@@ -615,7 +626,7 @@ export function App() {
                           .then(() => setStatus("Pasted last transcript."))
                       }
                     >
-                      Paste last
+                      {t.pasteLast}
                     </button>
                     <button
                       className="rounded-full border border-paper/30 px-3 py-1"
@@ -636,7 +647,7 @@ export function App() {
 
         {view === "settings" && (
           <section className="max-w-xl space-y-4">
-            <h1 className="text-4xl">Settings</h1>
+            <h1 className="text-4xl">{t.settingsTitle}</h1>
             {diskUsage && (
               <div
                 className={`rounded-2xl border p-4 text-sm ${
@@ -645,13 +656,13 @@ export function App() {
                     : "border-copper/50 bg-copper/10"
                 }`}
               >
-                <p className="text-xs uppercase tracking-[0.2em] text-copper">Disk space</p>
+                <p className="text-xs uppercase tracking-[0.2em] text-copper">{t.diskSpace}</p>
                 {diskUsage.free_bytes != null && (
                   <p className="mt-2 text-lg tabular-nums">
-                    {formatBytes(diskUsage.free_bytes)} free
+                    {formatBytes(diskUsage.free_bytes)} {t.free}
                     {diskUsage.stt_still_needed_bytes > 0
-                      ? ` · speech still needs ${formatBytes(diskUsage.stt_still_needed_bytes)}`
-                      : " · speech model fits"}
+                      ? ` · ${t.speechNeeds} ${formatBytes(diskUsage.stt_still_needed_bytes)}`
+                      : ` · ${t.speechFits}`}
                   </p>
                 )}
                 <ul className="mt-2 space-y-1 text-paper/80">
@@ -662,7 +673,7 @@ export function App() {
               </div>
             )}
             <label className="block text-sm text-paper/70">
-              Hotkey (Tauri syntax, e.g. Control+Shift+Space)
+              {t.hotkeyLabel}
               <input
                 className="mt-1 w-full rounded-lg bg-paper/10 p-2"
                 value={settings.hotkey}
@@ -670,28 +681,25 @@ export function App() {
               />
             </label>
             <p className="text-xs text-paper/60">
-              Option+Space and Control+Space are often taken by macOS (Spotlight / input source).
-              Check System Settings → Keyboard → Keyboard Shortcuts. Changing the hotkey here
-              re-registers it immediately.
+              {t.hotkeyHelp}
             </p>
             <label className="block text-sm text-paper/70">
-              Speech language
+              {t.speechLanguage}
               <select
                 className="mt-1 w-full rounded-lg bg-paper/10 p-2"
                 value={settings.stt_language}
                 onChange={(e) => void save({ ...settings, stt_language: e.target.value })}
               >
-                <option value="ru">Russian</option>
-                <option value="en">English</option>
-                <option value="auto">Auto-detect</option>
+                <option value="ru">{t.langRussian}</option>
+                <option value="en">{t.langEnglish}</option>
+                <option value="auto">{t.langAuto}</option>
               </select>
             </label>
             <p className="text-xs text-paper/60">
-              Russian is more accurate for Russian-only speech. Use Auto-detect when a replica
-              mixes Russian and English so Whisper can switch language inside the clip.
+              {t.speechLangHelp}
             </p>
             <label className="block text-sm text-paper/70">
-              Interface language
+              {t.interfaceLanguage}
               <select
                 className="mt-1 w-full rounded-lg bg-paper/10 p-2"
                 value={settings.ui_language ?? "en"}
@@ -702,7 +710,7 @@ export function App() {
               </select>
             </label>
             <label className="block text-sm text-paper/70">
-              Microphone
+              {t.microphone}
               <select
                 className="mt-1 w-full rounded-lg bg-paper/10 p-2"
                 value={settings.microphone_name ?? ""}
@@ -713,11 +721,11 @@ export function App() {
                   })
                 }
               >
-                <option value="">System default</option>
+                <option value="">{t.systemDefault}</option>
                 {microphones.map((device) => (
                   <option key={device.name} value={device.name}>
                     {device.name}
-                    {device.is_default ? " (OS default)" : ""}
+                    {device.is_default ? t.osDefault : ""}
                   </option>
                 ))}
               </select>
@@ -727,26 +735,26 @@ export function App() {
               onClick={async () => {
                 try {
                   setMicrophones(await api.listMicrophones());
-                  setStatus("Microphone list refreshed.");
+                  setStatus(t.devicesRefreshed);
                 } catch (error) {
                   setStatus(error instanceof Error ? error.message : String(error));
                 }
               }}
             >
-              Refresh devices
+              {t.refreshDevices}
             </button>
             <div className="flex flex-wrap gap-2">
               <button
                 className="rounded-full border border-paper/30 px-4 py-2 text-sm"
                 onClick={() => void api.openPrivacyPane("microphone")}
               >
-                Microphone permission
+                {t.micPermission}
               </button>
               <button
                 className="rounded-full border border-paper/30 px-4 py-2 text-sm"
                 onClick={() => void api.openPrivacyPane("accessibility")}
               >
-                Accessibility permission
+                {t.accessPermission}
               </button>
             </div>
             {permissions && (
@@ -765,7 +773,7 @@ export function App() {
                 checked={settings.autostart}
                 onChange={(e) => void save({ ...settings, autostart: e.target.checked })}
               />
-              Launch at login
+              {t.launchAtLogin}
             </label>
             <label className="flex items-center gap-2 text-sm">
               <input
@@ -773,7 +781,7 @@ export function App() {
                 checked={settings.history_enabled}
                 onChange={(e) => void save({ ...settings, history_enabled: e.target.checked })}
               />
-              Keep utterance history and JSONL journal
+              {t.keepHistory}
             </label>
             <label className="flex items-center gap-2 text-sm">
               <input
@@ -781,7 +789,7 @@ export function App() {
                 checked={settings.keep_last_audio ?? true}
                 onChange={(e) => void save({ ...settings, keep_last_audio: e.target.checked })}
               />
-              Keep last utterance WAV for Repeat
+              {t.keepLastWav}
             </label>
             <button
               className="rounded-full border border-paper/30 px-4 py-2 text-sm"
@@ -789,20 +797,16 @@ export function App() {
                 try {
                   const next = await api.resetSettings();
                   setSettings(next);
-                  setStatus(
-                    settings.ui_language === "ru"
-                      ? "Настройки сброшены к значениям по умолчанию."
-                      : "Settings restored to defaults.",
-                  );
+                  setStatus(t.settingsReset);
                 } catch (err) {
                   setStatus(err instanceof Error ? err.message : String(err));
                 }
               }}
             >
-              {settings.ui_language === "ru" ? "Сбросить настройки" : "Reset settings to defaults"}
+              {t.resetSettings}
             </button>
             <label className="block text-sm text-paper/70">
-              History size (oldest rows are dropped)
+              {t.historySize}
               <input
                 className="mt-1 w-full rounded-lg bg-paper/10 p-2"
                 type="number"
@@ -818,7 +822,7 @@ export function App() {
               />
             </label>
             <label className="block text-sm text-paper/70">
-              Silence trim (VAD): {(settings.vad_threshold ?? 0.012).toFixed(3)}
+              {t.silenceTrim}: {(settings.vad_threshold ?? 0.012).toFixed(3)}
               <input
                 className="mt-1 w-full"
                 type="range"
@@ -831,11 +835,11 @@ export function App() {
                 }
               />
               <span className="text-xs text-paper/50">
-                Lower keeps quiet speech. Higher treats room noise as silence.
+                {t.vadHelp}
               </span>
             </label>
             <label className="block text-sm text-paper/70">
-              Fallback mode (used when no app profile matches)
+              {t.fallbackMode}
               <select
                 className="mt-1 w-full rounded-lg bg-paper/10 p-2"
                 value={settings.mode}
@@ -850,7 +854,7 @@ export function App() {
               </select>
             </label>
             <label className="block text-sm text-paper/70">
-              Profile override
+              {t.profileOverride}
               <select
                 className="mt-1 w-full rounded-lg bg-paper/10 p-2"
                 value={settings.profile_override ?? ""}
@@ -861,7 +865,7 @@ export function App() {
                   })
                 }
               >
-                <option value="">Auto (frontmost app)</option>
+                <option value="">{t.autoFrontmost}</option>
                 {profiles.map((profile) => (
                   <option key={profile.id} value={profile.id}>
                     {profile.name}
@@ -875,12 +879,10 @@ export function App() {
                 checked={settings.restore_clipboard}
                 onChange={(e) => void save({ ...settings, restore_clipboard: e.target.checked })}
               />
-              Restore clipboard after insert
+              {t.restoreClipboard}
             </label>
             <p className="text-xs text-paper/50">
-              Keeps the previous pasteboard (text, RTF, images) after Cmd+V. If the app
-              crashes mid-paste, the same snapshot is restored from disk. Password fields
-              block paste — use Copy last after leaving the field.
+              {t.clipboardHelp}
             </p>
             <label className="flex items-center gap-2 text-sm">
               <input
@@ -888,7 +890,7 @@ export function App() {
                 checked={settings.show_flow_bar}
                 onChange={(e) => void save({ ...settings, show_flow_bar: e.target.checked })}
               />
-              Show LocalFlow Bar while listening
+              {t.showFlowBar}
             </label>
             <label className="flex items-center gap-2 text-sm">
               <input
@@ -896,10 +898,10 @@ export function App() {
                 checked={settings.sound_cues}
                 onChange={(e) => void save({ ...settings, sound_cues: e.target.checked })}
               />
-              Play start/end recording sounds
+              {t.playCues}
             </label>
             <label className="block text-sm text-paper/70">
-              Cue volume
+              {t.cueVolume}
               <input
                 className="mt-1 w-full"
                 type="range"
@@ -913,7 +915,7 @@ export function App() {
               />
             </label>
             <label className="block text-sm text-paper/70">
-              Pause before insert (ms)
+              {t.pauseInsert}
               <input
                 className="mt-1 w-full rounded-lg bg-paper/10 p-2"
                 type="number"
@@ -931,8 +933,7 @@ export function App() {
                 checked={settings.hands_free}
                 onChange={(e) => void save({ ...settings, hands_free: e.target.checked })}
               />
-              Hands-free (press to start, press again to stop). Hold-to-talk stays the default when
-              this is off.
+              {t.handsFree}
             </label>
             <label className="flex items-center gap-2 text-sm">
               <input
@@ -940,10 +941,10 @@ export function App() {
                 checked={settings.digits_from_speech}
                 onChange={(e) => void save({ ...settings, digits_from_speech: e.target.checked })}
               />
-              Write spoken numbers as digits
+              {t.spokenDigits}
             </label>
             <label className="block text-sm text-paper/70">
-              Date format
+              {t.dateFormat}
               <select
                 className="mt-1 w-full rounded-lg bg-paper/10 p-2"
                 value={settings.date_format}
@@ -954,17 +955,17 @@ export function App() {
               </select>
             </label>
             <label className="block text-sm text-paper/70">
-              Acceleration device
+              {t.acceleration}
               <select
                 className="mt-1 w-full rounded-lg bg-paper/10 p-2"
                 value={settings.compute_device}
                 disabled
               >
-                <option value="cpu">CPU (this build)</option>
+                <option value="cpu">{t.cpuBuild}</option>
               </select>
             </label>
             <label className="block text-sm text-paper/70">
-              Post-processing timeout (ms)
+              {t.postTimeout}
               <input
                 className="mt-1 w-full rounded-lg bg-paper/10 p-2"
                 type="number"
@@ -986,10 +987,10 @@ export function App() {
                 setStatus(`Macro installed: ${path}. Double-click it to fire the talk hotkey.`);
               }}
             >
-              Install Dictate macro
+              {t.installMacro}
             </button>
             <label className="block text-sm text-paper/70">
-              Copy last transcript
+              {t.copyLastHotkey}
               <input
                 className="mt-1 w-full rounded-lg bg-paper/10 p-2"
                 value={settings.copy_last_hotkey}
@@ -997,7 +998,7 @@ export function App() {
               />
             </label>
             <label className="block text-sm text-paper/70">
-              Paste last transcript
+              {t.pasteLastHotkey}
               <input
                 className="mt-1 w-full rounded-lg bg-paper/10 p-2"
                 value={settings.paste_last_hotkey}
@@ -1005,7 +1006,7 @@ export function App() {
               />
             </label>
             <label className="block text-sm text-paper/70">
-              Edit selection (same hold-to-talk; paste replaces the highlight)
+              {t.editHotkey}
               <input
                 className="mt-1 w-full rounded-lg bg-paper/10 p-2"
                 value={settings.edit_hotkey ?? "Command+Control+E"}
@@ -1023,7 +1024,7 @@ export function App() {
                   }
                 }}
               >
-                Copy last
+                {t.copyLast}
               </button>
               <button
                 className="rounded-full border border-paper/30 px-4 py-2"
@@ -1035,7 +1036,7 @@ export function App() {
                   }
                 }}
               >
-                Paste last
+                      {t.pasteLast}
               </button>
             </div>
             <div className="flex gap-3">
@@ -1043,7 +1044,7 @@ export function App() {
                 className="rounded-full border border-paper/30 px-4 py-2"
                 onClick={async () => setConfigText(await api.exportConfiguration())}
               >
-                Export configuration
+                {t.exportConfig}
               </button>
               <button
                 className="rounded-full border border-paper/30 px-4 py-2"
@@ -1052,42 +1053,42 @@ export function App() {
                   await refresh();
                 }}
               >
-                Import configuration
+                {t.importConfig}
               </button>
             </div>
             <textarea
               className="h-40 w-full rounded-xl bg-paper/5 p-3 font-mono text-xs"
               value={configText}
               onChange={(e) => setConfigText(e.target.value)}
-              placeholder="Exported JSON appears here"
+              placeholder={t.exportPlaceholder}
             />
           </section>
         )}
 
         {view === "models" && (
           <section>
-            <h1 className="text-4xl">Model Manager</h1>
+            <h1 className="text-4xl">{t.modelsTitle}</h1>
             <p className="mt-2 max-w-2xl text-paper/70">
-              Speech default is Whisper Medium. Download it (or pick another Whisper), then Use this
-              for speech. Repeat re-runs the last recording through the speech model in use — it is
-              not a separate download. Qwen models are only for text formatting, not speech.
+              {t.modelsHelp}
             </p>
             {(() => {
               const speech = describeSelectedModel(
                 settings.active_stt_model,
                 models,
                 modelStatus,
+                settings.ui_language,
               );
               const formatting = describeSelectedModel(
                 settings.active_llm_model,
                 models,
                 modelStatus,
+                settings.ui_language,
               );
               return (
                 <div className="mt-4 grid gap-3 rounded-2xl border border-copper/50 bg-copper/10 p-4 sm:grid-cols-2">
                   <div>
                     <p className="text-xs uppercase tracking-[0.2em] text-copper">
-                      Currently in use · speech
+                      {t.inUseSpeech}
                     </p>
                     <p className="mt-1 text-lg">{speech.name}</p>
                     {speech.version && (
@@ -1128,7 +1129,7 @@ export function App() {
                   </div>
                   <div>
                     <p className="text-xs uppercase tracking-[0.2em] text-copper">
-                      Currently in use · formatting
+                      {t.inUseFormat}
                     </p>
                     <p className="mt-1 text-lg">{formatting.name}</p>
                     {formatting.version && (
@@ -1337,15 +1338,13 @@ export function App() {
 
         {view === "dictionary" && (
           <section className="max-w-2xl">
-            <h1 className="text-4xl">Dictionary 2.0</h1>
+            <h1 className="text-4xl">{t.dictionaryTitle}</h1>
             <p className="mt-2 text-sm text-paper/60">
-              Vocabulary keeps a canonical term plus aliases. Replacement Rule maps spoken phrases
-              to written text. Built-in developer terms (RestAssured, JUnit, …) are seeded
-              automatically.
+              {t.dictionaryHelp}
             </p>
             <input
               className="mt-4 w-full rounded-lg bg-paper/10 p-2"
-              placeholder="Search canonical or alias"
+              placeholder={t.searchPlaceholder}
               value={dictQuery}
               onChange={async (e) => {
                 const query = e.target.value;
@@ -1363,8 +1362,8 @@ export function App() {
                 value={dictKind}
                 onChange={(e) => setDictKind(e.target.value as DictionaryEntry["kind"])}
               >
-                <option value="replacement">Replacement Rule</option>
-                <option value="vocabulary">Vocabulary</option>
+                <option value="replacement">{t.replacementRule}</option>
+                <option value="vocabulary">{t.vocabulary}</option>
               </select>
               <input
                 className="flex-1 rounded-lg bg-paper/10 p-2"
@@ -1465,9 +1464,9 @@ export function App() {
 
         {view === "snippets" && (
           <section className="max-w-2xl">
-            <h1 className="text-4xl">Snippets</h1>
+            <h1 className="text-4xl">{t.snippetsTitle}</h1>
             <p className="mt-2 text-sm text-paper/60">
-              Exact trigger expands before the LLM. Priority: Command → Snippet → Dictionary.
+              {t.snippetsHelp}
             </p>
             <input
               className="mt-4 w-full rounded-lg bg-paper/10 p-2"
@@ -1526,7 +1525,7 @@ export function App() {
 
         {view === "profiles" && (
           <section className="max-w-2xl space-y-4">
-            <h1 className="text-4xl">Styles + application profiles</h1>
+            <h1 className="text-4xl">{t.profilesTitle}</h1>
             {context && (
               <p className="rounded-xl bg-paper/5 px-4 py-2 text-sm">
                 Current app: {context.app_name || "—"} / Profile: {context.profile_name}
@@ -1603,14 +1602,14 @@ export function App() {
                 setStatus("Profiles saved.");
               }}
             >
-              Save profiles
+              {t.saveProfiles}
             </button>
           </section>
         )}
 
         {view === "personalization" && (
           <section className="max-w-xl space-y-4">
-            <h1 className="text-4xl">Personalization</h1>
+            <h1 className="text-4xl">{t.personalizationTitle}</h1>
             <label className="flex items-center gap-2 text-sm">
               <input
                 type="checkbox"
@@ -1619,7 +1618,7 @@ export function App() {
                   void save({ ...settings, personalization_enabled: e.target.checked })
                 }
               />
-              Personalization ON
+              {t.personalizationOn}
             </label>
             <label className="flex items-center gap-2 text-sm">
               <input
@@ -1629,11 +1628,10 @@ export function App() {
                   void save({ ...settings, learn_from_corrections: e.target.checked })
                 }
               />
-              Learn from corrections
+              {t.learnCorrections}
             </label>
             <p className="text-sm text-paper/60">
-              First correction is a candidate. Repeat it to get a suggestion. Accept writes a
-              dictionary replacement rule.
+              {t.personalizationHelp}
             </p>
             <div className="flex gap-2">
               <input
@@ -1709,7 +1707,7 @@ export function App() {
         {view === "history" && (
           <section>
             <div className="flex items-center justify-between">
-              <h1 className="text-4xl">History</h1>
+              <h1 className="text-4xl">{t.historyTitle}</h1>
               <button
                 className="rounded-full border border-paper/30 px-4 py-2"
                 onClick={async () => {
@@ -1894,7 +1892,7 @@ export function App() {
 
         {view === "diagnostics" && build && (
           <section className="space-y-2 font-mono text-sm">
-            <h1 className="font-serif text-4xl">Diagnostics</h1>
+            <h1 className="font-serif text-4xl">{t.diagnosticsTitle}</h1>
             <p>
               Application: {build.application} {build.version}
             </p>
@@ -1950,20 +1948,20 @@ export function App() {
 
         {view === "privacy" && privacy && (
           <section className="max-w-xl space-y-3">
-            <h1 className="text-4xl">Privacy</h1>
-            <p>Core pipeline is local. Cloud accounts are not required.</p>
+            <h1 className="text-4xl">{t.privacyTitle}</h1>
+            <p>{t.privacyIntro}</p>
             <ul className="list-disc pl-5 text-paper/80">
               <li>Audio → local: {String(privacy.audio_local)}</li>
               <li>STT → local: {String(privacy.stt_local)}</li>
               <li>LLM → local: {String(privacy.llm_local)}</li>
               <li>Data root: {privacy.data_root}</li>
             </ul>
-            <p className="text-copper">Network is used only for:</p>
+            <p className="text-copper">{t.privacyNetwork}</p>
             {privacy.network_operations.map((item) => (
               <p key={item}>{item}</p>
             ))}
             <p className="text-sm text-paper/70">
-              Audio cache uses a private 0700 folder. Logs rotate by size and never store tokens.
+              {t.privacyLogs}
             </p>
             <div className="flex flex-wrap gap-3 pt-2">
               <button

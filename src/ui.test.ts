@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { formatBytes, NAV, navItems } from "./ui";
+import { copy, formatBytes, NAV, navItems } from "./ui";
 import { formatInvokeError } from "./api";
 
 describe("formatBytes", () => {
@@ -29,6 +29,17 @@ describe("navItems", () => {
     expect(navItems("ru").map((item) => item.id)).toEqual(NAV.map((item) => item.id));
     expect(navItems("ru").find((item) => item.id === "history")?.label).toBe("История");
     expect(navItems("en").find((item) => item.id === "history")?.label).toBe("History");
+  });
+});
+
+describe("copy", () => {
+  it("translates settings descriptions when the interface language is Russian", () => {
+    expect(copy("en").hotkeyHelp).toMatch(/Spotlight/);
+    expect(copy("ru").hotkeyHelp).toMatch(/Spotlight|раскладка/);
+    expect(copy("ru").speechLangHelp).not.toBe(copy("en").speechLangHelp);
+    expect(copy("ru").settingsTitle).toBe("Настройки");
+    expect(copy("ru").onboardingTitle).toMatch(/Mac/);
+    expect(copy("ru").interfaceLanguage).toBe("Язык интерфейса");
   });
 });
 

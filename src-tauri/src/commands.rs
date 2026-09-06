@@ -71,13 +71,17 @@ pub fn save_settings(
 ) -> Result<(), CommandError> {
     settings.validate()?;
     settings.normalize();
+    let autostart_changed;
+    let autostart;
     {
         let mut eng = lock(&engine)?;
         crate::journal::set_max_bytes(settings.log_max_bytes);
-        let autostart = settings.autostart;
+        autostart_changed = eng.settings.autostart != settings.autostart;
+        autostart = settings.autostart;
         eng.settings = settings;
         eng.persist()?;
-        drop(eng);
+    }
+    if autostart_changed {
         crate::autostart::apply(autostart)?;
     }
     crate::apply_shortcuts(&app, &engine);

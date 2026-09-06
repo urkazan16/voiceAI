@@ -715,4 +715,42 @@ mod tests {
         assert!(!out.insert_ok);
         assert_eq!(eng.snapshot.state, PipelineState::Idle);
     }
+
+    #[test]
+    fn first_install_starts_unonboarded_with_local_layout() {
+        let dir = tempdir().unwrap();
+        let root = dir.path().to_path_buf();
+        assert!(!root.join("config").join("settings.json").exists());
+        let mut eng = AppEngine::open(DataPaths::from_override(root.clone())).unwrap();
+        assert!(
+            !eng.settings.onboarding_complete,
+            "first launch must show setup"
+        );
+        assert_eq!(
+            eng.settings.active_stt_model.as_deref(),
+            Some(crate::config::DEFAULT_STT_MODEL)
+        );
+        assert_eq!(eng.settings.ui_language, "en");
+        assert!(!eng.settings.autostart);
+        assert!(eng.paths.config_dir().is_dir());
+        assert!(eng.paths.settings_file().exists());
+        assert!(eng.paths.database_dir().is_dir());
+        assert!(eng.paths.models_whisper().is_dir());
+        assert!(
+            eng.dictionary.entries.iter().any(|e| e.builtin),
+            "developer dictionary seeds on first open"
+        );
+        assert!(
+            !eng.snippets.items.is_empty(),
+            "default snippets seed on first open"
+        );
+        eng.settings.onboarding_complete = true;
+        eng.settings.ui_language = "ru".into();
+        eng.persist().unwrap();
+        drop(eng);
+        let again = AppEngine::open(DataPaths::from_override(root)).unwrap();
+        assert!(again.settings.onboarding_complete);
+        assert_eq!(again.settings.ui_language, "ru");
+        assert!(!again.settings.autostart);
+    }
 }
