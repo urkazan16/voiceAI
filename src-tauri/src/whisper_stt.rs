@@ -260,7 +260,7 @@ fn silence_whisper_logs() {
 }
 
 unsafe extern "C" fn quiet_whisper_log(
-    _level: std::ffi::c_int,
+    _level: whisper_rs_sys::ggml_log_level,
     _text: *const c_char,
     _user_data: *mut c_void,
 ) {
