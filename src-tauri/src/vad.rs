@@ -167,7 +167,7 @@ mod tests {
     fn trailing_silence_counts_quiet_tail() {
         let sr = 16_000u32;
         let mut pcm = vec![0.2; sr as usize];
-        pcm.extend(std::iter::repeat(0.0).take(sr as usize));
+        pcm.extend(std::iter::repeat_n(0.0, sr as usize));
         let ms = trailing_silence_ms(&pcm, sr);
         assert!(ms >= 900, "{ms}");
         assert_eq!(trailing_silence_ms(&[], sr), 0);

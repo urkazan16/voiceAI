@@ -7,10 +7,23 @@ use std::sync::mpsc::{self, Sender};
 use std::sync::{Mutex, Once, OnceLock};
 use whisper_rs::{FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters};
 
+/// Knobs that change what the recognizer is willing to emit.
+#[derive(Debug, Clone, Default)]
+pub struct DecodeOptions {
+    /// Vocabulary shown to the model before decoding. Whisper conditions on it,
+    /// which is what makes it spell "RestAssured" or "PostgreSQL" instead of a
+    /// phonetic guess.
+    pub prompt: String,
+    /// Whisper's non-speech suppression list also covers `/`, `_`, `#`, and
+    /// brackets, so it has to be lifted to dictate code and paths.
+    pub allow_symbols: bool,
+}
+
 struct TranscribeJob {
     model_path: PathBuf,
     pcm: Vec<f32>,
     language: String,
+    options: DecodeOptions,
     reply: Sender<LfResult<String>>,
 }
 
@@ -41,6 +54,7 @@ pub fn preload(model_path: PathBuf) {
                 &[0.0; 16_000],
                 crate::dictation::cancel_flag(),
                 "ru",
+                &DecodeOptions::default(),
             );
         })
         .ok();
@@ -51,6 +65,7 @@ pub fn transcribe(
     pcm: &[f32],
     _cancel: &std::sync::atomic::AtomicBool,
     language: &str,
+    options: &DecodeOptions,
 ) -> LfResult<String> {
     if !model_path.is_file() {
         return Err(LfError::ModelMissing(model_path.display().to_string()));
@@ -65,6 +80,7 @@ pub fn transcribe(
         model_path: model_path.to_path_buf(),
         pcm: pad_to_whisper_window(pcm),
         language: language.to_string(),
+        options: options.clone(),
         reply: reply_tx,
     })
     .map_err(|_| LfError::RuntimeUnsupported("whisper worker stopped".into()))?;
@@ -82,7 +98,13 @@ fn worker() -> Sender<TranscribeJob> {
             .spawn(move || {
                 let mut loaded: Option<(PathBuf, WhisperContext)> = None;
                 while let Ok(job) = rx.recv() {
-                    let result = run_job(&mut loaded, job.model_path, &job.pcm, &job.language);
+                    let result = run_job(
+                        &mut loaded,
+                        job.model_path,
+                        &job.pcm,
+                        &job.language,
+                        &job.options,
+                    );
                     let _ = job.reply.send(result);
                 }
             })
@@ -97,6 +119,7 @@ fn run_job(
     model_path: PathBuf,
     pcm: &[f32],
     language: &str,
+    options: &DecodeOptions,
 ) -> LfResult<String> {
     let needs_reload = match loaded {
         Some((path, _)) => path != &model_path,
@@ -112,7 +135,25 @@ fn run_job(
         *loaded = Some((model_path, ctx));
     }
     let ctx = &loaded.as_ref().expect("whisper context").1;
-    decode(ctx, pcm, language)
+    decode(ctx, pcm, language, options)
+}
+
+/// whisper.cpp only reads `initial_prompt` when `prompt_tokens` is null, and it
+/// only keeps a prompt at all while the decoding temperature stays below 0.5.
+/// Keep the text short enough to survive both.
+pub const MAX_PROMPT_CHARS: usize = 400;
+
+fn prompt_for(options: &DecodeOptions) -> String {
+    let mut prompt = options.prompt.trim().replace('\0', " ");
+    if prompt.chars().count() > MAX_PROMPT_CHARS {
+        let cut = prompt
+            .char_indices()
+            .nth(MAX_PROMPT_CHARS)
+            .map(|(i, _)| i)
+            .unwrap_or(prompt.len());
+        prompt.truncate(cut);
+    }
+    prompt
 }
 
 fn pad_to_whisper_window(pcm: &[f32]) -> Vec<f32> {
@@ -126,7 +167,12 @@ fn pad_to_whisper_window(pcm: &[f32]) -> Vec<f32> {
     out
 }
 
-fn decode(ctx: &WhisperContext, pcm: &[f32], language: &str) -> LfResult<String> {
+fn decode(
+    ctx: &WhisperContext,
+    pcm: &[f32],
+    language: &str,
+    options: &DecodeOptions,
+) -> LfResult<String> {
     let mut state = ctx
         .create_state()
         .map_err(|err| LfError::RuntimeUnsupported(err.to_string()))?;
@@ -151,12 +197,20 @@ fn decode(ctx: &WhisperContext, pcm: &[f32], language: &str) -> LfResult<String>
     params.set_no_timestamps(true);
     params.set_single_segment(pcm.len() < 16_000 * 15);
     params.set_suppress_blank(true);
-    params.set_suppress_non_speech_tokens(true);
+    // Whisper's non-speech suppression also covers `/`, `_`, `#`, and brackets,
+    // which are exactly the characters technical dictation needs.
+    params.set_suppress_non_speech_tokens(!options.allow_symbols);
     params.set_no_speech_thold(0.6);
+    // Clears context carried over from the previous utterance. It is applied
+    // before the initial prompt is seeded, so the two are compatible.
     params.set_no_context(true);
-    params.set_initial_prompt("");
-    let no_prompt_tokens: [std::os::raw::c_int; 0] = [];
-    params.set_tokens(&no_prompt_tokens);
+    // Deliberately no `set_tokens` call: whisper.cpp ignores `initial_prompt`
+    // whenever `prompt_tokens` is non-null, and an empty slice still yields a
+    // non-null pointer, which silently disabled prompting.
+    let prompt = prompt_for(options);
+    if !prompt.is_empty() {
+        params.set_initial_prompt(&prompt);
+    }
     params.set_abort_callback_safe(crate::dictation::is_cancelled);
     state
         .full(params, pcm)

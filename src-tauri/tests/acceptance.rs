@@ -48,6 +48,7 @@ fn ac06_stt_uses_whisper_rs_when_model_path_is_set() {
             &[0.05; 2_000],
             Some(Path::new("/var/empty/whisper-medium.bin")),
             "auto",
+            &localflow_lib::whisper_stt::DecodeOptions::default(),
         )
         .unwrap_err();
     assert_eq!(err.code(), "MODEL_MISSING");

@@ -253,6 +253,38 @@ impl AppEngine {
         Ok(path)
     }
 
+    pub fn remove_model_files(&self, model_id: &str) -> LfResult<u64> {
+        let status = self.model_status(model_id)?;
+        if !crate::download::can_delete_on_disk(&status) {
+            if status.active && (status.installed || status.verified) {
+                return Err(LfError::ConfigInvalid(format!(
+                    "Cannot delete {model_id}: it is currently in use. Switch to another downloaded model first."
+                )));
+            }
+            return Err(LfError::ModelMissing(model_id.to_string()));
+        }
+        let record = self.catalog.get(model_id)?;
+        crate::download::remove_install_files(&self.model_path(record))
+    }
+
+    pub fn remove_unused_model_files(&self) -> LfResult<Vec<(String, u64)>> {
+        let ids: Vec<String> = self
+            .catalog
+            .models
+            .iter()
+            .map(|model| model.model_id.clone())
+            .collect();
+        let mut removed = Vec::new();
+        for id in ids {
+            let status = self.model_status(&id)?;
+            if crate::download::can_delete_on_disk(&status) {
+                let bytes = self.remove_model_files(&id)?;
+                removed.push((id, bytes));
+            }
+        }
+        Ok(removed)
+    }
+
     pub fn process_captured_audio(&mut self, pcm_16k: &[f32]) -> LfResult<PipelineOutput> {
         let pcm = crate::vad::trim_silence_at(pcm_16k, 16_000, self.settings.vad_threshold);
         self.run_text_pipeline(
@@ -266,6 +298,19 @@ impl AppEngine {
             },
             &pcm,
         )
+    }
+
+    /// Recognizer settings for the profile that is about to be used. The
+    /// dictionary doubles as a prompt so Whisper spells project vocabulary the
+    /// way the user does, instead of guessing phonetically.
+    pub fn decode_options(&self) -> crate::whisper_stt::DecodeOptions {
+        let mode = self.resolve_context().mode;
+        crate::whisper_stt::DecodeOptions {
+            prompt: self
+                .dictionary
+                .recognition_hints(crate::whisper_stt::MAX_PROMPT_CHARS),
+            allow_symbols: mode == PipelineMode::Code,
+        }
     }
 
     pub fn run_text_pipeline(
@@ -304,6 +349,7 @@ impl AppEngine {
                 Some(path.as_path()),
                 &self.settings.stt_language,
                 self.settings.vad_threshold,
+                &self.decode_options(),
             )?
         } else {
             transcript.to_string()
@@ -348,8 +394,15 @@ impl AppEngine {
         let formatted_text = if skip_llm {
             backtrack_text.clone()
         } else {
-            let smart =
-                crate::phrases::recover(&crate::format::format_smart(mode, &backtrack_text));
+            // Rebuild identifiers, hashes, domains, and versions before the
+            // punctuation pass, which would otherwise turn the "точка" holding
+            // them together into a full stop.
+            let literals = if mode == PipelineMode::Raw {
+                backtrack_text.clone()
+            } else {
+                crate::spoken_tech::apply(&backtrack_text)
+            };
+            let smart = crate::phrases::recover(&crate::format::format_smart(mode, &literals));
             crate::format::normalize_spoken_values(
                 &smart,
                 mode,
@@ -711,6 +764,81 @@ mod tests {
     }
 
     #[test]
+    fn dictated_technical_literals_survive_the_whole_pipeline() {
+        let (_dir, mut eng) = engine();
+        let cases = [
+            (
+                "гуид четыре три шесть а два девять шесть девять дефис це а семь и \
+                 дефис четыре семь а б дефис б ноль эф три дефис семь два а пять \
+                 три четыре д семь четыре четыре б шесть",
+                "436a2969-ca7e-47ab-b0f3-72a534d744b6",
+            ),
+            ("открой эльма 365 точка ком", "elma365.com"),
+            ("установи дот нет фреймворк", "Установи .NET Framework"),
+            (
+                "коммит a 9 5 c 5 2 8 c c a 5 4 5 4 f 9 4 3 0 4 9 e 2 7 d 1 2 2 4 7 7 6 6 e 0 b c e 2 c",
+                "a95c528cca5454f943049e27d12247766e0bce2c",
+            ),
+            ("коммит пять три це три девять шесть три", "53c3963"),
+            ("коммит д шесть б ноль два ноль четыре", "d6b0204"),
+            ("версия два точка ноль точка один", "2.0.1"),
+            ("запусти скрипт точка sh", "скрипт.sh"),
+        ];
+        for (spoken, expected) in cases {
+            let out = eng.run_scripted(spoken).unwrap().final_text;
+            assert!(out.contains(expected), "heard {spoken:?} -> {out:?}");
+        }
+    }
+
+    #[test]
+    fn a_technical_literal_is_not_capitalized_or_given_a_full_stop() {
+        let (_dir, mut eng) = engine();
+        let out = eng
+            .run_scripted("гуид 436a2969ca7e47abb0f372a534d744b6")
+            .unwrap()
+            .final_text;
+        assert!(
+            out.ends_with("436a2969-ca7e-47ab-b0f3-72a534d744b6"),
+            "{out}"
+        );
+    }
+
+    #[test]
+    fn the_word_tochka_still_means_a_full_stop_in_prose() {
+        let (_dir, mut eng) = engine();
+        assert_eq!(
+            eng.run_scripted("готово точка").unwrap().final_text,
+            "Готово."
+        );
+        assert_eq!(
+            eng.run_scripted("важна точка зрения команды")
+                .unwrap()
+                .final_text,
+            "Важна точка зрения команды."
+        );
+    }
+
+    #[test]
+    fn spoken_hundreds_become_one_number() {
+        let (_dir, mut eng) = engine();
+        assert_eq!(
+            eng.run_scripted("нужно триста шестьдесят пять штук")
+                .unwrap()
+                .final_text,
+            "Нужно 365 штук."
+        );
+    }
+
+    #[test]
+    fn a_dictionary_backed_prompt_is_offered_to_the_recognizer() {
+        let (_dir, eng) = engine();
+        let options = eng.decode_options();
+        assert!(options.prompt.contains("PostgreSQL"), "{options:?}");
+        assert!(options.prompt.len() <= crate::whisper_stt::MAX_PROMPT_CHARS);
+        assert!(!options.allow_symbols, "normal mode keeps suppression on");
+    }
+
+    #[test]
     fn insert_failure_keeps_transcript_ready() {
         struct FailInjector;
         impl TextInjector for FailInjector {
@@ -771,5 +899,25 @@ mod tests {
         assert!(again.settings.onboarding_complete);
         assert_eq!(again.settings.ui_language, "ru");
         assert!(!again.settings.autostart);
+    }
+
+    #[test]
+    fn unused_partial_model_can_be_deleted() {
+        let (_dir, mut eng) = engine();
+        eng.settings.active_stt_model = Some("whisper-medium".into());
+        let record = eng.catalog.get("whisper-base").unwrap().clone();
+        let dest = eng.model_path(&record);
+        std::fs::write(crate::download::partial_path(&dest), b"leftover").unwrap();
+        let freed = eng.remove_model_files("whisper-base").unwrap();
+        assert_eq!(freed, 8);
+        assert!(!crate::download::partial_path(&dest).exists());
+        assert!(eng.remove_model_files("whisper-base").is_err());
+    }
+
+    #[test]
+    fn remove_unused_skips_models_with_no_files() {
+        let (_dir, eng) = engine();
+        let removed = eng.remove_unused_model_files().unwrap();
+        assert!(removed.is_empty());
     }
 }

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { copy, formatBytes, NAV, navItems } from "./ui";
+import { copy, formatBytes, NAV, navItems, canDeleteDownloadedModel } from "./ui";
 import { formatInvokeError } from "./api";
 
 describe("formatBytes", () => {
@@ -41,8 +41,43 @@ describe("copy", () => {
     expect(copy("en").speechModel).toMatch(/downloaded/i);
     expect(copy("ru").speechModel).toMatch(/скачан/i);
     expect(copy("ru").noDownloadedSpeech).not.toBe(copy("en").noDownloadedSpeech);
+    expect(copy("en").unusedModels).toMatch(/Unused/i);
+    expect(copy("ru").deleteUnusedAll).toMatch(/неиспользуем/i);
     expect(copy("ru").onboardingTitle).toMatch(/Mac/);
     expect(copy("ru").interfaceLanguage).toBe("Язык интерфейса");
+  });
+});
+
+describe("canDeleteDownloadedModel", () => {
+  it("keeps the ready model in use and allows leftover files", () => {
+    expect(canDeleteDownloadedModel(undefined)).toBe(false);
+    expect(
+      canDeleteDownloadedModel({
+        bytes_on_disk: 100,
+        local_path: "/tmp/m.bin",
+        active: true,
+        installed: true,
+        verified: true,
+      }),
+    ).toBe(false);
+    expect(
+      canDeleteDownloadedModel({
+        bytes_on_disk: 100,
+        local_path: "/tmp/m.bin",
+        active: false,
+        installed: true,
+        verified: true,
+      }),
+    ).toBe(true);
+    expect(
+      canDeleteDownloadedModel({
+        bytes_on_disk: 40,
+        local_path: "/tmp/m.bin.partial",
+        active: true,
+        installed: false,
+        verified: false,
+      }),
+    ).toBe(true);
   });
 });
 

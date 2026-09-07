@@ -50,18 +50,18 @@ There are no secret environment variables and no absolute developer paths in the
 
 ## Commands
 
-| Command                 | What it does                                                     |
-| ----------------------- | ---------------------------------------------------------------- |
-| `npm install`           | Install JS dependencies from `package-lock.json`                 |
-| `npm run check`         | TypeScript, ESLint, Prettier, `cargo check`, `cargo fmt`, Clippy |
-| `npm test`              | Frontend + Rust unit + integration tests                         |
-| `npm run test:all`      | Unit, integration, UI, pipeline, dictionary, personalization     |
-| `npm run test:ai`       | AI benchmark profile (requires catalog + optional local models)  |
-| `npm run build`         | Frontend production bundle + debug Rust binary                   |
-| `npm run build:release` | Checks UI, builds Rust, packages `.app`/`.dmg`, SBOM, SHA-256    |
-| `npm run check:local`   | Offline checker (WER + VAD SNR 15 dB), no network                |
-| `npm run license:check` | Dependency license allowlist                                     |
-| `npm run uniqueness:check` | Confirms `docs/evaluation/UNIQUENESS.md` is attached           |
+| Command                    | What it does                                                     |
+| -------------------------- | ---------------------------------------------------------------- |
+| `npm install`              | Install JS dependencies from `package-lock.json`                 |
+| `npm run check`            | TypeScript, ESLint, Prettier, `cargo check`, `cargo fmt`, Clippy |
+| `npm test`                 | Frontend + Rust unit + integration tests                         |
+| `npm run test:all`         | Unit, integration, UI, pipeline, dictionary, personalization     |
+| `npm run test:ai`          | AI benchmark profile (requires catalog + optional local models)  |
+| `npm run build`            | Frontend production bundle + debug Rust binary                   |
+| `npm run build:release`    | Checks UI, builds Rust, packages `.app`/`.dmg`, SBOM, SHA-256    |
+| `npm run check:local`      | Offline checker (WER + VAD SNR 15 dB), no network                |
+| `npm run license:check`    | Dependency license allowlist                                     |
+| `npm run uniqueness:check` | Confirms `docs/evaluation/UNIQUENESS.md` is attached             |
 
 Headless CLI (no window):
 
@@ -72,6 +72,35 @@ cargo run --manifest-path src-tauri/Cargo.toml -- transcribe --json --language r
 cargo run --manifest-path src-tauri/Cargo.toml -- transcribe --dir ./clips --no-postprocess
 ffmpeg -f avfoundation -i ":0" -t 3 -f wav - | cargo run --manifest-path src-tauri/Cargo.toml -- transcribe --stdin
 ```
+
+## Dictating technical text
+
+Identifiers are rebuilt deterministically, before punctuation is applied, so the
+word "точка" holding a name together does not become a full stop.
+
+| Say                                             | Get                                    |
+| ----------------------------------------------- | -------------------------------------- |
+| `гуид четыре три шесть а … дефис це а семь и …` | `436a2969-ca7e-47ab-b0f3-72a534d744b6` |
+| `коммит пять три це три девять шесть три`       | `53c3963`                              |
+| `открой эльма 365 точка ком`                    | `открой elma365.com`                   |
+| `запусти скрипт точка sh`                       | `запусти скрипт.sh`                    |
+| `версия два точка ноль точка один`              | `2.0.1`                                |
+| `установи дот нет фреймворк`                    | `.NET Framework`                       |
+| `по буквам эй би си`                            | `abc`                                  |
+
+- Say `коммит`, `хеш`, `гуид`, `uuid`, or `id` before a hash to have the characters
+  joined; 32 hexadecimal characters are regrouped as `8-4-4-4-12`. A GUID-shaped
+  run needs no lead-in word.
+- Say `по буквам` to spell anything else out. Letter names, the NATO alphabet, and
+  `дефис` / `точка` / `слэш` / `подчёркивание` are understood. The run ends at the
+  first ordinary word or at `конец`.
+- A run of digits alone stays a number, so "коммит 2024 года" is left as spoken.
+- `.NET` is a dictionary term rather than a spoken-dot rule, because "нет" is a
+  Russian word and gluing it to a dot would corrupt ordinary speech.
+
+Dictionary terms are also fed to Whisper as a decoding prompt, so the recognizer
+is biased towards your project vocabulary instead of guessing phonetically. In
+`code` mode symbol suppression is lifted so `/`, `_`, and `#` can be dictated.
 
 Settings live in `~/Library/Application Support/LocalFlow/config/settings.json` (JSON). Edits apply within a couple of seconds without rebuilding. Schema of the replica journal: `docs/journal/UTTERANCE.md`.
 

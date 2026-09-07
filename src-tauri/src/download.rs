@@ -1,7 +1,8 @@
 use crate::catalog::ModelRecord;
 use crate::error::{LfError, LfResult};
 use crate::integrity::{
-    looks_installed, magic_matches_format, peek_magic, sha256_file, sidecar_matches, write_sidecar,
+    looks_installed, magic_matches_format, peek_magic, sha256_file, sidecar_matches, sidecar_path,
+    write_sidecar,
 };
 use futures_util::StreamExt;
 use serde::Serialize;
@@ -86,6 +87,30 @@ pub fn inspect_install(record: &ModelRecord, dest: &Path) -> ModelInstallStatus 
         expected_bytes: record.size,
         active: false,
     }
+}
+
+/// Files that are not the ready model currently selected for speech or formatting.
+pub fn can_delete_on_disk(status: &ModelInstallStatus) -> bool {
+    let on_disk = status.bytes_on_disk > 0 || status.local_path.is_some();
+    if !on_disk {
+        return false;
+    }
+    !(status.active && (status.installed || status.verified))
+}
+
+pub fn remove_install_files(dest: &Path) -> LfResult<u64> {
+    let mut freed = 0u64;
+    for path in [dest.to_path_buf(), sidecar_path(dest), partial_path(dest)] {
+        match std::fs::metadata(&path) {
+            Ok(meta) => {
+                freed = freed.saturating_add(meta.len());
+                std::fs::remove_file(&path)?;
+            }
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+            Err(err) => return Err(err.into()),
+        }
+    }
+    Ok(freed)
 }
 
 /// Exact catalog size only. A larger or smaller partial must not skip the download.
@@ -379,6 +404,46 @@ mod tests {
         assert_eq!(status.state, "incomplete");
         assert!(!status.installed);
         assert_eq!(status.bytes_on_disk, 7);
+        assert!(can_delete_on_disk(&status));
+    }
+
+    #[test]
+    fn active_ready_model_cannot_be_deleted() {
+        let mut status = ModelInstallStatus {
+            model_id: "whisper-medium".into(),
+            state: "verified".into(),
+            installed: true,
+            verified: true,
+            local_path: Some("/tmp/ggml-medium.bin".into()),
+            bytes_on_disk: 10,
+            expected_bytes: 10,
+            active: true,
+        };
+        assert!(!can_delete_on_disk(&status));
+        status.active = false;
+        assert!(can_delete_on_disk(&status));
+        status.active = true;
+        status.installed = false;
+        status.verified = false;
+        status.state = "incomplete".into();
+        assert!(can_delete_on_disk(&status));
+        status.bytes_on_disk = 0;
+        status.local_path = None;
+        assert!(!can_delete_on_disk(&status));
+    }
+
+    #[test]
+    fn remove_install_files_clears_model_sidecar_and_partial() {
+        let dir = tempdir().unwrap();
+        let dest = dir.path().join("ggml-small.bin");
+        std::fs::write(&dest, b"model").unwrap();
+        std::fs::write(sidecar_path(&dest), b"{}").unwrap();
+        std::fs::write(partial_path(&dest), b"part").unwrap();
+        let freed = remove_install_files(&dest).unwrap();
+        assert_eq!(freed, 5 + 2 + 4);
+        assert!(!dest.exists());
+        assert!(!sidecar_path(&dest).exists());
+        assert!(!partial_path(&dest).exists());
     }
 
     #[tokio::test]

@@ -258,33 +258,30 @@ fn dictation_state(
     }
 }
 
-pub fn emit_state(app: &AppHandle, state: DictationState) {
-    sync_tray(app, &state.phase);
-    for label in ["main", "bar"] {
-        if let Some(window) = app.get_webview_window(label) {
-            let _ = window.emit("dictation-state", &state);
-        }
-    }
+/// Miniaturized or hidden WKWebViews can stall IPC; tray still updates.
+pub fn window_accepts_dictation_events(visible: bool, minimized: bool) -> bool {
+    visible && !minimized
 }
 
-pub fn notify_hotkey(app: &AppHandle, edge: &str) {
-    emit_state(
-        app,
-        DictationState {
-            phase: edge.into(),
-            message: if edge == "pressed" {
-                "Hotkey down…".into()
-            } else {
-                "Hotkey up…".into()
-            },
-            transcript: None,
-            raw_transcript: None,
-            duration_ms: 0,
-            insert_ok: true,
-            rms: 0.0,
-            wpm: None,
-        },
-    );
+fn on_ui(app: &AppHandle, f: impl FnOnce(&AppHandle) + Send + 'static) {
+    let app = app.clone();
+    let _ = app.clone().run_on_main_thread(move || f(&app));
+}
+
+pub fn emit_state(app: &AppHandle, state: DictationState) {
+    on_ui(app, move |app| {
+        sync_tray(app, &state.phase);
+        for label in ["main", "bar"] {
+            if let Some(window) = app.get_webview_window(label) {
+                let visible = window.is_visible().unwrap_or(false);
+                let minimized = window.is_minimized().unwrap_or(false);
+                if !window_accepts_dictation_events(visible, minimized) {
+                    continue;
+                }
+                let _ = window.emit("dictation-state", &state);
+            }
+        }
+    });
 }
 
 fn sync_tray(app: &AppHandle, phase: &str) {
@@ -316,10 +313,20 @@ pub fn show_bar(app: &AppHandle, engine: &SharedEngine) {
     if !enabled {
         return;
     }
-    if let Some(window) = app.get_webview_window("bar") {
-        crate::position_flow_bar(&window);
-        let _ = window.show();
-    }
+    on_ui(app, |app| {
+        if let Some(window) = app.get_webview_window("bar") {
+            crate::position_flow_bar(&window);
+            let _ = window.show();
+        }
+    });
+}
+
+fn hide_bar(app: &AppHandle) {
+    on_ui(app, |app| {
+        if let Some(window) = app.get_webview_window("bar") {
+            let _ = window.hide();
+        }
+    });
 }
 
 pub fn hide_bar_later(app: &AppHandle) {
@@ -329,9 +336,7 @@ pub fn hide_bar_later(app: &AppHandle) {
         if CANCEL.load(Ordering::Relaxed) {
             return;
         }
-        if let Some(window) = app.get_webview_window("bar") {
-            let _ = window.hide();
-        }
+        hide_bar(&app);
     });
 }
 
@@ -488,9 +493,7 @@ pub fn cancel(app: &AppHandle, engine: &SharedEngine, capture: &SharedCapture) {
             wpm: None,
         },
     );
-    if let Some(window) = app.get_webview_window("bar") {
-        let _ = window.hide();
-    }
+    hide_bar(app);
 }
 
 fn spawn_ptt_release_watch(capture: &SharedCapture) {
@@ -611,9 +614,7 @@ fn discard_short_hold(app: &AppHandle, engine: &SharedEngine, capture: &SharedCa
             wpm: None,
         },
     );
-    if let Some(window) = app.get_webview_window("bar") {
-        let _ = window.hide();
-    }
+    hide_bar(app);
 }
 
 fn finish_recording(app: &AppHandle, engine: &SharedEngine, capture: &SharedCapture) {
@@ -642,9 +643,7 @@ fn finish_recording(app: &AppHandle, engine: &SharedEngine, capture: &SharedCapt
                 wpm: None,
             },
         );
-        if let Some(window) = app.get_webview_window("bar") {
-            let _ = window.hide();
-        }
+        hide_bar(app);
         return;
     };
     crate::journal::log("record_stop", "microphone off");
@@ -706,6 +705,7 @@ fn finish_recording(app: &AppHandle, engine: &SharedEngine, capture: &SharedCapt
             cue_vol,
             last_wav,
             keep_audio,
+            decode_options,
         ) = match engine.lock() {
             Ok(eng) => (
                 eng.ready_model_path("stt"),
@@ -718,6 +718,7 @@ fn finish_recording(app: &AppHandle, engine: &SharedEngine, capture: &SharedCapt
                 eng.settings.sound_cue_volume,
                 eng.paths.last_utterance(),
                 eng.settings.keep_last_audio,
+                eng.decode_options(),
             ),
             Err(_) => {
                 fail(&app, &engine, "engine lock poisoned", duration_ms);
@@ -744,6 +745,7 @@ fn finish_recording(app: &AppHandle, engine: &SharedEngine, capture: &SharedCapt
             Some(&stt_path),
             &lang,
             cached_vad(),
+            &decode_options,
         ) {
             Ok(text) => crate::sanitize::strip_model_tags(&text),
             Err(err) => {
@@ -880,9 +882,7 @@ fn emit_cancelled(app: &AppHandle, engine: &SharedEngine) {
             wpm: None,
         },
     );
-    if let Some(window) = app.get_webview_window("bar") {
-        let _ = window.hide();
-    }
+    hide_bar(app);
 }
 
 fn fail(app: &AppHandle, engine: &SharedEngine, message: &str, duration_ms: u64) {
@@ -1012,7 +1012,7 @@ mod tests {
         assert_ne!(TRAY_MARK_PROCESSING, TRAY_MARK_IDLE);
         assert_eq!(TRAY_MARK_RECORDING, "●");
         assert_eq!(TRAY_MARK_PROCESSING, "◐");
-        assert!(TRAY_MARK_IDLE.is_empty());
+        assert_eq!(TRAY_MARK_IDLE, "");
     }
 
     #[test]
@@ -1057,5 +1057,13 @@ mod tests {
     #[test]
     fn busy_flag_is_clear_when_idle() {
         assert!(!is_busy());
+    }
+
+    #[test]
+    fn hidden_or_miniaturized_windows_skip_dictation_ipc() {
+        assert!(window_accepts_dictation_events(true, false));
+        assert!(!window_accepts_dictation_events(false, false));
+        assert!(!window_accepts_dictation_events(true, true));
+        assert!(!window_accepts_dictation_events(false, true));
     }
 }

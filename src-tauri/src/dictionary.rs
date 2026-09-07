@@ -1,7 +1,7 @@
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
@@ -83,11 +83,21 @@ impl DictionaryEntry {
     }
 }
 
+/// Compiled alternation plus the alias lookup it resolves matches against.
+/// Both are derived from `entries` and are rebuilt only when entries change —
+/// a 5000-term dictionary would otherwise rebuild a 10000-key map on every
+/// single utterance.
+#[derive(Debug, Default)]
+struct MatchEngine {
+    regex: Option<Regex>,
+    targets: HashMap<String, String>,
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Dictionary {
     pub entries: Vec<DictionaryEntry>,
     #[serde(skip)]
-    cache: Mutex<Option<Regex>>,
+    cache: Mutex<Option<Arc<MatchEngine>>>,
 }
 
 impl Default for Dictionary {
@@ -125,16 +135,40 @@ impl Dictionary {
     }
 
     pub fn apply(&self, input: &str) -> String {
-        let (re, map) = self.engine();
-        if let Some(re) = re {
+        let engine = self.engine();
+        if let Some(re) = &engine.regex {
             return re
                 .replace_all(input, |caps: &regex::Captures| {
                     let matched = caps.get(0).map(|m| m.as_str()).unwrap_or("");
-                    canonical_for_match(matched, &map)
+                    canonical_for_match(matched, &engine.targets)
                 })
                 .into_owned();
         }
         self.apply_linear(input)
+    }
+
+    /// Terms to bias the recognizer towards, most specific first. Whisper only
+    /// reads a couple of hundred tokens of prompt, so this is deliberately a
+    /// short list rather than the whole dictionary.
+    pub fn recognition_hints(&self, max_chars: usize) -> String {
+        let mut hints: Vec<&str> = Vec::new();
+        for entry in self.entries.iter().filter(|e| e.enabled) {
+            let target = entry.target();
+            if !target.is_empty() && !hints.contains(&target) {
+                hints.push(target);
+            }
+        }
+        let mut out = String::new();
+        for hint in hints {
+            if out.len() + hint.len() + 2 > max_chars {
+                break;
+            }
+            if !out.is_empty() {
+                out.push_str(", ");
+            }
+            out.push_str(hint);
+        }
+        out
     }
 
     fn apply_linear(&self, input: &str) -> String {
@@ -171,26 +205,27 @@ impl Dictionary {
         patterns
     }
 
-    fn engine(&self) -> (Option<Regex>, HashMap<String, String>) {
-        let mut map = HashMap::new();
-        let patterns = self.pattern_list();
-        if patterns.is_empty() {
-            return (None, map);
+    fn engine(&self) -> Arc<MatchEngine> {
+        let mut slot = self.cache.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(cached) = slot.as_ref() {
+            return cached.clone();
         }
-        let mut alts = Vec::new();
+        let patterns = self.pattern_list();
+        let mut targets = HashMap::with_capacity(patterns.len() * 2);
+        let mut alts = Vec::with_capacity(patterns.len());
         for (pattern, target, case_sensitive) in &patterns {
-            map.insert(pattern.clone(), target.clone());
-            map.insert(pattern.to_lowercase(), target.clone());
+            targets.insert(pattern.clone(), target.clone());
+            targets.insert(pattern.to_lowercase(), target.clone());
             alts.push(bounded_alt(pattern, *case_sensitive));
         }
-        let compiled = {
-            let mut slot = self.cache.lock().unwrap_or_else(|e| e.into_inner());
-            if slot.is_none() {
-                *slot = Regex::new(&format!("(?:{})", alts.join("|"))).ok();
-            }
-            slot.clone()
-        };
-        (compiled, map)
+        let built = Arc::new(MatchEngine {
+            regex: (!patterns.is_empty())
+                .then(|| Regex::new(&format!("(?:{})", alts.join("|"))).ok())
+                .flatten(),
+            targets,
+        });
+        *slot = Some(built.clone());
+        built
     }
 
     fn invalidate(&self) {
@@ -303,6 +338,29 @@ pub fn builtin_developer_terms() -> Vec<DictionaryEntry> {
         DictionaryEntry::vocabulary("builtin-intellij", "IntelliJ IDEA", &["интелидж", "idea"]),
         DictionaryEntry::vocabulary("builtin-kubernetes", "Kubernetes", &["кубернетис", "k8s"]),
         DictionaryEntry::vocabulary("builtin-github", "GitHub", &["гитхаб", "github"]),
+        // ".NET" cannot be rebuilt from "точка нет" downstream: "нет" is the
+        // Russian word for "no", and gluing it to a dot would corrupt ordinary
+        // speech. Recognising the spoken name here is unambiguous instead.
+        DictionaryEntry::vocabulary(
+            "builtin-dotnet-framework",
+            ".NET Framework",
+            &[
+                "дот нет фреймворк",
+                "дотнет фреймворк",
+                "точка нет фреймворк",
+                "dot net framework",
+            ],
+        ),
+        DictionaryEntry::vocabulary(
+            "builtin-dotnet",
+            ".NET",
+            &["дот нет", "дотнет", "dot net", "донет"],
+        ),
+        DictionaryEntry::vocabulary("builtin-nuget", "NuGet", &["нюгет", "нуget", "nuget"]),
+        DictionaryEntry::vocabulary("builtin-csharp", "C#", &["си шарп", "c sharp", "сишарп"]),
+        DictionaryEntry::vocabulary("builtin-docker", "Docker", &["докер", "docker"]),
+        DictionaryEntry::vocabulary("builtin-nginx", "nginx", &["энджинкс", "нжинкс"]),
+        DictionaryEntry::vocabulary("builtin-elma365", "ELMA365", &["эльма 365", "элма 365"]),
     ]
 }
 
@@ -350,22 +408,12 @@ fn canonical_for_match(matched: &str, map: &HashMap<String, String>) -> String {
 }
 
 fn replace_case_insensitive(haystack: &str, needle: &str, replacement: &str) -> String {
-    if needle.is_empty() {
-        return haystack.to_string();
-    }
-    let lower = haystack.to_lowercase();
-    let needle_l = needle.to_lowercase();
-    let mut result = String::new();
+    let mut result = String::with_capacity(haystack.len());
     let mut idx = 0;
-    let bytes = haystack.as_bytes();
-    while let Some(found) = lower[idx..].find(&needle_l) {
-        let abs = idx + found;
-        result.push_str(&haystack[idx..abs]);
+    while let Some((start, end)) = crate::textscan::find_ci(haystack, needle, idx) {
+        result.push_str(&haystack[idx..start]);
         result.push_str(replacement);
-        idx = abs + needle.len();
-        if idx > bytes.len() {
-            break;
-        }
+        idx = end;
     }
     result.push_str(&haystack[idx..]);
     result

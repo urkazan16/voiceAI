@@ -31,7 +31,13 @@ struct ClipboardDiskSnapshot {
 }
 
 fn persist_clipboard_snapshot(items: &[(String, Vec<u8>)]) -> std::io::Result<()> {
-    let path = clipboard_snapshot_path();
+    persist_clipboard_snapshot_at(&clipboard_snapshot_path(), items)
+}
+
+fn persist_clipboard_snapshot_at(
+    path: &std::path::Path,
+    items: &[(String, Vec<u8>)],
+) -> std::io::Result<()> {
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;
     }
@@ -46,9 +52,12 @@ fn persist_clipboard_snapshot(items: &[(String, Vec<u8>)]) -> std::io::Result<()
 }
 
 fn take_clipboard_snapshot() -> Option<Vec<(String, Vec<u8>)>> {
-    let path = clipboard_snapshot_path();
-    let bytes = std::fs::read(&path).ok()?;
-    let _ = std::fs::remove_file(&path);
+    take_clipboard_snapshot_at(&clipboard_snapshot_path())
+}
+
+fn take_clipboard_snapshot_at(path: &std::path::Path) -> Option<Vec<(String, Vec<u8>)>> {
+    let bytes = std::fs::read(path).ok()?;
+    let _ = std::fs::remove_file(path);
     let disk: ClipboardDiskSnapshot = serde_json::from_slice(&bytes).ok()?;
     if disk.schema != 1 {
         return None;
@@ -69,7 +78,10 @@ fn clear_clipboard_backups() {
 }
 
 pub fn persist_clipboard_backup(text: &str) -> std::io::Result<()> {
-    let path = clipboard_backup_path();
+    persist_clipboard_backup_at(&clipboard_backup_path(), text)
+}
+
+fn persist_clipboard_backup_at(path: &std::path::Path, text: &str) -> std::io::Result<()> {
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;
     }
@@ -77,9 +89,12 @@ pub fn persist_clipboard_backup(text: &str) -> std::io::Result<()> {
 }
 
 pub fn take_clipboard_backup() -> Option<String> {
-    let path = clipboard_backup_path();
-    let text = std::fs::read_to_string(&path).ok()?;
-    let _ = std::fs::remove_file(&path);
+    take_clipboard_backup_at(&clipboard_backup_path())
+}
+
+fn take_clipboard_backup_at(path: &std::path::Path) -> Option<String> {
+    let text = std::fs::read_to_string(path).ok()?;
+    let _ = std::fs::remove_file(path);
     Some(text)
 }
 
@@ -435,11 +450,23 @@ mod macos {
         any
     }
 
-    pub(super) fn on_main<T: Send>(f: impl FnOnce() -> T + Send) -> T {
+    const PASTEBOARD_MAIN_WAIT: Duration = Duration::from_secs(2);
+
+    pub(super) fn on_main<T: Send + 'static>(
+        f: impl FnOnce() -> T + Send + 'static,
+        fallback: T,
+    ) -> T {
         if cfg!(test) {
             return f();
         }
-        dispatch2::run_on_main(|_| f())
+        if objc2::MainThreadMarker::new().is_some() {
+            return f();
+        }
+        let (tx, rx) = std::sync::mpsc::sync_channel(1);
+        dispatch2::DispatchQueue::main().exec_async(move || {
+            let _ = tx.send(f());
+        });
+        rx.recv_timeout(PASTEBOARD_MAIN_WAIT).unwrap_or(fallback)
     }
 
     pub fn insert_text(
@@ -516,7 +543,10 @@ mod macos {
     }
 
     fn snapshot_pasteboard() -> PasteboardSnapshot {
-        on_main(snapshot_pasteboard_on_main)
+        on_main(
+            snapshot_pasteboard_on_main,
+            PasteboardSnapshot { items: vec![] },
+        )
     }
 
     fn snapshot_pasteboard_on_main() -> PasteboardSnapshot {
@@ -552,7 +582,7 @@ mod macos {
         let snapshot = PasteboardSnapshot {
             items: snapshot.items.clone(),
         };
-        on_main(move || restore_pasteboard_on_main(&snapshot));
+        on_main(move || restore_pasteboard_on_main(&snapshot), ());
     }
 
     fn restore_pasteboard_on_main(snapshot: &PasteboardSnapshot) {
@@ -580,7 +610,10 @@ mod macos {
 
     fn write_pasteboard_string(text: &str) -> LfResult<()> {
         let text = text.to_string();
-        on_main(move || write_pasteboard_string_on_main(&text))
+        on_main(
+            move || write_pasteboard_string_on_main(&text),
+            Err(LfError::InjectionFailed("pasteboard timed out".into())),
+        )
     }
 
     fn write_pasteboard_string_on_main(text: &str) -> LfResult<()> {
@@ -798,22 +831,40 @@ mod tests {
 
     #[test]
     fn clipboard_backup_roundtrip_on_disk() {
+        // Addresses an explicit path rather than the process-global one: every
+        // `AppEngine::open` rebinds that global, so a parallel engine test used
+        // to steal this backup and make the assertion below fail at random.
         let dir = tempfile::tempdir().unwrap();
-        set_clipboard_backup_path(dir.path().join("clipboard-restore.txt"));
-        persist_clipboard_backup("keep me").unwrap();
-        assert_eq!(take_clipboard_backup().as_deref(), Some("keep me"));
-        assert!(take_clipboard_backup().is_none());
-        persist_clipboard_snapshot(&[("public.utf8-plain-text".into(), b"rtf-or-img".to_vec())])
-            .unwrap();
-        let snap = take_clipboard_snapshot().unwrap();
+        let backup = dir.path().join("clipboard-restore.txt");
+        let snapshot = backup.with_extension("json");
+        persist_clipboard_backup_at(&backup, "keep me").unwrap();
+        assert_eq!(
+            take_clipboard_backup_at(&backup).as_deref(),
+            Some("keep me")
+        );
+        assert!(take_clipboard_backup_at(&backup).is_none());
+        persist_clipboard_snapshot_at(
+            &snapshot,
+            &[("public.utf8-plain-text".into(), b"rtf-or-img".to_vec())],
+        )
+        .unwrap();
+        let snap = take_clipboard_snapshot_at(&snapshot).unwrap();
         assert_eq!(snap[0].1, b"rtf-or-img");
-        assert!(take_clipboard_snapshot().is_none());
+        assert!(take_clipboard_snapshot_at(&snapshot).is_none());
+    }
+
+    #[test]
+    fn snapshot_path_follows_the_configured_backup_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let backup = dir.path().join("clipboard-restore.txt");
+        set_clipboard_backup_path(backup.clone());
+        assert_eq!(clipboard_snapshot_path(), backup.with_extension("json"));
     }
 
     #[cfg(target_os = "macos")]
     #[test]
     fn pasteboard_main_hop_runs_when_already_on_main() {
-        let n = macos::on_main(|| 7);
+        let n = macos::on_main(|| 7, 0);
         assert_eq!(n, 7);
     }
 

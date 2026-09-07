@@ -632,6 +632,74 @@ pub async fn set_active_model(
     Ok(path.display().to_string())
 }
 
+#[derive(Debug, Serialize)]
+pub struct ModelRemoval {
+    pub model_id: String,
+    pub bytes_freed: u64,
+}
+
+fn reject_if_downloading(model_id: &str) -> Result<(), CommandError> {
+    let inflight = inflight_downloads().lock().map_err(|_| CommandError {
+        code: "ERROR".into(),
+        message: "download lock poisoned".into(),
+    })?;
+    if inflight.contains(model_id) {
+        return Err(CommandError {
+            code: "CONFIG_INVALID".into(),
+            message: format!("Cannot delete {model_id} while it is downloading."),
+        });
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub fn remove_model(
+    engine: tauri::State<SharedEngine>,
+    model_id: String,
+) -> Result<ModelRemoval, CommandError> {
+    reject_if_downloading(&model_id)?;
+    let bytes_freed = lock(&engine)?.remove_model_files(&model_id)?;
+    Ok(ModelRemoval {
+        model_id,
+        bytes_freed,
+    })
+}
+
+#[tauri::command]
+pub fn remove_unused_models(
+    engine: tauri::State<SharedEngine>,
+) -> Result<Vec<ModelRemoval>, CommandError> {
+    let skip = inflight_downloads()
+        .lock()
+        .map_err(|_| CommandError {
+            code: "ERROR".into(),
+            message: "download lock poisoned".into(),
+        })?
+        .clone();
+    let eng = lock(&engine)?;
+    let ids: Vec<String> = eng
+        .catalog
+        .models
+        .iter()
+        .map(|model| model.model_id.clone())
+        .collect();
+    let mut removed = Vec::new();
+    for id in ids {
+        if skip.contains(&id) {
+            continue;
+        }
+        let status = eng.model_status(&id).map_err(CommandError::from)?;
+        if crate::download::can_delete_on_disk(&status) {
+            let bytes_freed = eng.remove_model_files(&id)?;
+            removed.push(ModelRemoval {
+                model_id: id,
+                bytes_freed,
+            });
+        }
+    }
+    Ok(removed)
+}
+
 #[tauri::command]
 pub fn last_utterance_ready(engine: tauri::State<SharedEngine>) -> Result<bool, CommandError> {
     let path = lock(&engine)?.paths.last_utterance();

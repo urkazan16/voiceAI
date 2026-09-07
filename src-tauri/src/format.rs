@@ -1,6 +1,7 @@
 //! Deterministic Smart Formatting Engine (MVP). Not an LLM rewrite.
 
 use crate::pipeline::PipelineMode;
+use crate::textscan::{count_word_ci, find_ci, find_word_ci, is_word_boundary, replace_word_ci};
 
 pub fn format_smart(mode: PipelineMode, text: &str) -> String {
     match mode {
@@ -58,7 +59,6 @@ fn apply_voice_punctuation(text: &str) -> String {
         ("slash", "/"),
         ("запятая", ","),
         ("двоеточие", ":"),
-        ("точка", "."),
         ("тире", " — "),
         ("comma", ","),
         ("colon", ":"),
@@ -67,79 +67,80 @@ fn apply_voice_punctuation(text: &str) -> String {
     ];
     rules.sort_by(|a, b| b.0.len().cmp(&a.0.len()));
     for (phrase, replacement) in rules {
-        if matches!(phrase, "тире" | "dash") && phrase_count(&out, phrase) >= 2 {
+        if matches!(phrase, "тире" | "dash") && count_word_ci(&out, phrase) >= 2 {
             continue;
         }
-        out = replace_phrase_ci(&out, phrase, replacement);
+        out = replace_word_ci(&out, phrase, replacement);
     }
+    // Runs last so the longer "точка с запятой" rule above still wins.
+    out = replace_period_word(&out);
     out = replace_quote_toggles(&out);
     pair_guillemets(&out)
 }
 
-fn replace_phrase_ci(haystack: &str, needle: &str, replacement: &str) -> String {
-    let lower = haystack.to_lowercase();
-    let needle_l = needle.to_lowercase();
-    let mut result = String::new();
+/// Nouns that follow "точка" when it is a real word rather than dictated
+/// punctuation, so "точка зрения" stays a point of view instead of becoming
+/// ". зрения".
+const PERIOD_COLLOCATIONS: &[&str] = &[
+    "зрения",
+    "зрению",
+    "отсчёта",
+    "отсчета",
+    "кипения",
+    "плавления",
+    "невозврата",
+    "опоры",
+    "доступа",
+    "входа",
+    "выхода",
+    "монтирования",
+    "останова",
+    "сборки",
+    "продажи",
+    "обзора",
+    "росы",
+    "соприкосновения",
+    "бифуркации",
+    "привязки",
+    "восстановления",
+    "экстремума",
+    "пересечения",
+    "ветвления",
+];
+
+fn replace_period_word(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
     let mut idx = 0;
-    while let Some(found) = lower[idx..].find(&needle_l) {
-        let abs = idx + found;
-        if !is_phrase_boundary(haystack, abs, abs + needle.len()) {
-            result.push_str(&haystack[idx..abs + needle.len()]);
-            idx = abs + needle.len();
-            continue;
+    while let Some((start, end)) = find_ci(text, "точка", idx) {
+        out.push_str(&text[idx..start]);
+        if is_word_boundary(text, start, end) && !starts_with_collocation(&text[end..]) {
+            out.push('.');
+        } else {
+            out.push_str(&text[start..end]);
         }
-        result.push_str(&haystack[idx..abs]);
-        result.push_str(replacement);
-        idx = abs + needle.len();
+        idx = end;
     }
-    result.push_str(&haystack[idx..]);
-    result
+    out.push_str(&text[idx..]);
+    out
 }
 
-fn is_phrase_boundary(text: &str, start: usize, end: usize) -> bool {
-    let before_ok = start == 0
-        || text[..start]
-            .chars()
-            .last()
-            .is_some_and(|c| !c.is_alphanumeric());
-    let after_ok = end >= text.len()
-        || text[end..]
-            .chars()
-            .next()
-            .is_some_and(|c| !c.is_alphanumeric());
-    before_ok && after_ok
-}
-
-fn phrase_count(text: &str, needle: &str) -> usize {
-    let lower = text.to_lowercase();
-    let needle_l = needle.to_lowercase();
-    let mut idx = 0;
-    let mut n = 0;
-    while let Some(found) = lower[idx..].find(&needle_l) {
-        let abs = idx + found;
-        if is_phrase_boundary(text, abs, abs + needle.len()) {
-            n += 1;
-        }
-        idx = abs + needle.len();
-    }
-    n
+fn starts_with_collocation(rest: &str) -> bool {
+    let next = rest.split_whitespace().next().unwrap_or("");
+    let word = trim_punct(next).to_lowercase();
+    PERIOD_COLLOCATIONS.contains(&word.as_str())
 }
 
 fn replace_quote_toggles(text: &str) -> String {
-    let lower = text.to_lowercase();
     let needles = ["кавычки", "кавычка", "quotes", "quote"];
     let mut marks: Vec<(usize, usize)> = Vec::new();
     for needle in needles {
         let mut idx = 0;
-        while let Some(found) = lower[idx..].find(needle) {
-            let abs = idx + found;
-            let end = abs + needle.len();
-            if is_phrase_boundary(text, abs, end)
-                && !marks.iter().any(|(s, e)| abs < *e && end > *s)
+        while let Some((abs, end)) = find_ci(text, needle, idx) {
+            if is_word_boundary(text, abs, end) && !marks.iter().any(|(s, e)| abs < *e && end > *s)
             {
                 marks.push((abs, end));
             }
-            idx = abs + needle.len();
+            idx = end;
         }
     }
     marks.sort_by_key(|(s, _)| *s);
@@ -197,20 +198,30 @@ fn remove_fillers(text: &str) -> String {
     collapse_ws_keep_newlines(&out)
 }
 
+/// Words that turn a filler into part of the sentence, so "в общем случае"
+/// keeps its meaning instead of collapsing to "случае".
+fn filler_is_load_bearing(phrase: &str, rest: &str) -> bool {
+    let next = trim_punct(rest.split_whitespace().next().unwrap_or("")).to_lowercase();
+    match phrase {
+        "в общем" => matches!(
+            next.as_str(),
+            "случае" | "виде" | "целом" | "доступе" | "то"
+        ),
+        "значит" => matches!(next.as_str(), "что" | "это"),
+        "типа" => matches!(next.as_str(), "данных" | "поля" | "переменной" | "возврата"),
+        _ => false,
+    }
+}
+
 fn strip_filler_phrase(text: &str, phrase: &str) -> String {
-    let lower = text.to_lowercase();
-    let needle = phrase.to_lowercase();
-    let mut result = String::new();
+    let mut result = String::with_capacity(text.len());
     let mut idx = 0;
-    while let Some(found) = lower[idx..].find(&needle) {
-        let abs = idx + found;
-        if is_phrase_boundary(text, abs, abs + phrase.len()) {
-            result.push_str(&text[idx..abs]);
-            idx = abs + phrase.len();
-        } else {
-            result.push_str(&text[idx..abs + phrase.len()]);
-            idx = abs + phrase.len();
+    while let Some((start, end)) = find_ci(text, phrase, idx) {
+        result.push_str(&text[idx..start]);
+        if !is_word_boundary(text, start, end) || filler_is_load_bearing(phrase, &text[end..]) {
+            result.push_str(&text[start..end]);
         }
+        idx = end;
     }
     result.push_str(&text[idx..]);
     result
@@ -280,15 +291,11 @@ fn strip_list_command(text: &str) -> Option<(ListKind, String)> {
         ("numbered list", ListKind::Numbered),
         ("bullet list", ListKind::Bullet),
     ];
-    let lower = text.to_lowercase();
     for (phrase, kind) in commands {
-        if let Some(idx) = lower.find(phrase) {
-            if !is_phrase_boundary(text, idx, idx + phrase.len()) {
-                continue;
-            }
+        if let Some((idx, end)) = find_word_ci(text, phrase) {
             let mut rest = String::new();
             rest.push_str(text[..idx].trim());
-            let after = text[idx + phrase.len()..].trim_start_matches([' ', ',']);
+            let after = text[end..].trim_start_matches([' ', ',']);
             if !rest.is_empty() && !after.is_empty() {
                 rest.push(' ');
             }
@@ -482,17 +489,18 @@ fn tidy_spacing(text: &str) -> String {
     let chars: Vec<char> = text.chars().collect();
     for (i, ch) in chars.iter().enumerate() {
         if matches!(*ch, ',' | '.' | '!' | '?' | ';' | ':') {
+            let next = chars.get(i + 1).copied();
+            let prev = if i > 0 { chars[i - 1] } else { ' ' };
+            if opens_token(*ch, prev, next) {
+                out.push(*ch);
+                continue;
+            }
             while out.ends_with(' ') {
                 out.pop();
             }
             out.push(*ch);
-            let next = chars.get(i + 1).copied();
-            let prev = if i > 0 { chars[i - 1] } else { ' ' };
-            let keep_numeric = matches!(*ch, '.' | ':')
-                && prev.is_ascii_digit()
-                && next.is_some_and(|n| n.is_ascii_digit());
             if next.is_some_and(|n| !n.is_whitespace() && n != '\n' && !matches!(n, ')' | ']'))
-                && !keep_numeric
+                && !keeps_token_together(*ch, prev, next)
             {
                 out.push(' ');
             }
@@ -522,6 +530,23 @@ fn tidy_spacing(text: &str) -> String {
         .replace(" »", "»")
 }
 
+/// A dot that opens a token (`.NET`, `.gitignore`) keeps the space in front of
+/// it and takes none after. Dictated sentence punctuation never looks like this
+/// — the word "точка" is surrounded by spaces, so the dot it becomes is
+/// followed by one.
+fn opens_token(ch: char, prev: char, next: Option<char>) -> bool {
+    ch == '.' && !prev.is_alphanumeric() && next.is_some_and(char::is_alphanumeric)
+}
+
+/// A dot or colon inside a token (`elma365.com`, `script.sh`, `9:05`) must not
+/// be turned into "end of sentence, add a space". A sentence resumes in
+/// Cyrillic or with a capital; an identifier continues in lowercase ASCII.
+fn keeps_token_together(ch: char, prev: char, next: Option<char>) -> bool {
+    matches!(ch, '.' | ':')
+        && prev.is_alphanumeric()
+        && next.is_some_and(|n| n.is_ascii_digit() || n.is_ascii_lowercase())
+}
+
 fn finalize_sentences(text: &str) -> String {
     if text.contains('\n') {
         return capitalize_lines(text);
@@ -532,7 +557,11 @@ fn finalize_sentences(text: &str) -> String {
     }
     let mut body = capitalize_first(trimmed);
     let last = body.chars().last().unwrap_or(' ');
-    if !matches!(last, '.' | '!' | '?') {
+    let ends_on_identifier = body
+        .split_whitespace()
+        .next_back()
+        .is_some_and(crate::spoken_tech::looks_technical);
+    if !matches!(last, '.' | '!' | '?') && !ends_on_identifier {
         body.push('.');
     }
     body
@@ -554,7 +583,8 @@ fn capitalize_lines(text: &str) -> String {
 
 fn capitalize_first(text: &str) -> String {
     let trimmed = text.trim();
-    if looks_like_identifier(trimmed) {
+    let first_word = trimmed.split_whitespace().next().unwrap_or("");
+    if looks_like_identifier(trimmed) || crate::spoken_tech::looks_technical(first_word) {
         return trimmed.to_string();
     }
     let mut chars: Vec<char> = trimmed.chars().collect();
@@ -892,6 +922,20 @@ fn strip_cyrillic_tail_on_latin_line(text: &str) -> String {
 
 fn spoken_numbers_to_digits(text: &str) -> String {
     let mut rules: Vec<(&str, &str)> = vec![
+        ("девятьсот", "900"),
+        ("восемьсот", "800"),
+        ("семьсот", "700"),
+        ("шестьсот", "600"),
+        ("пятьсот", "500"),
+        ("четыреста", "400"),
+        ("триста", "300"),
+        ("двести", "200"),
+        ("сто", "100"),
+        ("тысяча", "1000"),
+        ("тысячи", "1000"),
+        ("тысяч", "1000"),
+        ("hundred", "100"),
+        ("thousand", "1000"),
         ("девятнадцать", "19"),
         ("восемнадцать", "18"),
         ("семнадцать", "17"),
@@ -947,9 +991,30 @@ fn spoken_numbers_to_digits(text: &str) -> String {
     rules.sort_by(|a, b| b.0.len().cmp(&a.0.len()));
     let mut out = text.to_string();
     for (phrase, digit) in rules {
-        out = replace_phrase_ci(&out, phrase, digit);
+        out = replace_word_ci(&out, phrase, digit);
     }
     collapse_split_digits(&out)
+}
+
+/// Fold a spoken number that arrived as separate words into one value:
+/// "триста шестьдесят пять" is 300, 60, 5 and has to end up as 365.
+fn merge_number(prev: u32, next: u32) -> Option<u32> {
+    if prev == 0 || next == 0 {
+        return None;
+    }
+    if matches!(next, 100 | 1000) && prev < next {
+        return Some(prev * next);
+    }
+    let scale = if prev % 1000 == 0 {
+        1000
+    } else if prev % 100 == 0 {
+        100
+    } else if prev % 10 == 0 && prev >= 20 {
+        10
+    } else {
+        return None;
+    };
+    (prev >= scale && next < scale).then_some(prev + next)
 }
 
 fn collapse_split_digits(text: &str) -> String {
@@ -968,10 +1033,9 @@ fn collapse_split_digits_line(text: &str) -> String {
         if let Ok(n) = core.parse::<u32>() {
             let mut value = n;
             if let Some(prev) = pending.take() {
-                if prev >= 20 && prev % 10 == 0 && n < 10 {
-                    value = prev + n;
-                } else {
-                    push_pending(&mut out, prev);
+                match merge_number(prev, n) {
+                    Some(merged) => value = merged,
+                    None => push_pending(&mut out, prev),
                 }
             }
             let suffix: String = token.chars().skip_while(|c| c.is_ascii_digit()).collect();

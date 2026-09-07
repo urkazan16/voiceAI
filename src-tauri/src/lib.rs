@@ -32,6 +32,7 @@ pub mod instance;
 pub mod integrity;
 pub mod journal;
 pub mod llm;
+pub mod macos_activity;
 pub mod macos_stt;
 pub mod media;
 pub mod paths;
@@ -44,7 +45,9 @@ pub mod runtime;
 pub mod sanitize;
 pub mod screenlock;
 pub mod snippets;
+pub mod spoken_tech;
 pub mod stt;
+pub mod textscan;
 pub mod uninstall;
 pub mod uttlog;
 pub mod vad;
@@ -100,6 +103,8 @@ pub fn run() {
             commands::download_model,
             commands::list_model_status,
             commands::set_active_model,
+            commands::remove_model,
+            commands::remove_unused_models,
             commands::last_utterance_ready,
             commands::repeat_last_utterance,
             commands::get_hotkey_status,
@@ -165,12 +170,7 @@ pub fn run() {
                 tray.set_icon_as_template(true)?;
                 tray.on_menu_event(|app, event| match event.id.as_ref() {
                     "quit" => app.exit(0),
-                    "show" => {
-                        if let Some(window) = app.get_webview_window("main") {
-                            let _ = window.show();
-                            let _ = window.set_focus();
-                        }
-                    }
+                    "show" => show_main_window(app),
                     "copy-last" => dictation::enqueue(dictation::DictationCmd::CopyLast),
                     "paste-last" => dictation::enqueue(dictation::DictationCmd::PasteLast),
                     "cancel-dictation" => {
@@ -185,12 +185,7 @@ pub fn run() {
                     .icon_as_template(true)
                     .on_menu_event(|app, event| match event.id.as_ref() {
                         "quit" => app.exit(0),
-                        "show" => {
-                            if let Some(window) = app.get_webview_window("main") {
-                                let _ = window.show();
-                                let _ = window.set_focus();
-                            }
-                        }
+                        "show" => show_main_window(app),
                         "copy-last" => dictation::enqueue(dictation::DictationCmd::CopyLast),
                         "paste-last" => dictation::enqueue(dictation::DictationCmd::PasteLast),
                         "cancel-dictation" => {
@@ -206,12 +201,13 @@ pub fn run() {
                 let _ = bar.hide();
             }
 
+            macos_activity::prevent_app_nap();
             dictation::start_worker(app.handle().clone(), shared.clone(), capture.clone());
             commands::spawn_required_stt_download(app.handle().clone(), shared.clone());
 
             app.handle().plugin(
                 tauri_plugin_global_shortcut::Builder::new()
-                    .with_handler(move |app, shortcut, event| {
+                    .with_handler(move |_app, shortcut, event| {
                         let pressed =
                             event.state == tauri_plugin_global_shortcut::ShortcutState::Pressed;
                         let released =
@@ -234,11 +230,9 @@ pub fn run() {
                                 if dictation::is_busy() {
                                     return;
                                 }
-                                dictation::notify_hotkey(app, "pressed");
                                 dictation::enqueue(dictation::DictationCmd::Pressed);
                             }
                             if released {
-                                dictation::notify_hotkey(app, "released");
                                 dictation::enqueue(dictation::DictationCmd::Released);
                             }
                         }
@@ -254,11 +248,8 @@ pub fn run() {
         })
         .build(tauri::generate_context!())
         .expect("error while running LocalFlow")
-        .run(|app, event| {
-            if matches!(
-                event,
-                tauri::RunEvent::Exit | tauri::RunEvent::ExitRequested { .. }
-            ) {
+        .run(|app, event| match event {
+            tauri::RunEvent::Exit | tauri::RunEvent::ExitRequested { .. } => {
                 let (talk, copy, paste, edit) = dictation::bound_hotkeys();
                 for shortcut in [talk, copy, paste, edit, "Escape".into()] {
                     if let Ok(parsed) = shortcut.parse::<Shortcut>() {
@@ -266,7 +257,37 @@ pub fn run() {
                     }
                 }
             }
+            #[cfg(target_os = "macos")]
+            tauri::RunEvent::Reopen {
+                has_visible_windows,
+                ..
+            } => {
+                if !has_visible_windows {
+                    show_main_window(app);
+                }
+            }
+            tauri::RunEvent::WindowEvent {
+                label,
+                event: tauri::WindowEvent::CloseRequested { api, .. },
+                ..
+            } => {
+                if label == "main" || label == "bar" {
+                    api.prevent_close();
+                    if let Some(window) = app.get_webview_window(&label) {
+                        let _ = window.hide();
+                    }
+                }
+            }
+            _ => {}
         });
+}
+
+pub(crate) fn show_main_window(app: &AppHandle) {
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.unminimize();
+        let _ = window.show();
+        let _ = window.set_focus();
+    }
 }
 
 pub(crate) fn position_flow_bar(bar: &WebviewWindow) {

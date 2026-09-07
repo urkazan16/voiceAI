@@ -23,7 +23,7 @@ import {
   type DiskUsage,
   type ViewId,
 } from "./api";
-import { copy, formatBytes, navItems } from "./ui";
+import { copy, formatBytes, navItems, canDeleteDownloadedModel } from "./ui";
 import { listen } from "@tauri-apps/api/event";
 
 const fallbackSettings = (): AppSettings => ({
@@ -812,6 +812,99 @@ export function App() {
               </select>
             </label>
             <p className="text-xs text-paper/60">{t.formattingModelHelp}</p>
+            <div className="rounded-2xl border border-paper/10 bg-paper/5 p-4">
+              <p className="text-xs uppercase tracking-[0.2em] text-copper">{t.unusedModels}</p>
+              <p className="mt-2 text-xs text-paper/60">{t.unusedModelsHelp}</p>
+              {models.filter((model) =>
+                canDeleteDownloadedModel(
+                  modelStatus.find((item) => item.model_id === model.model_id),
+                ),
+              ).length === 0 ? (
+                <p className="mt-3 text-sm text-paper/60">{t.nothingUnused}</p>
+              ) : (
+                <ul className="mt-3 space-y-2">
+                  {models
+                    .filter((model) =>
+                      canDeleteDownloadedModel(
+                        modelStatus.find((item) => item.model_id === model.model_id),
+                      ),
+                    )
+                    .map((model) => {
+                      const status = modelStatus.find((item) => item.model_id === model.model_id);
+                      return (
+                        <li
+                          key={model.model_id}
+                          className="flex flex-wrap items-center justify-between gap-2 text-sm"
+                        >
+                          <span>
+                            {model.display_name}
+                            <span className="ml-2 text-paper/50">
+                              {formatBytes(status?.bytes_on_disk ?? model.size)}
+                              {status && !modelFileReady(status) ? ` · ${status.state}` : ""}
+                            </span>
+                          </span>
+                          <button
+                            type="button"
+                            className="rounded-full border border-paper/30 px-3 py-1 text-xs"
+                            onClick={() => {
+                              if (!window.confirm(t.deleteModelConfirm)) {
+                                return;
+                              }
+                              void api
+                                .removeModel(model.model_id)
+                                .then(async (result) => {
+                                  setStatus(
+                                    `${t.deletedModel} ${model.display_name} (${formatBytes(result.bytes_freed)}).`,
+                                  );
+                                  await refresh();
+                                })
+                                .catch((error) => {
+                                  setStatus(
+                                    error instanceof Error ? error.message : String(error),
+                                  );
+                                });
+                            }}
+                          >
+                            {t.deleteModel}
+                          </button>
+                        </li>
+                      );
+                    })}
+                </ul>
+              )}
+              <button
+                type="button"
+                className="mt-3 rounded-full border border-paper/30 px-4 py-2 text-sm disabled:opacity-40"
+                disabled={
+                  models.filter((model) =>
+                    canDeleteDownloadedModel(
+                      modelStatus.find((item) => item.model_id === model.model_id),
+                    ),
+                  ).length === 0
+                }
+                onClick={() => {
+                  if (!window.confirm(t.deleteUnusedConfirm)) {
+                    return;
+                  }
+                  void api
+                    .removeUnusedModels()
+                    .then(async (removed) => {
+                      const bytes = removed.reduce((sum, item) => sum + item.bytes_freed, 0);
+                      setStatus(
+                        removed.length === 0
+                          ? t.nothingUnused
+                          : `${t.deletedUnused}: ${removed.map((item) => item.model_id).join(", ")} (${formatBytes(bytes)}).`,
+                      );
+                      await refresh();
+                    })
+                    .catch((error) => {
+                      setStatus(error instanceof Error ? error.message : String(error));
+                    });
+                }}
+              >
+                {t.deleteUnusedAll}
+              </button>
+            </div>
             <label className="block text-sm text-paper/70">
               {t.interfaceLanguage}
               <select
@@ -1435,6 +1528,30 @@ export function App() {
                           }}
                         >
                           Use this {model.kind === "llm" ? "for formatting" : "for speech"}
+                        </button>
+                      )}
+                      {canDeleteDownloadedModel(status) && (
+                        <button
+                          className="rounded-full border border-paper/30 px-4 py-1 text-paper/80"
+                          disabled={busy}
+                          onClick={async () => {
+                            if (!window.confirm(t.deleteModelConfirm)) {
+                              return;
+                            }
+                            try {
+                              const result = await api.removeModel(model.model_id);
+                              setModelMessage(
+                                `${t.deletedModel} ${model.display_name} (${formatBytes(result.bytes_freed)}).`,
+                              );
+                              await refresh();
+                            } catch (error) {
+                              setModelMessage(
+                                error instanceof Error ? error.message : String(error),
+                              );
+                            }
+                          }}
+                        >
+                          {t.deleteModel}
                         </button>
                       )}
                     </div>

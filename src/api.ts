@@ -359,6 +359,10 @@ export const api = {
   downloadModel: (modelId: string) => call<string>("download_model", { modelId }),
   listModelStatus: () => call<ModelInstallStatus[]>("list_model_status"),
   setActiveModel: (modelId: string) => call<string>("set_active_model", { modelId }),
+  removeModel: (modelId: string) =>
+    call<{ model_id: string; bytes_freed: number }>("remove_model", { modelId }),
+  removeUnusedModels: () =>
+    call<{ model_id: string; bytes_freed: number }[]>("remove_unused_models"),
   lastUtteranceReady: () => call<boolean>("last_utterance_ready"),
   repeatLastUtterance: () => call<PipelineOutput>("repeat_last_utterance"),
   getHotkeyStatus: () => call<HotkeyStatus>("get_hotkey_status"),

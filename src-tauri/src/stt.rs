@@ -1,4 +1,5 @@
 use crate::error::{LfError, LfResult};
+use crate::whisper_stt::DecodeOptions;
 use std::path::Path;
 
 pub trait SpeechToText: Send + Sync {
@@ -7,6 +8,7 @@ pub trait SpeechToText: Send + Sync {
         pcm: &[f32],
         model_path: Option<&Path>,
         language: &str,
+        options: &DecodeOptions,
     ) -> LfResult<String>;
 }
 
@@ -18,6 +20,7 @@ impl SpeechToText for NativeStt {
         pcm: &[f32],
         model_path: Option<&Path>,
         language: &str,
+        options: &DecodeOptions,
     ) -> LfResult<String> {
         if let Some(path) = model_path {
             match crate::whisper_stt::transcribe(
@@ -25,6 +28,7 @@ impl SpeechToText for NativeStt {
                 pcm,
                 crate::dictation::cancel_flag(),
                 language,
+                options,
             ) {
                 Ok(text) if !text.trim().is_empty() => Ok(text),
                 Ok(_) => Err(LfError::Other(
@@ -46,11 +50,12 @@ pub fn transcribe_with_paragraph_pauses(
     model_path: Option<&Path>,
     language: &str,
     vad_threshold: f32,
+    options: &DecodeOptions,
 ) -> LfResult<String> {
     let _ = vad_threshold;
     // One Whisper `full()` per utterance. Extra passes on VAD chunks used to
     // multiply CPU on pauses; paragraph breaks still come from segment cues.
-    stt.transcribe(pcm, model_path, language)
+    stt.transcribe(pcm, model_path, language, options)
 }
 
 pub struct ScriptedStt {
@@ -63,6 +68,7 @@ impl SpeechToText for ScriptedStt {
         _pcm: &[f32],
         _model_path: Option<&Path>,
         _language: &str,
+        _options: &DecodeOptions,
     ) -> LfResult<String> {
         Ok(self.transcript.clone())
     }
@@ -77,13 +83,22 @@ mod tests {
         let stt = ScriptedStt {
             transcript: "привет".into(),
         };
-        assert_eq!(stt.transcribe(&[], None, "ru").unwrap(), "привет");
+        assert_eq!(
+            stt.transcribe(&[], None, "ru", &DecodeOptions::default())
+                .unwrap(),
+            "привет"
+        );
     }
 
     #[test]
     fn native_stt_missing_model_is_whisper_not_c_stub() {
         let err = NativeStt
-            .transcribe(&[0.1; 800], Some(Path::new("/no/such/whisper.bin")), "ru")
+            .transcribe(
+                &[0.1; 800],
+                Some(Path::new("/no/such/whisper.bin")),
+                "ru",
+                &DecodeOptions::default(),
+            )
             .unwrap_err();
         assert_eq!(err.code(), "MODEL_MISSING");
         assert!(!err.to_string().contains("localflow-native-stub"));
@@ -92,7 +107,9 @@ mod tests {
 
     #[test]
     fn native_stt_without_model_path_does_not_use_macos_speech() {
-        let err = NativeStt.transcribe(&[0.1; 800], None, "ru").unwrap_err();
+        let err = NativeStt
+            .transcribe(&[0.1; 800], None, "ru", &DecodeOptions::default())
+            .unwrap_err();
         assert_eq!(err.code(), "MODEL_MISSING");
     }
 
@@ -108,6 +125,7 @@ mod tests {
                 _pcm: &[f32],
                 _model_path: Option<&Path>,
                 _language: &str,
+                _options: &DecodeOptions,
             ) -> LfResult<String> {
                 self.hits.fetch_add(1, Ordering::Relaxed);
                 Ok("один два".into())
@@ -124,7 +142,15 @@ mod tests {
         let stt = CountStt {
             hits: AtomicU32::new(0),
         };
-        let text = transcribe_with_paragraph_pauses(&stt, &pcm, None, "ru", 0.012).unwrap();
+        let text = transcribe_with_paragraph_pauses(
+            &stt,
+            &pcm,
+            None,
+            "ru",
+            0.012,
+            &DecodeOptions::default(),
+        )
+        .unwrap();
         assert_eq!(text, "один два");
         assert_eq!(stt.hits.load(Ordering::Relaxed), 1);
     }

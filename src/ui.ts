@@ -36,6 +36,23 @@ export function navItems(lang: string): { id: string; label: string }[] {
   return isRu(lang) ? NAV_RU : NAV_EN;
 }
 
+export function canDeleteDownloadedModel(status: {
+  bytes_on_disk: number;
+  local_path?: string | null;
+  active: boolean;
+  installed: boolean;
+  verified: boolean;
+} | undefined): boolean {
+  if (!status) {
+    return false;
+  }
+  const onDisk = status.bytes_on_disk > 0 || Boolean(status.local_path);
+  if (!onDisk) {
+    return false;
+  }
+  return !(status.active && (status.installed || status.verified));
+}
+
 export function formatBytes(size: number): string {
   if (size < 1024) return `${size} B`;
   if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`;
@@ -101,6 +118,17 @@ const EN = {
     "Optional Qwen/LLM files that are installed. Dictation still works if none are selected.",
   noDownloadedSpeech: "No speech model is installed yet.",
   noDownloadedFormatting: "No formatting model is installed yet.",
+  unusedModels: "Unused downloads",
+  unusedModelsHelp:
+    "Installed or leftover files that are not the speech or formatting model in use. The active model cannot be deleted until you switch to another downloaded file.",
+  deleteModel: "Delete from this Mac",
+  deleteUnusedAll: "Delete all unused models",
+  deleteModelConfirm: "Delete this model file from disk? You can download it again later.",
+  deleteUnusedConfirm:
+    "Delete every unused model file? The model currently in use is kept. You can download the others again later.",
+  nothingUnused: "No unused model files on disk.",
+  deletedModel: "Deleted",
+  deletedUnused: "Deleted unused models",
   interfaceLanguage: "Interface language",
   refreshDevices: "Refresh devices",
   micPermission: "Microphone permission",
@@ -235,6 +263,17 @@ const RU: typeof EN = {
     "Необязательные установленные Qwen/LLM. Диктовка работает и без них.",
   noDownloadedSpeech: "Пока нет установленной модели речи.",
   noDownloadedFormatting: "Пока нет установленной модели форматирования.",
+  unusedModels: "Неиспользуемые загрузки",
+  unusedModelsHelp:
+    "Файлы на диске, которые сейчас не выбраны для речи или форматирования. Текущую модель нельзя удалить, пока не переключитесь на другую скачанную.",
+  deleteModel: "Удалить с этого Mac",
+  deleteUnusedAll: "Удалить все неиспользуемые модели",
+  deleteModelConfirm: "Удалить этот файл модели с диска? Потом его можно скачать снова.",
+  deleteUnusedConfirm:
+    "Удалить все неиспользуемые файлы моделей? Текущая модель останется. Остальные можно скачать снова.",
+  nothingUnused: "На диске нет неиспользуемых файлов моделей.",
+  deletedModel: "Удалено",
+  deletedUnused: "Удалены неиспользуемые модели",
   interfaceLanguage: "Язык интерфейса",
   refreshDevices: "Обновить устройства",
   micPermission: "Право на микрофон",
