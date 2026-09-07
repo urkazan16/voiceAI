@@ -4,6 +4,13 @@ updates:
     directory: /
     schedule:
       interval: weekly
+    groups:
+      eslint-stack:
+        patterns:
+          - "eslint"
+          - "@eslint/*"
+          - "typescript-eslint"
+          - "eslint-plugin-*"
   - package-ecosystem: cargo
     directory: /src-tauri
     schedule:

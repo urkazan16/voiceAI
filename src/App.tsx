@@ -257,6 +257,8 @@ export function App() {
   }
 
   useEffect(() => {
+    // Shared reload path; hydrate once after the window mounts.
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- mount hydrate
     void refresh();
   }, []);
 
@@ -528,10 +530,10 @@ export function App() {
               const sttProgress = sttId ? downloadProgress[sttId] : undefined;
               const sttReady = Boolean(
                 sttStatus &&
-                  (sttStatus.verified ||
-                    sttStatus.state === "verified" ||
-                    sttStatus.state === "installed") &&
-                  sttStatus.active,
+                (sttStatus.verified ||
+                  sttStatus.state === "verified" ||
+                  sttStatus.state === "installed") &&
+                sttStatus.active,
               );
               const sttBusy =
                 sttStatus?.state === "downloading" ||

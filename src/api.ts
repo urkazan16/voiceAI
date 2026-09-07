@@ -304,7 +304,7 @@ async function call<T>(command: string, args?: Record<string, unknown>): Promise
   try {
     return await invoke<T>(command, args);
   } catch (error) {
-    throw new Error(formatInvokeError(error));
+    throw Object.assign(new Error(formatInvokeError(error)), { cause: error });
   }
 }
 

@@ -70,22 +70,22 @@
 
 Без проверенной локальной модели цикл врёт (каталог, Paraspeech offline, JustVoice).
 
-| ID     | Проверка                                                                                | Pass                                                   |
+| ID | Проверка | Pass |
 | ------ | --------------------------------------------------------------------------------------- | ------------------------------------------------------ | --- | -------------------------- |
-| CF-R01 | Первый запуск качает **активную** модель (по умолчанию whisper-medium) или честный skip | не пустой STT                                          |
-| CF-R02 | Перед активацией: **SHA-256** каталога                                                  | mismatch → `MODEL_CHECKSUM_MISMATCH`, файл не грузится |
-| CF-R03 | Перед активацией: magic ggml/GGUF                                                       | битый файл не activate                                 |
-| CF-R04 | Неполный download: размер ≠ каталог                                                     | не skip HTTP; resume или ошибка incomplete             |
-| CF-R05 | После установки моделей: **Wi‑Fi off**, hold → текст (Paraspeech / Hold To Talk)        | сеть не нужна                                          |
-| CF-R06 | Во время реплики нет upload аудио (Little Snitch / pcap)                                | 0 байт STT наружу                                      |
-| CF-R07 | Язык `ru` / `en` / `auto` из настройки                                                  | переключение без пересборки                            |
-| CF-R08 | Живой микрофон, одна фраза на языке настройки                                           | непустой transcript, не только UI                      |
-| CF-R09 | Тот же Voice Memo 30 с (MetaWhisp)                                                      | WER записан; TTS `say` **не** замена F-01              |
-| CF-R10 | Теги модели `[BLANK_AUDIO]`, `<                                                         | en                                                     | >`  | **нет** в финальном тексте |
-| CF-R11 | Нет Apple Speech fallback при отсутствии ggml                                           | `MODEL_MISSING`, не облако                             |
-| CF-R12 | `compute_device=cpu` в этом билде                                                       | не падает из‑за GPU picker                             |
-| CF-R13 | Мало места на диске при download Medium                                                 | отказ, не битый `.bin`                                 |
-| CF-R14 | Repeat last: тот же wav, текущая модель                                                 | повтор без нового захвата                              |
+| CF-R01 | Первый запуск качает **активную** модель (по умолчанию whisper-medium) или честный skip | не пустой STT |
+| CF-R02 | Перед активацией: **SHA-256** каталога | mismatch → `MODEL_CHECKSUM_MISMATCH`, файл не грузится |
+| CF-R03 | Перед активацией: magic ggml/GGUF | битый файл не activate |
+| CF-R04 | Неполный download: размер ≠ каталог | не skip HTTP; resume или ошибка incomplete |
+| CF-R05 | После установки моделей: **Wi‑Fi off**, hold → текст (Paraspeech / Hold To Talk) | сеть не нужна |
+| CF-R06 | Во время реплики нет upload аудио (Little Snitch / pcap) | 0 байт STT наружу |
+| CF-R07 | Язык `ru` / `en` / `auto` из настройки | переключение без пересборки |
+| CF-R08 | Живой микрофон, одна фраза на языке настройки | непустой transcript, не только UI |
+| CF-R09 | Тот же Voice Memo 30 с (MetaWhisp) | WER записан; TTS `say` **не** замена F-01 |
+| CF-R10 | Теги модели `[BLANK_AUDIO]`, `<                                                         | en                                                     | >` | **нет** в финальном тексте |
+| CF-R11 | Нет Apple Speech fallback при отсутствии ggml | `MODEL_MISSING`, не облако |
+| CF-R12 | `compute_device=cpu` в этом билде | не падает из‑за GPU picker |
+| CF-R13 | Мало места на диске при download Medium | отказ, не битый `.bin` |
+| CF-R14 | Repeat last: тот же wav, текущая модель | повтор без нового захвата |
 
 ---
 
