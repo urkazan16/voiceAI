@@ -186,7 +186,7 @@ mod x11 {
                 return None;
             }
             for (i, chunk) in mapping.keysyms.chunks(width).enumerate() {
-                if chunk.iter().any(|ks| *ks == keysym) {
+                if chunk.contains(&keysym) {
                     return Some(min.saturating_add(i as u8));
                 }
             }

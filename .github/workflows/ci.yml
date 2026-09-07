@@ -107,7 +107,7 @@ jobs:
       - run: npm ci
       - run: npm audit --omit=dev --audit-level=high
       - run: cargo install cargo-audit --locked
-      - run: cargo audit --manifest-path src-tauri/Cargo.toml
+      - run: cargo audit --file src-tauri/Cargo.lock
 
   build:
     name: build

@@ -43,7 +43,9 @@ export function Bar() {
         </p>
         <span className="flex items-center gap-2">
           {state.wpm ? (
-            <span className="text-[10px] tabular-nums text-paper/60">{state.wpm.toFixed(0)} wpm</span>
+            <span className="text-[10px] tabular-nums text-paper/60">
+              {state.wpm.toFixed(0)} wpm
+            </span>
           ) : null}
           <span className={`h-3 w-3 rounded-full bg-copper ${recording ? "animate-pulse" : ""}`} />
         </span>

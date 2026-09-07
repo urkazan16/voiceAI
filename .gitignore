@@ -2,6 +2,7 @@
 node_modules/
 dist/
 src-tauri/target/
+src-tauri/native/build/
 src-tauri/gen/
 third_party/
 release-artifacts/

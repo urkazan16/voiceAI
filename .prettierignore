@@ -1,5 +1,6 @@
 dist
 src-tauri/target
+src-tauri/native/build
 src-tauri/gen
 node_modules
 release-artifacts

@@ -36,7 +36,7 @@
     "license:check": "node scripts/license-check.mjs",
     "uniqueness:check": "node scripts/uniqueness-check.mjs",
     "sbom": "node scripts/run-with-toolchain.mjs node scripts/generate-sbom.mjs",
-    "audit": "npm audit --omit=dev && node scripts/run-with-toolchain.mjs cargo audit --manifest-path src-tauri/Cargo.toml"
+    "audit": "npm audit --omit=dev && node scripts/run-with-toolchain.mjs cargo audit --file src-tauri/Cargo.lock"
   },
   "dependencies": {
     "@tauri-apps/api": "2.2.0",

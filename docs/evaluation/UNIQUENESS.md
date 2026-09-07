@@ -11,13 +11,13 @@ This is an engineering uniqueness report for the submitted tree. It is not a cer
 
 The product logic is **first-party LocalFlow code**. The tree is **not** a rename of Wispr, Superwhisper, MacWhisper, Talon, or Dragon. Third-party libraries and model weights are **attributed** (`NOTICE`, `licenses/`) and are **not** copied into `src-tauri/src/`.
 
-| Class | Share of application source (non-blank, non-`//` lines, 2026-09-06) |
-| --- | ---: |
-| Original Rust core (`src-tauri/src/`, 43 files) | 9 502 |
-| Original UI (`src/`, 7 files) | 2 434 |
-| Tests, CLI wrappers, scripts (same extensions, rest of tree) | 1 029 |
-| **First-party total** | **12 965** |
-| Vendored crates / `node_modules` | not counted (dependencies, licensed separately) |
+| Class                                                        | Share of application source (non-blank, non-`//` lines, 2026-09-06) |
+| ------------------------------------------------------------ | ------------------------------------------------------------------: |
+| Original Rust core (`src-tauri/src/`, 43 files)              |                                                               9 502 |
+| Original UI (`src/`, 7 files)                                |                                                               2 434 |
+| Tests, CLI wrappers, scripts (same extensions, rest of tree) |                                                               1 029 |
+| **First-party total**                                        |                                                          **12 965** |
+| Vendored crates / `node_modules`                             |                     not counted (dependencies, licensed separately) |
 
 Application source that implements dictation, capture, checksummed downloads, formatting, and paste is original to this tree. Borrowed material is limited to:
 
@@ -33,7 +33,7 @@ These decisions are specific to LocalFlow and would not appear together in an up
 2. Microphone **starts on key-down** (`CaptureHub::start`) and **drops CPAL after the utterance**.
 3. Model fetch skips the network only when the partial file size **equals** the catalog size, then still verifies **SHA-256** (`existing_partial_is_complete`, `digest_matches_catalog`).
 4. Spoken values: digits on/off, dates **DMY** (`DD.MM.YYYY`) or **ISO**, clock **HH:MM** (`05:03`), without splitting `5.3.26` or `15:30` in Smart Format.
-5. Backtrack marker **` нет `** for value swap; model tags such as `[BLANK_AUDIO]` stripped before insert.
+5. Backtrack marker **`нет`** for value swap; model tags such as `[BLANK_AUDIO]` stripped before insert.
 6. Clipboard restore via **NSPasteboard** snapshot; paste blocked when **secure input** is on.
 7. Repeat last clip from `audio/last-utterance.wav` — not a catalog model.
 8. Default recognizer **whisper-medium** on first install, with catalog hashes pinned.
@@ -42,12 +42,12 @@ String search of the tree found **no** `wispr`, `superwhisper`, `macwhisper`, or
 
 ## What is not claimed as unique
 
-| Item | Status |
-| --- | --- |
-| Tauri 2 + React + Vite shell | Common stack; wiring, IPC commands, and pipeline are LocalFlow |
-| whisper-rs / ggml inference | Upstream library; LocalFlow owns load, VAD skip, sanitization, params |
-| Hugging Face model files | Checksummed downloads; files are not the submission |
-| `afplay` cue playback | OS utility; volume is a LocalFlow setting (`sound_cue_volume`) |
+| Item                         | Status                                                                |
+| ---------------------------- | --------------------------------------------------------------------- |
+| Tauri 2 + React + Vite shell | Common stack; wiring, IPC commands, and pipeline are LocalFlow        |
+| whisper-rs / ggml inference  | Upstream library; LocalFlow owns load, VAD skip, sanitization, params |
+| Hugging Face model files     | Checksummed downloads; files are not the submission                   |
+| `afplay` cue playback        | OS utility; volume is a LocalFlow setting (`sound_cue_volume`)        |
 
 ## Self-overlap (expected, not plagiarism)
 

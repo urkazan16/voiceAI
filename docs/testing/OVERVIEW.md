@@ -1,12 +1,12 @@
 # Testing
 
-| Command               | Coverage                                                             |
-| --------------------- | -------------------------------------------------------------------- |
-| `npm test`            | Frontend unit, Rust lib, integration                                 |
-| `npm run test:all`    | Adds UI, pipeline, dictionary, personalization                       |
-| `npm run test:ai`     | AI catalog / future inference bench                                  |
-| `npm run check:local` | Offline checker: WER identity + VAD at SNR 15 dB (`localflow check`) |
-| `npm run download:stt` | Fetch the active Whisper model (Hugging Face, SHA-256)            |
+| Command                | Coverage                                                             |
+| ---------------------- | -------------------------------------------------------------------- |
+| `npm test`             | Frontend unit, Rust lib, integration                                 |
+| `npm run test:all`     | Adds UI, pipeline, dictionary, personalization                       |
+| `npm run test:ai`      | AI catalog / future inference bench                                  |
+| `npm run check:local`  | Offline checker: WER identity + VAD at SNR 15 dB (`localflow check`) |
+| `npm run download:stt` | Fetch the active Whisper model (Hugging Face, SHA-256)               |
 
 CLI (no GUI):
 
