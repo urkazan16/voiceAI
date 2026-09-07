@@ -56,7 +56,7 @@
     "@testing-library/react": "16.1.0",
     "@types/react": "18.3.18",
     "@types/react-dom": "18.3.5",
-    "@vitejs/plugin-react": "4.3.4",
+    "@vitejs/plugin-react": "6.1.1",
     "autoprefixer": "10.4.20",
     "eslint": "10.10.0",
     "eslint-plugin-react-hooks": "7.1.1",
