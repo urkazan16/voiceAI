@@ -7,10 +7,8 @@ Use `main` plus short-lived feature branches (`feature/audio`, `feature/whisper`
 Pull requests must pass:
 
 - tests
-- formatter / lint (`npm run check`)
-- license scan (`npm run license:check`)
-- uniqueness report attached (`npm run uniqueness:check`)
-- security scan (`npm audit` / `cargo audit` when available)
+- `npm run check:gate` — same as CI jobs **quality**, **license**, and **security**
+- formatter / lint / Clippy (`npm run check`, includes the gate)
 - build
 
 ## Commits
@@ -27,10 +25,13 @@ Do not squash the entire product into `Initial project`.
 
 ```bash
 npm install
+npm run check:gate
 npm run check
 npm test
 npm run tauri dev
 ```
+
+`npm install` installs a `pre-commit` hook that runs `npm run check:gate` so a commit cannot land if quality, license, or security would fail.
 
 ## Native runtimes
 

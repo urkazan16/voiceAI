@@ -48,14 +48,14 @@ Ready-made installers from the [latest GitHub Release](https://github.com/urkaza
 
 Готовые установщики из [последнего GitHub Release](https://github.com/urkazan16/voiceAI/releases/latest). Моделей в установщике **нет**: Whisper Medium (~1.5 ГБ) скачивается при первом запуске.
 
-| Platform / Платформа | File / Файл |
-| -------------------- | ----------- |
-| macOS Apple Silicon (M1 and later) | [LocalFlow-macos-arm64.dmg](https://github.com/urkazan16/voiceAI/releases/latest/download/LocalFlow-macos-arm64.dmg) |
-| macOS Intel | [LocalFlow-macos-x64.dmg](https://github.com/urkazan16/voiceAI/releases/latest/download/LocalFlow-macos-x64.dmg) |
-| Windows 10 / 11 | [LocalFlow-windows-x64.exe](https://github.com/urkazan16/voiceAI/releases/latest/download/LocalFlow-windows-x64.exe) |
-| Linux Debian / Ubuntu | [LocalFlow-linux-x64.deb](https://github.com/urkazan16/voiceAI/releases/latest/download/LocalFlow-linux-x64.deb) |
-| Linux AppImage | [LocalFlow-linux-x64.AppImage](https://github.com/urkazan16/voiceAI/releases/latest/download/LocalFlow-linux-x64.AppImage) |
-| Checksums | [SHA256SUMS](https://github.com/urkazan16/voiceAI/releases/latest/download/SHA256SUMS) |
+| Platform / Платформа               | File / Файл                                                                                                                |
+| ---------------------------------- | -------------------------------------------------------------------------------------------------------------------------- |
+| macOS Apple Silicon (M1 and later) | [LocalFlow-macos-arm64.dmg](https://github.com/urkazan16/voiceAI/releases/latest/download/LocalFlow-macos-arm64.dmg)       |
+| macOS Intel                        | [LocalFlow-macos-x64.dmg](https://github.com/urkazan16/voiceAI/releases/latest/download/LocalFlow-macos-x64.dmg)           |
+| Windows 10 / 11                    | [LocalFlow-windows-x64.exe](https://github.com/urkazan16/voiceAI/releases/latest/download/LocalFlow-windows-x64.exe)       |
+| Linux Debian / Ubuntu              | [LocalFlow-linux-x64.deb](https://github.com/urkazan16/voiceAI/releases/latest/download/LocalFlow-linux-x64.deb)           |
+| Linux AppImage                     | [LocalFlow-linux-x64.AppImage](https://github.com/urkazan16/voiceAI/releases/latest/download/LocalFlow-linux-x64.AppImage) |
+| Checksums                          | [SHA256SUMS](https://github.com/urkazan16/voiceAI/releases/latest/download/SHA256SUMS)                                     |
 
 All versions / Все версии: [github.com/urkazan16/voiceAI/releases](https://github.com/urkazan16/voiceAI/releases)
 
@@ -81,11 +81,11 @@ npm run tauri dev
 Hold **Control+Shift+Space**, speak, release.  
 Удерживайте **Control+Shift+Space**, говорите, отпустите.
 
-| Host    | Avoid these system shortcuts / Не занимайте              | Paste / Вставка                                           |
-| ------- | -------------------------------------------------------- | --------------------------------------------------------- |
-| macOS   | Option+Space, Control+Space (Spotlight / input source)   | Cmd+V                                                     |
-| Windows | Win+Space (input language)                               | Ctrl+V                                                    |
-| Linux   | Super+Space (desktop layout switcher)                    | Ctrl+V; on Wayland press it if automatic paste is blocked |
+| Host    | Avoid these system shortcuts / Не занимайте            | Paste / Вставка                                           |
+| ------- | ------------------------------------------------------ | --------------------------------------------------------- |
+| macOS   | Option+Space, Control+Space (Spotlight / input source) | Cmd+V                                                     |
+| Windows | Win+Space (input language)                             | Ctrl+V                                                    |
+| Linux   | Super+Space (desktop layout switcher)                  | Ctrl+V; on Wayland press it if automatic paste is blocked |
 
 Packaged builds are in [Download](#download--скачать): `.dmg` (macOS), NSIS `.exe` (Windows, current user), `.deb` and AppImage (Linux).  
 Готовые сборки — в [Скачать](#download--скачать).
@@ -156,7 +156,8 @@ There are no secret environment variables and no absolute developer paths in the
 | Command                    | What it does                                                                                  |
 | -------------------------- | --------------------------------------------------------------------------------------------- |
 | `npm install`              | Install JS dependencies from `package-lock.json`                                              |
-| `npm run check`            | TypeScript, ESLint, Prettier, `cargo check`, `cargo fmt`, Clippy                              |
+| `npm run check:gate`       | Same as CI **quality** + **license** + **security** (tsc, ESLint, Prettier, licenses, audit)  |
+| `npm run check`            | `check:gate` plus `cargo check`, `cargo fmt`, Clippy                                          |
 | `npm test`                 | Frontend + Rust unit + integration tests                                                      |
 | `npm run test:all`         | Unit, integration, UI, pipeline, dictionary, personalization                                  |
 | `npm run test:ai`          | AI benchmark profile (requires catalog + optional local models)                               |
