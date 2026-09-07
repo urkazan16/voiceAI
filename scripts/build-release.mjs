@@ -19,8 +19,20 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const host = process.platform;
 
 function run(cmd, args, opts = {}) {
-  const result = spawnSync(cmd, args, { stdio: "inherit", cwd: root, ...opts });
+  // Windows cannot spawn npm/npx shims (.cmd) without a shell; the old
+  // spawnSync("npx") exited 1 with no output on package (windows-latest).
+  const result = spawnSync(cmd, args, {
+    stdio: "inherit",
+    cwd: root,
+    env: process.env,
+    shell: process.platform === "win32",
+    ...opts,
+  });
+  if (result.error) {
+    console.error(`failed to start ${cmd}: ${result.error.message}`);
+  }
   if (result.status !== 0) {
+    console.error(`${cmd} ${args.join(" ")} exited ${result.status ?? "null"}`);
     process.exit(result.status ?? 1);
   }
 }
