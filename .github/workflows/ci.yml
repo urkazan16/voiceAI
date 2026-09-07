@@ -6,10 +6,14 @@ on:
     branches: [main]
     tags:
       - "v*"
+  workflow_dispatch:
 
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
+
+permissions:
+  contents: read
 
 jobs:
   quality:
@@ -150,9 +154,14 @@ jobs:
         env:
           LOCALFLOW_GIT_SHA: ${{ github.sha }}
 
+  # Installers are uploaded as run artifacts. Skip on pull_request (including
+  # Dependabot): those runs only compile. Tag a v* release or push main / Run workflow.
   package:
     name: package
-    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    if: >
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'push' &&
+        (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')))
     runs-on: ${{ matrix.os }}
     needs: [build, security]
     strategy:
@@ -188,4 +197,63 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact }}
-          path: release-artifacts/
+          path: |
+            release-artifacts/LocalFlow-*.dmg
+            release-artifacts/LocalFlow-*.exe
+            release-artifacts/LocalFlow-*.deb
+            release-artifacts/LocalFlow-*.AppImage
+            release-artifacts/SHA256SUMS
+          if-no-files-found: error
+
+  publish:
+    name: publish
+    if: >
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'push' &&
+        (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')))
+    needs: package
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          pattern: LocalFlow-*
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          mapfile -t files < <(find dist -type f \( \
+            -name 'LocalFlow-*.dmg' -o \
+            -name 'LocalFlow-*.exe' -o \
+            -name 'LocalFlow-*.deb' -o \
+            -name 'LocalFlow-*.AppImage' \
+          \) | sort)
+          if [[ ${#files[@]} -eq 0 ]]; then
+            echo "No installer files downloaded"
+            find dist -type f || true
+            exit 1
+          fi
+          find dist -name SHA256SUMS -exec cat {} \; | grep -E '  LocalFlow-' | sort -u > SHA256SUMS
+          files+=(SHA256SUMS)
+          notes=$'Installers for macOS, Windows, and Linux.\nУстановщики для macOS, Windows и Linux.\n\nSpeech models download on first launch (~1.5 GB).\nРечевая модель скачивается при первом запуске (~1.5 ГБ).'
+          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            tag="${GITHUB_REF_NAME}"
+            if gh release view "$tag" >/dev/null 2>&1; then
+              gh release upload "$tag" "${files[@]}" --clobber
+            else
+              gh release create "$tag" "${files[@]}" --title "LocalFlow ${tag}" --notes "$notes" --latest
+            fi
+          else
+            if gh release view nightly >/dev/null 2>&1; then
+              gh release delete nightly --yes --cleanup-tag
+            fi
+            gh release create nightly "${files[@]}" \
+              --target "${GITHUB_SHA}" \
+              --title "LocalFlow" \
+              --notes "$notes" \
+              --latest
+          fi

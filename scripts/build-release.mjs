@@ -83,6 +83,8 @@ for (const kind of ["dmg", "macos", "nsis", "msi", "deb", "rpm", "appimage"]) {
   collect(kind);
 }
 
+renameInstallers(artifacts, os.arch());
+
 run("node", ["scripts/generate-sbom.mjs", artifacts]);
 run("node", ["scripts/write-sha256sums.mjs", artifacts]);
 cpSync(path.join(root, "licenses"), path.join(artifacts, "THIRD_PARTY_LICENSES"), {
@@ -95,3 +97,36 @@ writeFileSync(path.join(artifacts, "CHANGELOG.md"), readFileSync(path.join(root,
 console.log(
   `Release artifacts for LocalFlow ${version} (${host}/${os.arch()}) written to ${artifacts}`,
 );
+
+/** Stable names so README / GitHub Releases latest URLs do not change with the version. */
+function stableInstallerName(fileName, arch) {
+  const cpu = arch === "arm64" || arch === "aarch64" ? "arm64" : "x64";
+  const lower = fileName.toLowerCase();
+  if (lower.endsWith(".dmg")) return `LocalFlow-macos-${cpu}.dmg`;
+  if (lower.endsWith(".app")) return `LocalFlow-macos-${cpu}.app`;
+  if (lower.endsWith(".exe")) return `LocalFlow-windows-${cpu}.exe`;
+  if (lower.endsWith(".msi")) return `LocalFlow-windows-${cpu}.msi`;
+  if (lower.endsWith(".deb")) return `LocalFlow-linux-${cpu}.deb`;
+  if (lower.endsWith(".appimage")) return `LocalFlow-linux-${cpu}.AppImage`;
+  return null;
+}
+
+function renameInstallers(dir, arch) {
+  for (const name of readdirSync(dir)) {
+    const next = stableInstallerName(name, arch);
+    if (!next || next === name) continue;
+    const from = path.join(dir, name);
+    const to = path.join(dir, next);
+    if (existsSync(to)) {
+      rmSync(to, { recursive: true, force: true });
+    }
+    const st = lstatSync(from);
+    if (st.isDirectory()) {
+      cpSync(from, to, { recursive: true });
+      rmSync(from, { recursive: true, force: true });
+    } else {
+      copyFileSync(from, to);
+      rmSync(from);
+    }
+  }
+}
