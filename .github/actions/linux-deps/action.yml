@@ -20,4 +20,9 @@ runs:
           libssl-dev \
           libwebkit2gtk-4.1-dev \
           libclang-dev \
+          llvm-dev \
           patchelf
+        libdir="$(llvm-config --libdir 2>/dev/null || true)"
+        if [[ -n "$libdir" ]]; then
+          echo "LIBCLANG_PATH=$libdir" >> "$GITHUB_ENV"
+        fi
