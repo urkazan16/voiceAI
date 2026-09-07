@@ -1,0 +1,9 @@
+{
+  "bundle": {
+    "linux": {
+      "deb": {
+        "depends": ["libayatana-appindicator3-1"]
+      }
+    }
+  }
+}

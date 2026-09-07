@@ -1,5 +1,13 @@
 import { describe, expect, it } from "vitest";
-import { copy, formatBytes, NAV, navItems, canDeleteDownloadedModel } from "./ui";
+import {
+  copy,
+  formatBytes,
+  NAV,
+  navItems,
+  canDeleteDownloadedModel,
+  hostKindFrom,
+  showMacOnlyControls,
+} from "./ui";
 import { formatInvokeError } from "./api";
 
 describe("formatBytes", () => {
@@ -45,6 +53,41 @@ describe("copy", () => {
     expect(copy("ru").deleteUnusedAll).toMatch(/неиспользуем/i);
     expect(copy("ru").onboardingTitle).toMatch(/Mac/);
     expect(copy("ru").interfaceLanguage).toBe("Язык интерфейса");
+  });
+
+  it("keeps macOS wording when host is omitted", () => {
+    expect(copy("en").clipboardHelp).toMatch(/Cmd\+V/);
+    expect(copy("en").onboarding1).toMatch(/Accessibility/);
+  });
+
+  it("uses Windows wording without macOS Accessibility copy", () => {
+    expect(copy("en", "windows").onboardingTitle).toMatch(/this PC/);
+    expect(copy("en", "windows").hotkeyHelp).toMatch(/Win\+Space/);
+    expect(copy("en", "windows").hotkeyHelp).not.toMatch(/Spotlight/);
+    expect(copy("en", "windows").clipboardHelp).toMatch(/Ctrl\+V/);
+    expect(copy("en", "windows").onboarding1).not.toMatch(/Accessibility/);
+    expect(copy("ru", "windows").onboardingTitle).toMatch(/ПК/);
+    expect(copy("ru", "windows").onboardingTitle).not.toMatch(/Mac/);
+  });
+
+  it("uses Linux wording and a Wayland paste note", () => {
+    expect(copy("en", "linux").onboardingTitle).toMatch(/this computer/);
+    expect(copy("en", "linux").hotkeyHelp).toMatch(/Super\+Space/);
+    expect(copy("en", "linux").clipboardHelp).toMatch(/Wayland/);
+    expect(copy("ru", "linux").onboarding1).toMatch(/Wayland/);
+    expect(copy("ru", "linux").onboardingTitle).not.toMatch(/Mac/);
+  });
+});
+
+describe("hostKindFrom", () => {
+  it("maps build.platform strings from get_build_info", () => {
+    expect(hostKindFrom("macOS Intel")).toBe("macos");
+    expect(hostKindFrom("macOS Apple Silicon")).toBe("macos");
+    expect(hostKindFrom("windows")).toBe("windows");
+    expect(hostKindFrom("linux")).toBe("linux");
+    expect(showMacOnlyControls("macos")).toBe(true);
+    expect(showMacOnlyControls("windows")).toBe(false);
+    expect(showMacOnlyControls("linux")).toBe(false);
   });
 });
 

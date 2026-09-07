@@ -9,16 +9,34 @@ elif [[ -t 0 ]]; then
     KEEP=1
   fi
 fi
-ROOT="${LOCALFLOW_DATA_DIR:-$HOME/Library/Application Support/LocalFlow}"
-AGENT="${HOME}/Library/LaunchAgents/app.localflow.desktop.plist"
+
+UNAME="$(uname -s)"
+AGENT=""
+DESKTOP=""
+if [[ -n "${LOCALFLOW_DATA_DIR:-}" ]]; then
+  ROOT="$LOCALFLOW_DATA_DIR"
+elif [[ "$UNAME" == "Darwin" ]]; then
+  ROOT="${HOME}/Library/Application Support/LocalFlow"
+  AGENT="${HOME}/Library/LaunchAgents/app.localflow.desktop.plist"
+elif [[ "$UNAME" == "Linux" ]]; then
+  ROOT="${XDG_DATA_HOME:-$HOME/.local/share}/LocalFlow"
+  DESKTOP="${XDG_CONFIG_HOME:-$HOME/.config}/autostart/app.localflow.desktop"
+else
+  echo "On Windows run: powershell -File scripts/uninstall.ps1" >&2
+  exit 1
+fi
+
 echo "Uninstalling LocalFlow data in $ROOT"
-if [[ -f "$AGENT" ]]; then
+if [[ -n "$AGENT" && -f "$AGENT" ]]; then
   launchctl unload -w "$AGENT" 2>/dev/null || true
   rm -f "$AGENT"
   echo "removed autostart $AGENT"
 fi
+if [[ -n "$DESKTOP" && -f "$DESKTOP" ]]; then
+  rm -f "$DESKTOP"
+  echo "removed autostart $DESKTOP"
+fi
 REMOVED=()
-skip_rm() { echo "skip $1"; }
 rm_path() {
   local p="$1"
   if [[ -e "$p" ]]; then

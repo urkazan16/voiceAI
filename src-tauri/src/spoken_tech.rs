@@ -9,6 +9,30 @@
 //! Everything here is deterministic and reversible by inspection — no model is
 //! involved, so a run either matches a shape we recognise or is left untouched.
 
+/// One utterance of technical reconstruction, including spell-mode and
+/// cross-PTT GUID continuation. `apply` is this with no session state.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Frame {
+    /// Text produced for this utterance (no leading space).
+    pub text: String,
+    /// Insert flush against the previous paste (no space). The previous
+    /// insert is already in the document; this is only the suffix.
+    pub glue: bool,
+    /// `по буквам` is still active for the next press.
+    pub spell_open: bool,
+    /// Unfinished GUID / spelled body to continue next time.
+    pub open_literal: Option<String>,
+    /// Skip sentence capitalization and a trailing period: the whole
+    /// utterance is a literal piece.
+    pub skip_format: bool,
+}
+
+/// Hint string for Whisper while spell mode is on. Short code-words first so
+/// they survive the 400-character prompt budget.
+pub const SPELL_PROMPT: &str = "\
+air bat cap drum each fine gust harp sit jury crunch look made near odd pit quench red sun trap urge vest whale plex yank zip \
+аз цап дэт ель фэт гул хор ир джип кэт мэк нэт пэт рэд сэт тэт вуп плекс як";
+
 /// Rebuild identifiers, hashes, GUIDs, domains, versions, and file names.
 pub fn apply(text: &str) -> String {
     if text.is_empty() {
@@ -18,6 +42,30 @@ pub fn apply(text: &str) -> String {
         .map(apply_line)
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+/// Reconstruct this utterance, optionally continuing a previous literal.
+pub fn frame(text: &str, spell_open: bool, open_literal: Option<&str>) -> Frame {
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return Frame {
+            text: String::new(),
+            glue: false,
+            spell_open,
+            open_literal: open_literal.filter(|s| !s.is_empty()).map(str::to_string),
+            skip_format: false,
+        };
+    }
+    if trimmed.contains('\n') && !spell_open && open_literal.is_none() {
+        return Frame {
+            text: apply(trimmed),
+            glue: false,
+            spell_open: false,
+            open_literal: None,
+            skip_format: false,
+        };
+    }
+    frame_line(trimmed, spell_open, open_literal)
 }
 
 fn apply_line(line: &str) -> String {
@@ -30,6 +78,221 @@ fn apply_line(line: &str) -> String {
     let tokens = join_versions(tokens);
     let tokens = join_dotted_names(tokens);
     tokens.join(" ")
+}
+
+fn frame_line(text: &str, spell_open: bool, open_literal: Option<&str>) -> Frame {
+    let tokens: Vec<String> = text.split_whitespace().map(str::to_string).collect();
+    if tokens.is_empty() {
+        return Frame {
+            text: String::new(),
+            glue: false,
+            spell_open,
+            open_literal: open_literal.filter(|s| !s.is_empty()).map(str::to_string),
+            skip_format: false,
+        };
+    }
+
+    if spell_open {
+        if tokens_are_spell(&tokens) {
+            return spell_continuation(&tokens, open_literal);
+        }
+        // Ordinary speech while spelling: drop the mode, do not glue "и …".
+        return closed_apply(text);
+    }
+
+    if let Some(prev) = open_literal.filter(|s| is_partial_guid(s)) {
+        if tokens_are_hex_continuation(&tokens) {
+            return hex_continuation(&tokens, prev);
+        }
+        return closed_apply(text);
+    }
+
+    let applied = apply_line(text);
+    let still_spelling = spell_left_open(&tokens);
+    let last = last_literal_token(&applied);
+    let open = if still_spelling {
+        Some(last.clone()).filter(|s| !s.is_empty())
+    } else if is_partial_guid(&last) {
+        Some(last)
+    } else {
+        None
+    };
+    let skip_format = still_spelling && !applied.contains(' ');
+    Frame {
+        text: applied,
+        glue: false,
+        spell_open: still_spelling,
+        open_literal: open,
+        skip_format,
+    }
+}
+
+fn closed_apply(text: &str) -> Frame {
+    Frame {
+        text: apply_line(text),
+        glue: false,
+        spell_open: false,
+        open_literal: None,
+        skip_format: false,
+    }
+}
+
+fn spell_continuation(tokens: &[String], open_literal: Option<&str>) -> Frame {
+    let (piece, saw_end) = decode_spelled(tokens);
+    let body = match open_literal.filter(|s| !s.is_empty()) {
+        Some(prev) => format!("{prev}{piece}"),
+        None => piece.clone(),
+    };
+    let still = !saw_end;
+    Frame {
+        text: piece,
+        glue: open_literal.is_some_and(|s| !s.is_empty()),
+        spell_open: still,
+        open_literal: if still && !body.is_empty() {
+            Some(body)
+        } else {
+            None
+        },
+        skip_format: true,
+    }
+}
+
+fn hex_continuation(tokens: &[String], prev: &str) -> Frame {
+    let (run, _, _) = collect_hex_run(tokens, 0);
+    let piece = continuation_suffix(prev, &run);
+    let glued = format!("{prev}{piece}");
+    let shaped = reshape_guid(&glued);
+    let complete = is_guid(&shaped) || hex_body_len(&shaped) >= 32;
+    Frame {
+        text: piece,
+        glue: true,
+        spell_open: false,
+        open_literal: if complete {
+            None
+        } else if is_partial_guid(&shaped) {
+            Some(shaped)
+        } else {
+            Some(glued)
+        },
+        skip_format: true,
+    }
+}
+
+fn continuation_suffix(prev: &str, run: &str) -> String {
+    if run.is_empty() {
+        return String::new();
+    }
+    if run.starts_with('-') {
+        return run.to_string();
+    }
+    if prev.ends_with('-') {
+        return run.to_string();
+    }
+    format!("-{run}")
+}
+
+fn decode_spelled(tokens: &[String]) -> (String, bool) {
+    let mut literal = String::new();
+    let mut saw_end = false;
+    for token in tokens {
+        let word = core(token);
+        if RUN_TERMINATORS.contains(&word.as_str()) {
+            saw_end = true;
+            break;
+        }
+        let Some(ch) = spelled_char(token) else {
+            break;
+        };
+        literal.push(ch);
+        let trail = trailing(token);
+        if !trail.is_empty() {
+            literal.push_str(trail);
+            break;
+        }
+    }
+    (literal, saw_end)
+}
+
+fn tokens_are_spell(tokens: &[String]) -> bool {
+    !tokens.is_empty()
+        && tokens.iter().all(|t| {
+            let w = core(t);
+            RUN_TERMINATORS.contains(&w.as_str()) || spelled_char(t).is_some()
+        })
+}
+
+fn tokens_are_hex_continuation(tokens: &[String]) -> bool {
+    if tokens.is_empty() || !is_hyphen_lead(tokens) {
+        return false;
+    }
+    tokens.iter().all(|t| {
+        let w = core(t);
+        RUN_TERMINATORS.contains(&w.as_str())
+            || hex_fragment(t).is_some()
+            || spoken_separator(&w) == Some('-')
+            || t.trim() == "-"
+    })
+}
+
+fn is_hyphen_lead(tokens: &[String]) -> bool {
+    let Some(first) = tokens.first() else {
+        return false;
+    };
+    spoken_separator(&core(first)) == Some('-') || first.trim() == "-"
+}
+
+fn spell_left_open(tokens: &[String]) -> bool {
+    let mut i = 0;
+    let mut open = false;
+    while i < tokens.len() {
+        if let Some(len) = match_trigger(tokens, i, SPELL_TRIGGERS) {
+            i += len;
+            open = true;
+            while i < tokens.len() {
+                let w = core(&tokens[i]);
+                if RUN_TERMINATORS.contains(&w.as_str()) {
+                    open = false;
+                    i += 1;
+                    break;
+                }
+                if stops_run(tokens, i, spelled_char) || spelled_char(&tokens[i]).is_none() {
+                    open = false;
+                    break;
+                }
+                i += 1;
+            }
+            continue;
+        }
+        i += 1;
+    }
+    open
+}
+
+fn last_literal_token(text: &str) -> String {
+    text.split_whitespace()
+        .next_back()
+        .unwrap_or("")
+        .trim_end_matches(['.', ',', ';', ':', '!', '?'])
+        .to_string()
+}
+
+fn hex_body_len(text: &str) -> usize {
+    text.chars().filter(|c| c.is_ascii_hexdigit()).count()
+}
+
+fn is_partial_guid(token: &str) -> bool {
+    if token.is_empty() || is_guid(token) {
+        return false;
+    }
+    let parts: Vec<&str> = token.split('-').collect();
+    if parts
+        .iter()
+        .any(|p| p.is_empty() || !p.chars().all(|c| c.is_ascii_hexdigit()))
+    {
+        return false;
+    }
+    let lens: Vec<usize> = parts.iter().map(|p| p.len()).collect();
+    matches!(lens.as_slice(), [8] | [8, 4] | [8, 4, 4] | [8, 4, 4, 4])
 }
 
 /// A word the sentence formatter must not capitalize or end with a period.
@@ -98,36 +361,47 @@ fn trailing(token: &str) -> &str {
 /// context they are in (hexadecimal runs only accept `a`–`f`).
 fn spoken_letters(word: &str) -> &'static [char] {
     match word {
-        "a" | "эй" | "alpha" | "alfa" | "альфа" => &['a'],
+        "a" | "аз" | "air" | "эй" | "alpha" | "alfa" | "альфа" => &['a'],
         "а" => &['a'],
-        "b" | "би" | "бэ" | "бе" | "б" | "bravo" | "браво" => &['b'],
-        "c" | "си" | "цэ" | "це" | "ц" | "charlie" | "чарли" => &['c'],
-        "d" | "ди" | "дэ" | "де" | "д" | "delta" | "дельта" => &['d'],
-        "e" | "е" | "echo" | "эхо" => &['e'],
-        "и" => &['i', 'e'],
-        "f" | "эф" | "ф" | "foxtrot" | "фокстрот" => &['f'],
-        "g" | "джи" | "гэ" | "ге" | "г" | "golf" | "гольф" => &['g'],
-        "h" | "эйч" | "аш" | "ха" | "х" | "hotel" | "отель" => &['h'],
-        "i" | "ай" | "india" | "индия" => &['i'],
-        "j" | "джей" | "йот" | "juliet" | "джульетта" => &['j'],
-        "k" | "кей" | "ка" | "к" | "kilo" | "кило" => &['k'],
-        "l" | "эль" | "эл" | "л" | "lima" | "лима" => &['l'],
-        "m" | "эм" | "м" | "mike" | "майк" => &['m'],
-        "n" | "эн" | "н" | "november" | "ноябрь" => &['n'],
-        "o" | "оу" | "о" | "oscar" | "оскар" => &['o'],
-        "p" | "пи" | "пэ" | "пе" | "п" | "papa" | "папа" => &['p'],
-        "q" | "кью" | "ку" | "quebec" | "квебек" => &['q'],
-        "r" | "ар" | "эр" | "р" | "romeo" | "ромео" => &['r'],
-        "s" | "эс" | "с" | "sierra" | "сьерра" => &['s'],
-        "t" | "ти" | "тэ" | "те" | "т" | "tango" | "танго" => &['t'],
-        "u" | "ю" | "у" | "uniform" | "униформа" => &['u'],
-        "v" | "ви" | "вэ" | "ве" | "в" | "victor" | "виктор" => &['v'],
-        "w" | "дабл-ю" | "даблъю" | "даблю" | "дубль-вэ" | "whiskey" | "виски" => {
-            &['w']
+        "b" | "bat" | "би" | "бэ" | "бе" | "б" | "bravo" | "браво" => &['b'],
+        "c" | "цап" | "cap" | "си" | "цэ" | "це" | "ц" | "charlie" | "чарли" => {
+            &['c']
         }
-        "x" | "икс" | "xray" | "x-ray" | "рентген" => &['x'],
-        "y" | "уай" | "игрек" | "yankee" | "янки" => &['y'],
-        "z" | "зет" | "зед" | "зэт" | "з" | "zulu" | "зулу" => &['z'],
+        "d" | "дэт" | "drum" | "ди" | "дэ" | "де" | "д" | "delta" | "дельта" => {
+            &['d']
+        }
+        "e" | "ель" | "each" | "е" | "echo" | "эхо" => &['e'],
+        "и" => &['i', 'e'],
+        "f" | "фэт" | "fine" | "эф" | "ф" | "foxtrot" | "фокстрот" => &['f'],
+        "g" | "гул" | "gust" | "джи" | "гэ" | "ге" | "г" | "golf" | "гольф" => {
+            &['g']
+        }
+        "h" | "хор" | "harp" | "эйч" | "аш" | "ха" | "х" | "hotel" | "отель" => {
+            &['h']
+        }
+        "i" | "ир" | "sit" | "ай" | "india" | "индия" => &['i'],
+        "j" | "джип" | "jury" | "джей" | "йот" | "juliet" | "джульетта" => {
+            &['j']
+        }
+        "k" | "кэт" | "crunch" | "кей" | "ка" | "к" | "kilo" | "кило" => &['k'],
+        "l" | "look" | "эль" | "эл" | "л" | "lima" | "лима" => &['l'],
+        "m" | "мэк" | "made" | "эм" | "м" | "mike" | "майк" => &['m'],
+        "n" | "нэт" | "near" | "эн" | "н" | "november" | "ноябрь" => &['n'],
+        "o" | "odd" | "оу" | "о" | "oscar" | "оскар" => &['o'],
+        "p" | "пэт" | "pit" | "пи" | "пэ" | "пе" | "п" | "papa" | "папа" => &['p'],
+        "q" | "quench" | "кью" | "ку" | "quebec" | "квебек" => &['q'],
+        "r" | "рэд" | "red" | "ар" | "эр" | "р" | "romeo" | "ромео" => &['r'],
+        "s" | "сэт" | "sun" | "эс" | "с" | "sierra" | "сьерра" => &['s'],
+        "t" | "тэт" | "trap" | "ти" | "тэ" | "те" | "т" | "tango" | "танго" => {
+            &['t']
+        }
+        "u" | "urge" | "ю" | "у" | "uniform" | "униформа" => &['u'],
+        "v" | "vest" | "ви" | "вэ" | "ве" | "в" | "victor" | "виктор" => &['v'],
+        "w" | "вуп" | "whale" | "дабл-ю" | "даблъю" | "даблю" | "дубль-вэ" | "whiskey"
+        | "виски" => &['w'],
+        "x" | "плекс" | "plex" | "икс" | "xray" | "x-ray" | "рентген" => &['x'],
+        "y" | "як" | "yank" | "уай" | "игрек" | "yankee" | "янки" => &['y'],
+        "z" | "zip" | "зет" | "зед" | "зэт" | "з" | "zulu" | "зулу" => &['z'],
         _ => &[],
     }
 }
@@ -833,5 +1107,69 @@ mod tests {
             apply("версия 1 точка 2 точка 3\nкоммит d6b0204"),
             "версия 1.2.3\nкоммит d6b0204"
         );
+    }
+
+    #[test]
+    fn short_alphabet_words_spell_latin_letters() {
+        assert_eq!(apply("по буквам air bat cap drum each"), "abcde");
+        assert_eq!(apply("по буквам аз цап дэт ель"), "acde");
+    }
+
+    #[test]
+    fn spell_mode_stays_open_until_end() {
+        let first = frame("по буквам air bat cap", false, None);
+        assert_eq!(first.text, "abc");
+        assert!(first.spell_open);
+        assert_eq!(first.open_literal.as_deref(), Some("abc"));
+        assert!(first.skip_format);
+
+        let second = frame("drum each", true, first.open_literal.as_deref());
+        assert_eq!(second.text, "de");
+        assert!(second.glue);
+        assert!(second.spell_open);
+
+        let done = frame("конец", true, second.open_literal.as_deref());
+        assert_eq!(done.text, "");
+        assert!(!done.spell_open);
+        assert_eq!(done.open_literal, None);
+    }
+
+    #[test]
+    fn ordinary_speech_leaves_spell_mode_without_gluing() {
+        let first = frame("по буквам air bat", false, None);
+        let next = frame("и проверь релиз", true, first.open_literal.as_deref());
+        assert!(!next.glue);
+        assert!(!next.spell_open);
+        assert!(next.text.to_lowercase().contains("проверь"));
+    }
+
+    #[test]
+    fn guid_groups_glue_only_after_a_hyphen() {
+        let first = frame(
+            "гуид четыре три шесть а два девять шесть девять",
+            false,
+            None,
+        );
+        assert_eq!(first.text, "гуид 436a2969");
+        assert_eq!(first.open_literal.as_deref(), Some("436a2969"));
+        assert!(!first.glue);
+
+        let second = frame("дефис це а семь и", false, first.open_literal.as_deref());
+        assert_eq!(second.text, "-ca7e");
+        assert!(second.glue);
+        assert_eq!(second.open_literal.as_deref(), Some("436a2969-ca7e"));
+
+        let prose = frame("и проверь релиз", false, first.open_literal.as_deref());
+        assert!(!prose.glue);
+        assert_eq!(prose.open_literal, None);
+    }
+
+    #[test]
+    fn a_short_commit_hash_is_not_left_open() {
+        let out = frame("коммит пять три це три девять шесть три", false, None);
+        assert_eq!(out.text, "коммит 53c3963");
+        assert_eq!(out.open_literal, None);
+        let next = frame("и проверь релиз", false, out.open_literal.as_deref());
+        assert!(!next.glue);
     }
 }

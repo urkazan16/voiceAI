@@ -1,0 +1,8 @@
+{
+  "app": {
+    "macOSPrivateApi": true,
+    "trayIcon": {
+      "iconAsTemplate": true
+    }
+  }
+}

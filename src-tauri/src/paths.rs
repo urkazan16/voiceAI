@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
 
-const APP_DIR_NAME: &str = "LocalFlow";
+pub(crate) const APP_DIR_NAME: &str = "LocalFlow";
 
 #[derive(Debug, Clone)]
 pub struct DataPaths {
@@ -18,12 +18,8 @@ impl DataPaths {
                 root: PathBuf::from(value),
             };
         }
-        let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
         Self {
-            root: PathBuf::from(home)
-                .join("Library")
-                .join("Application Support")
-                .join(APP_DIR_NAME),
+            root: crate::platform::current().data_root(),
         }
     }
 
@@ -105,6 +101,21 @@ pub fn is_inside_boundary(root: &Path, candidate: &Path) -> bool {
     candidate.starts_with(root)
 }
 
+/// Path for the Privacy screen, with the home directory collapsed to `~` so the
+/// user's account name is not put on display.
+pub fn display_home_relative(path: &Path) -> String {
+    let Ok(home) = std::env::var("HOME").or_else(|_| std::env::var("USERPROFILE")) else {
+        return path.display().to_string();
+    };
+    if home.is_empty() {
+        return path.display().to_string();
+    }
+    match path.strip_prefix(&home) {
+        Ok(rest) => Path::new("~").join(rest).display().to_string(),
+        Err(_) => path.display().to_string(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -117,6 +128,18 @@ mod tests {
         let paths = DataPaths::detect();
         assert_eq!(paths.root, dir.path());
         std::env::remove_var("LOCALFLOW_DATA_DIR");
+    }
+
+    #[test]
+    fn privacy_display_hides_the_account_name() {
+        let home = std::env::var("HOME").unwrap_or_else(|_| "/home/tester".into());
+        let shown = display_home_relative(&PathBuf::from(&home).join("LocalFlow"));
+        assert_eq!(shown, "~/LocalFlow");
+        assert!(!shown.contains(&home));
+        assert_eq!(
+            display_home_relative(Path::new("/opt/LocalFlow")),
+            "/opt/LocalFlow"
+        );
     }
 
     #[test]

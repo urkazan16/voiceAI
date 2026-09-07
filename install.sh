@@ -22,3 +22,7 @@ if [[ "${LOCALFLOW_SKIP_MODEL_DOWNLOAD:-}" != "1" ]]; then
 fi
 echo "LocalFlow is ready. Run: npm run tauri dev"
 echo "Hold Control+Shift+Space to record; release to process."
+if [[ "$(uname -s)" == "Linux" ]]; then
+  echo "Linux paste: install xclip (X11) or wl-clipboard (Wayland)."
+  echo "On Wayland, some apps cannot receive a synthetic paste — press Ctrl+V if needed."
+fi

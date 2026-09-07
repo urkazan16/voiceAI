@@ -402,7 +402,7 @@ pub fn privacy_summary() -> PrivacySummary {
             "optional extra models from Model Manager".into(),
             "optional application update (user initiated)".into(),
         ],
-        data_root: "~/Library/Application Support/LocalFlow/".into(),
+        data_root: crate::paths::display_home_relative(&crate::paths::DataPaths::detect().root),
     }
 }
 
@@ -886,6 +886,11 @@ pub fn open_privacy_pane(kind: String) -> Result<(), CommandError> {
 
 #[tauri::command]
 pub fn install_dictate_macro() -> Result<String, CommandError> {
+    install_dictate_macro_inner()
+}
+
+#[cfg(target_os = "macos")]
+fn install_dictate_macro_inner() -> Result<String, CommandError> {
     let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
     let dir = std::path::PathBuf::from(home).join("Applications");
     std::fs::create_dir_all(&dir).map_err(LfError::from)?;
@@ -894,10 +899,23 @@ pub fn install_dictate_macro() -> Result<String, CommandError> {
 osascript -e 'tell application "System Events" to keystroke space using {control down, shift down}'
 "#;
     std::fs::write(&path, script).map_err(LfError::from)?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755));
-    }
+    use std::os::unix::fs::PermissionsExt;
+    let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755));
     Ok(path.display().to_string())
+}
+
+#[cfg(not(target_os = "macos"))]
+fn install_dictate_macro_inner() -> Result<String, CommandError> {
+    Err(LfError::RuntimeUnsupported("The Dictate macro is only available on macOS.".into()).into())
+}
+
+#[cfg(all(test, not(target_os = "macos")))]
+mod dictate_macro_tests {
+    use super::*;
+
+    #[test]
+    fn rejects_hosts_without_osascript() {
+        let err = install_dictate_macro().unwrap_err();
+        assert_eq!(err.code, "RUNTIME_UNSUPPORTED");
+    }
 }

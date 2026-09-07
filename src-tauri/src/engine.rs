@@ -36,6 +36,10 @@ pub struct AppEngine {
     pub insert_target_pid: Option<i32>,
     pub insert_target_app: Option<String>,
     pub session_text: String,
+    /// `по буквам` stays on across PTT until `конец` or ordinary speech.
+    pub spell_mode: bool,
+    /// Unfinished GUID body waiting for a hyphen-led continuation.
+    pub open_literal: Option<String>,
     pub inject_enabled: bool,
     settings_mtime: Option<SystemTime>,
 }
@@ -61,6 +65,8 @@ impl AppEngine {
             insert_target_pid: None,
             insert_target_app: None,
             session_text: String::new(),
+            spell_mode: false,
+            open_literal: None,
             inject_enabled: true,
             settings_mtime: None,
         };
@@ -305,11 +311,31 @@ impl AppEngine {
     /// way the user does, instead of guessing phonetically.
     pub fn decode_options(&self) -> crate::whisper_stt::DecodeOptions {
         let mode = self.resolve_context().mode;
-        crate::whisper_stt::DecodeOptions {
-            prompt: self
+        let budget = crate::whisper_stt::MAX_PROMPT_CHARS;
+        let prompt = if self.spell_mode {
+            let mut prompt = crate::spoken_tech::SPELL_PROMPT.to_string();
+            let rest = self
                 .dictionary
-                .recognition_hints(crate::whisper_stt::MAX_PROMPT_CHARS),
-            allow_symbols: mode == PipelineMode::Code,
+                .recognition_hints(budget.saturating_sub(prompt.len() + 2));
+            if !rest.is_empty() {
+                prompt.push_str(", ");
+                prompt.push_str(&rest);
+            }
+            if prompt.chars().count() > budget {
+                let cut = prompt
+                    .char_indices()
+                    .nth(budget)
+                    .map(|(i, _)| i)
+                    .unwrap_or(prompt.len());
+                prompt.truncate(cut);
+            }
+            prompt
+        } else {
+            self.dictionary.recognition_hints(budget)
+        };
+        crate::whisper_stt::DecodeOptions {
+            prompt,
+            allow_symbols: mode == PipelineMode::Code || self.spell_mode,
         }
     }
 
@@ -391,24 +417,32 @@ impl AppEngine {
             crate::backtrack::apply(&dictionary_text, "")
         };
         self.snapshot.transition(PipelineState::Formatting)?;
-        let formatted_text = if skip_llm {
+        let mut glue_next = false;
+        let formatted_text = if skip_llm || mode == PipelineMode::Raw {
             backtrack_text.clone()
         } else {
-            // Rebuild identifiers, hashes, domains, and versions before the
-            // punctuation pass, which would otherwise turn the "точка" holding
-            // them together into a full stop.
-            let literals = if mode == PipelineMode::Raw {
-                backtrack_text.clone()
+            // Rebuild identifiers before punctuation, then optionally glue a
+            // hyphen-led GUID fragment onto the previous PTT insert.
+            let framed = crate::spoken_tech::frame(
+                &backtrack_text,
+                self.spell_mode,
+                self.open_literal.as_deref(),
+            );
+            self.spell_mode = framed.spell_open;
+            self.open_literal = framed.open_literal.clone();
+            glue_next = framed.glue;
+            if framed.skip_format {
+                framed.text
             } else {
-                crate::spoken_tech::apply(&backtrack_text)
-            };
-            let smart = crate::phrases::recover(&crate::format::format_smart(mode, &literals));
-            crate::format::normalize_spoken_values(
-                &smart,
-                mode,
-                self.settings.digits_from_speech,
-                &self.settings.date_format,
-            )
+                let smart =
+                    crate::phrases::recover(&crate::format::format_smart(mode, &framed.text));
+                crate::format::normalize_spoken_values(
+                    &smart,
+                    mode,
+                    self.settings.digits_from_speech,
+                    &self.settings.date_format,
+                )
+            }
         };
         self.snapshot.transition(PipelineState::Personalization)?;
         let personalized_text = if self.settings.personalization_enabled && !skip_llm {
@@ -453,7 +487,11 @@ impl AppEngine {
             "none"
         };
         crate::journal::log("insert", insert_method);
-        let inject_text = crate::format::space_between_utterances(&self.session_text, &final_text);
+        let inject_text = if glue_next {
+            final_text.clone()
+        } else {
+            crate::format::space_between_utterances(&self.session_text, &final_text)
+        };
         if self.inject_enabled && !inject_text.is_empty() && !crate::dictation::is_cancelled() {
             if let Err(err) = injector.insert_text(&inject_text, self.settings.restore_clipboard) {
                 insert_ok = false;
@@ -595,18 +633,7 @@ impl AppEngine {
     }
 
     pub fn copy_text(text: &str) -> LfResult<()> {
-        let mut child = std::process::Command::new("pbcopy")
-            .stdin(std::process::Stdio::piped())
-            .spawn()
-            .map_err(|e| LfError::InjectionFailed(e.to_string()))?;
-        if let Some(stdin) = child.stdin.as_mut() {
-            use std::io::Write;
-            stdin
-                .write_all(text.as_bytes())
-                .map_err(|e| LfError::InjectionFailed(e.to_string()))?;
-        }
-        let _ = child.wait();
-        Ok(())
+        crate::injection::set_clipboard_text(text)
     }
 
     pub fn copy_last_transcript(&self) -> LfResult<String> {
@@ -616,17 +643,7 @@ impl AppEngine {
             .map(|o| o.final_text.clone())
             .filter(|t| !t.is_empty())
             .ok_or_else(|| LfError::Other("no last transcript".into()))?;
-        let mut child = std::process::Command::new("pbcopy")
-            .stdin(std::process::Stdio::piped())
-            .spawn()
-            .map_err(|e| LfError::InjectionFailed(e.to_string()))?;
-        if let Some(stdin) = child.stdin.as_mut() {
-            use std::io::Write;
-            stdin
-                .write_all(text.as_bytes())
-                .map_err(|e| LfError::InjectionFailed(e.to_string()))?;
-        }
-        let _ = child.wait();
+        crate::injection::set_clipboard_text(&text)?;
         Ok(text)
     }
 
@@ -800,6 +817,70 @@ mod tests {
         assert!(
             out.ends_with("436a2969-ca7e-47ab-b0f3-72a534d744b6"),
             "{out}"
+        );
+    }
+
+    #[test]
+    fn guid_groups_glue_across_ptt_without_a_space() {
+        let (_dir, mut eng) = engine();
+        let first = eng
+            .run_scripted("гуид четыре три шесть а два девять шесть девять")
+            .unwrap();
+        assert!(
+            first.final_text.contains("436a2969"),
+            "{}",
+            first.final_text
+        );
+        let second = eng.run_scripted("дефис це а семь и").unwrap();
+        assert_eq!(second.final_text, "-ca7e");
+        assert!(
+            eng.session_text.contains("436a2969-ca7e"),
+            "{}",
+            eng.session_text
+        );
+        assert!(
+            !eng.session_text.contains("436a2969 -ca7e"),
+            "{}",
+            eng.session_text
+        );
+    }
+
+    #[test]
+    fn a_short_hash_does_not_glue_the_next_sentence() {
+        let (_dir, mut eng) = engine();
+        eng.run_scripted("коммит пять три це три девять шесть три")
+            .unwrap();
+        let next = eng.run_scripted("и проверь релиз").unwrap();
+        assert!(!next.final_text.contains("53c3963"));
+        assert!(
+            eng.session_text.contains("53c3963") && eng.session_text.contains(" проверь"),
+            "{}",
+            eng.session_text
+        );
+    }
+
+    #[test]
+    fn spell_mode_continues_across_ptt() {
+        let (_dir, mut eng) = engine();
+        let first = eng.run_scripted("по буквам air bat cap").unwrap();
+        assert_eq!(first.final_text, "abc");
+        assert!(eng.spell_mode);
+        let second = eng.run_scripted("drum each").unwrap();
+        assert_eq!(second.final_text, "de");
+        assert_eq!(
+            eng.session_text
+                .chars()
+                .filter(|c| c.is_alphabetic())
+                .collect::<String>(),
+            "abcde"
+        );
+        eng.run_scripted("конец").unwrap();
+        assert!(!eng.spell_mode);
+        eng.run_scripted("привет").unwrap();
+        assert!(
+            eng.session_text.contains("abcde") && eng.session_text.contains(" Привет"),
+            "{}",
+            eng.session_text
         );
     }
 

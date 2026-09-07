@@ -112,10 +112,21 @@ pub fn user_guidance(err: &LfError) -> String {
             "The microphone was disconnected during recording. Plug it back in or choose another device.".into()
         }
         LfError::PermissionDenied(_) | LfError::DeviceUnavailable(_) => {
-            "Microphone is unavailable. System Settings → Privacy & Security → Microphone → LocalFlow, then pick the device in Settings.".into()
+            if cfg!(target_os = "macos") {
+                "Microphone is unavailable. System Settings → Privacy & Security → Microphone → LocalFlow, then pick the device in Settings.".into()
+            } else if cfg!(windows) {
+                "Microphone is unavailable. Windows Settings → Privacy & security → Microphone → allow LocalFlow, then pick the device in Settings.".into()
+            } else {
+                "Microphone is unavailable. Allow this app to use the microphone in your system settings, then pick the device in Settings.".into()
+            }
         }
+        LfError::InjectionFailed(msg) if msg.to_lowercase().contains("wayland") => msg.clone(),
         LfError::InjectionFailed(_) => {
-            "Text is ready but could not paste into the other app. Use Copy last / Paste last, and enable Accessibility if paste still fails.".into()
+            if cfg!(target_os = "macos") {
+                "Text is ready but could not paste into the other app. Use Copy last / Paste last, and enable Accessibility if paste still fails.".into()
+            } else {
+                "Text is ready but could not paste into the other app. Use Copy last / Paste last, or press Ctrl+V.".into()
+            }
         }
         LfError::ConfigInvalid(msg) => msg.clone(),
         other => other.to_string(),

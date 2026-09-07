@@ -1,18 +1,6 @@
 //! Frontmost session lock. History and hotkeys are denied while locked.
 pub fn screen_is_locked() -> bool {
-    #[cfg(target_os = "macos")]
-    {
-        unsafe { lf_screen_is_locked() != 0 }
-    }
-    #[cfg(not(target_os = "macos"))]
-    {
-        false
-    }
-}
-
-#[cfg(target_os = "macos")]
-extern "C" {
-    fn lf_screen_is_locked() -> i32;
+    crate::platform::current().screen_is_locked()
 }
 
 #[cfg(test)]

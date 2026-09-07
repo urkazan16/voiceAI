@@ -59,10 +59,9 @@ pub fn volume_free_bytes(path: &Path) -> Option<u64> {
     {
         unix_free(&probe)
     }
-    #[cfg(not(unix))]
+    #[cfg(windows)]
     {
-        let _ = probe;
-        None
+        windows_free(&probe)
     }
 }
 
@@ -77,6 +76,37 @@ fn unix_free(path: &Path) -> Option<u64> {
             return None;
         }
         Some(buf.f_bavail.saturating_mul(buf.f_bsize as u64))
+    }
+}
+
+#[cfg(windows)]
+fn windows_free(path: &Path) -> Option<u64> {
+    use std::os::windows::ffi::OsStrExt;
+    let wide: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
+    let mut free_for_caller = 0u64;
+    let mut total = 0u64;
+    let mut free_total = 0u64;
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn GetDiskFreeSpaceExW(
+            directory: *const u16,
+            free_for_caller: *mut u64,
+            total: *mut u64,
+            free_total: *mut u64,
+        ) -> i32;
+    }
+    let ok = unsafe {
+        GetDiskFreeSpaceExW(
+            wide.as_ptr(),
+            &mut free_for_caller,
+            &mut total,
+            &mut free_total,
+        )
+    };
+    if ok != 0 {
+        Some(free_for_caller)
+    } else {
+        None
     }
 }
 

@@ -1,4 +1,4 @@
-use crate::error::{LfError, LfResult};
+use crate::error::LfResult;
 use serde::Serialize;
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -18,77 +18,11 @@ pub fn status() -> PermissionStatus {
 }
 
 pub fn accessibility_trusted() -> bool {
-    #[cfg(target_os = "macos")]
-    {
-        macos::ax_trusted()
-    }
-    #[cfg(not(target_os = "macos"))]
-    {
-        true
-    }
+    crate::platform::current().accessibility_trusted()
 }
 
 pub fn open_pane(kind: &str) -> LfResult<()> {
-    #[cfg(target_os = "macos")]
-    {
-        macos::open_pane(kind)
-    }
-    #[cfg(not(target_os = "macos"))]
-    {
-        let _ = kind;
-        Err(LfError::RuntimeUnsupported(
-            "privacy panes are opened on macOS only".into(),
-        ))
-    }
-}
-
-#[cfg(target_os = "macos")]
-mod macos {
-    use super::*;
-
-    #[link(name = "ApplicationServices", kind = "framework")]
-    extern "C" {
-        fn AXIsProcessTrusted() -> bool;
-    }
-
-    pub fn ax_trusted() -> bool {
-        unsafe { AXIsProcessTrusted() }
-    }
-
-    pub fn open_pane(kind: &str) -> LfResult<()> {
-        let urls: &[&str] = match kind {
-            "microphone" => &[
-                "x-apple.systempreferences:com.apple.settings.PrivacySecurity.extension?Privacy_Microphone",
-                "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone",
-            ],
-            "accessibility" => &[
-                "x-apple.systempreferences:com.apple.settings.PrivacySecurity.extension?Privacy_Accessibility",
-                "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility",
-            ],
-            "speech" => &[
-                "x-apple.systempreferences:com.apple.settings.PrivacySecurity.extension?Privacy_SpeechRecognition",
-                "x-apple.systempreferences:com.apple.preference.security?Privacy_SpeechRecognition",
-            ],
-            _ => {
-                return Err(LfError::ConfigInvalid(format!(
-                    "unknown privacy pane {kind}"
-                )))
-            }
-        };
-        for url in urls {
-            if std::process::Command::new("open")
-                .arg(url)
-                .status()
-                .map(|s| s.success())
-                .unwrap_or(false)
-            {
-                return Ok(());
-            }
-        }
-        Err(LfError::Other(format!(
-            "could not open System Settings for {kind}"
-        )))
-    }
+    crate::platform::current().open_privacy_pane(kind)
 }
 
 #[cfg(test)]

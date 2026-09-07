@@ -1,7 +1,7 @@
 use crate::audio::{downmix_mono, resample_linear};
 use crate::error::{LfError, LfResult};
 use std::fs;
-use std::io::Read;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
 const AUDIO_EXT: &[&str] = &["wav", "mp3", "m4a", "aac", "ogg", "flac", "aiff", "aif"];
@@ -152,6 +152,36 @@ fn run_ffmpeg(src: &Path, wav: &Path) -> Result<(), String> {
     }
 }
 
+pub fn write_wav_s16le_mono(path: &Path, sample_rate: u32, pcm: &[f32]) -> std::io::Result<()> {
+    let mut data = Vec::with_capacity(pcm.len() * 2);
+    for sample in pcm {
+        let clipped = sample.clamp(-1.0, 1.0);
+        let int = (clipped * 32767.0).round() as i16;
+        data.extend_from_slice(&int.to_le_bytes());
+    }
+    let data_len = data.len() as u32;
+    let byte_rate = sample_rate * 2;
+    let mut header = Vec::with_capacity(44);
+    header.extend_from_slice(b"RIFF");
+    header.extend_from_slice(&(36 + data_len).to_le_bytes());
+    header.extend_from_slice(b"WAVE");
+    header.extend_from_slice(b"fmt ");
+    header.extend_from_slice(&16u32.to_le_bytes());
+    header.extend_from_slice(&1u16.to_le_bytes());
+    header.extend_from_slice(&1u16.to_le_bytes());
+    header.extend_from_slice(&sample_rate.to_le_bytes());
+    header.extend_from_slice(&byte_rate.to_le_bytes());
+    header.extend_from_slice(&2u16.to_le_bytes());
+    header.extend_from_slice(&16u16.to_le_bytes());
+    header.extend_from_slice(b"data");
+    header.extend_from_slice(&data_len.to_le_bytes());
+
+    let mut file = std::fs::File::create(path)?;
+    file.write_all(&header)?;
+    file.write_all(&data)?;
+    Ok(())
+}
+
 pub fn load_stdin() -> LfResult<Vec<f32>> {
     let mut bytes = Vec::new();
     std::io::stdin().read_to_end(&mut bytes)?;
@@ -185,8 +215,18 @@ pub fn list_audio_files(dir: &Path) -> LfResult<Vec<PathBuf>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::macos_stt::write_wav_s16le_mono;
     use tempfile::tempdir;
+
+    #[test]
+    fn wav_header_is_44_bytes_plus_samples() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("t.wav");
+        write_wav_s16le_mono(&path, 16_000, &[0.0, 0.5, -0.5]).unwrap();
+        let bytes = std::fs::read(&path).unwrap();
+        assert_eq!(&bytes[0..4], b"RIFF");
+        assert_eq!(&bytes[8..12], b"WAVE");
+        assert_eq!(bytes.len(), 44 + 6);
+    }
 
     #[test]
     fn wav_roundtrip_16k_mono() {

@@ -40,6 +40,7 @@ pub mod permissions;
 pub mod personalization;
 pub mod phrases;
 pub mod pipeline;
+pub mod platform;
 pub mod profiles;
 pub mod runtime;
 pub mod sanitize;
@@ -167,7 +168,7 @@ pub fn run() {
             if let Some(tray) = app.tray_by_id("localflow") {
                 tray.set_menu(Some(menu))?;
                 tray.set_show_menu_on_left_click(true)?;
-                tray.set_icon_as_template(true)?;
+                tray.set_icon_as_template(cfg!(target_os = "macos"))?;
                 tray.on_menu_event(|app, event| match event.id.as_ref() {
                     "quit" => app.exit(0),
                     "show" => show_main_window(app),
@@ -182,7 +183,7 @@ pub fn run() {
                 TrayIconBuilder::with_id("localflow")
                     .menu(&menu)
                     .show_menu_on_left_click(true)
-                    .icon_as_template(true)
+                    .icon_as_template(cfg!(target_os = "macos"))
                     .on_menu_event(|app, event| match event.id.as_ref() {
                         "quit" => app.exit(0),
                         "show" => show_main_window(app),
@@ -346,7 +347,8 @@ pub fn apply_shortcuts(app: &AppHandle, engine: &SharedEngine) -> Option<String>
     {
         let _ = app.global_shortcut().unregister(old);
     }
-    let candidates = [talk.as_str(), "Control+Shift+Space", "Command+Shift+D"];
+    let fallbacks = crate::platform::talk_hotkey_fallbacks();
+    let candidates = [talk.as_str(), fallbacks[0], fallbacks[1]];
     let mut registered = None;
     let mut last_err = None;
     for shortcut in candidates {
@@ -358,7 +360,7 @@ pub fn apply_shortcuts(app: &AppHandle, engine: &SharedEngine) -> Option<String>
             }
             Err(err) => {
                 last_err = Some(format!(
-                    "Hotkey {shortcut} is already used by macOS or another app ({err})"
+                    "Hotkey {shortcut} is already used by the OS or another app ({err})"
                 ));
             }
         }

@@ -36,13 +36,17 @@ export function navItems(lang: string): { id: string; label: string }[] {
   return isRu(lang) ? NAV_RU : NAV_EN;
 }
 
-export function canDeleteDownloadedModel(status: {
-  bytes_on_disk: number;
-  local_path?: string | null;
-  active: boolean;
-  installed: boolean;
-  verified: boolean;
-} | undefined): boolean {
+export function canDeleteDownloadedModel(
+  status:
+    | {
+        bytes_on_disk: number;
+        local_path?: string | null;
+        active: boolean;
+        installed: boolean;
+        verified: boolean;
+      }
+    | undefined,
+): boolean {
   if (!status) {
     return false;
   }
@@ -197,7 +201,8 @@ const EN = {
   privacyTitle: "Privacy",
   privacyIntro: "Core pipeline is local. Cloud accounts are not required.",
   privacyNetwork: "Network is used only for:",
-  privacyLogs: "Audio cache uses a private 0700 folder. Logs rotate by size and never store tokens.",
+  privacyLogs:
+    "Audio cache uses a private 0700 folder. Logs rotate by size and never store tokens.",
   holdHint: "Hold Control+Shift+Space, speak, release.",
   recording: "Recording… keep holding, then release to process.",
   processing: "Processing recording…",
@@ -220,8 +225,7 @@ const RU: typeof EN = {
   osDefault: " (системный)",
   sttReady: "установлен и будет использоваться для диктовки.",
   sttDownloading: "Загрузка с Hugging Face…",
-  sttWillDownload:
-    "Whisper скачается сам. Можно продолжить — загрузка пойдёт в фоне.",
+  sttWillDownload: "Whisper скачается сам. Можно продолжить — загрузка пойдёт в фоне.",
   accessibilityTrusted: " Универсальный доступ: разрешён.",
   accessibilityNotTrusted: " Универсальный доступ: ещё не разрешён.",
   browserHint:
@@ -259,8 +263,7 @@ const RU: typeof EN = {
   speechModelHelp:
     "В списке только Whisper, уже лежащие на этом Mac. Small/Base быстрее, Medium точнее. Остальные скачиваются в разделе «Модели».",
   formattingModel: "Модель форматирования (скачанные)",
-  formattingModelHelp:
-    "Необязательные установленные Qwen/LLM. Диктовка работает и без них.",
+  formattingModelHelp: "Необязательные установленные Qwen/LLM. Диктовка работает и без них.",
   noDownloadedSpeech: "Пока нет установленной модели речи.",
   noDownloadedFormatting: "Пока нет установленной модели форматирования.",
   unusedModels: "Неиспользуемые загрузки",
@@ -329,8 +332,7 @@ const RU: typeof EN = {
   replacementRule: "Правило замены",
   vocabulary: "Словарь",
   snippetsTitle: "Фрагменты",
-  snippetsHelp:
-    "Точный триггер раскрывается до LLM. Приоритет: Команда → Фрагмент → Словарь.",
+  snippetsHelp: "Точный триггер раскрывается до LLM. Приоритет: Команда → Фрагмент → Словарь.",
   profilesTitle: "Стили и профили приложений",
   saveProfiles: "Сохранить профили",
   personalizationTitle: "Персонализация",
@@ -354,6 +356,111 @@ const RU: typeof EN = {
 
 export type UiCopy = typeof EN;
 
-export function copy(lang: string | undefined | null): UiCopy {
-  return isRu(lang) ? RU : EN;
+export type HostKind = "macos" | "windows" | "linux";
+
+export function hostKindFromUa(): HostKind {
+  if (typeof navigator === "undefined") {
+    return "macos";
+  }
+  const platform = navigator.platform || "";
+  if (/Mac|iPhone|iPad/.test(platform) || navigator.userAgent.includes("Macintosh")) {
+    return "macos";
+  }
+  if (/Win/.test(platform) || /Windows/i.test(navigator.userAgent)) {
+    return "windows";
+  }
+  return "linux";
+}
+
+export function hostKindFrom(platform?: string | null): HostKind {
+  const value = (platform ?? "").toLowerCase();
+  if (value.includes("mac")) {
+    return "macos";
+  }
+  if (value.includes("win")) {
+    return "windows";
+  }
+  if (value.includes("linux")) {
+    return "linux";
+  }
+  return hostKindFromUa();
+}
+
+export function showMacOnlyControls(host: HostKind): boolean {
+  return host === "macos";
+}
+
+const WINDOWS_EN: Partial<UiCopy> = {
+  onboardingTitle: "Speak. Release. Insert — entirely on this PC.",
+  onboarding1: "1. Allow the microphone. Dictation pastes with Ctrl+V into other apps.",
+  homeHelp:
+    "Type a sample and click Process locally, or hold the hotkey over a field. Whisper.cpp transcribes when the model is installed. Escape cancels. Ctrl+Alt+C/V copy or paste the last transcript.",
+  hotkeyHelp:
+    "Win+Space and some Ctrl+Shift chords are often taken by Windows. Check Settings → Time & language → Typing / Keyboard. Changing the hotkey here re-registers it immediately.",
+  speechModelHelp:
+    "Only Whisper files already on this PC are listed. Small/Base are faster; Medium is more accurate. Download others on the Models page.",
+  deleteModel: "Delete from this PC",
+  clipboardHelp:
+    "Keeps the previous clipboard after Ctrl+V. If the app crashes mid-paste, the same snapshot is restored from disk. Password fields may block paste — use Copy last after leaving the field.",
+  modelReady: "Ready on this PC.",
+  privacyLogs: "Audio cache uses a private folder. Logs rotate by size and never store tokens.",
+};
+
+const WINDOWS_RU: Partial<UiCopy> = {
+  onboardingTitle: "Говорите. Отпустите. Вставка — полностью на этом ПК.",
+  onboarding1: "1. Разрешите микрофон. Диктовка вставляет текст в другие приложения через Ctrl+V.",
+  homeHelp:
+    "Введите пример и нажмите «Обработать локально» или удерживайте хоткей над полем. Whisper.cpp распознаёт речь, когда модель установлена. Escape отменяет. Ctrl+Alt+C/V копируют или вставляют последний текст.",
+  hotkeyHelp:
+    "Win+Space и некоторые сочетания Ctrl+Shift часто заняты Windows. Проверьте Параметры → Время и язык → Ввод. Смена хоткея здесь перерегистрирует его сразу.",
+  speechModelHelp:
+    "В списке только Whisper, уже лежащие на этом ПК. Small/Base быстрее, Medium точнее. Остальные скачиваются в разделе «Модели».",
+  deleteModel: "Удалить с этого ПК",
+  clipboardHelp:
+    "Возвращает прежний буфер после Ctrl+V. Если приложение упадёт во время вставки, снимок восстановится с диска. Поля пароля могут блокировать вставку — используйте «Копировать последнее» после выхода из поля.",
+  modelReady: "Готова на этом ПК.",
+  privacyLogs: "Кэш аудио лежит в закрытой папке. Логи ротируются по размеру и не хранят токены.",
+};
+
+const LINUX_EN: Partial<UiCopy> = {
+  onboardingTitle: "Speak. Release. Insert — entirely on this computer.",
+  onboarding1:
+    "1. Allow the microphone. On X11, text is pasted with Ctrl+V. On Wayland, copy and press Ctrl+V if automatic paste is blocked.",
+  homeHelp:
+    "Type a sample and click Process locally, or hold the hotkey over a field. Whisper.cpp transcribes when the model is installed. Escape cancels. Ctrl+Alt+C/V copy or paste the last transcript.",
+  hotkeyHelp:
+    "Super+Space is often taken by the desktop input switcher. Check your keyboard shortcuts. Changing the hotkey here re-registers it immediately.",
+  speechModelHelp:
+    "Only Whisper files already on this computer are listed. Small/Base are faster; Medium is more accurate. Download others on the Models page.",
+  deleteModel: "Delete from this computer",
+  clipboardHelp:
+    "Keeps the previous clipboard after Ctrl+V. On Wayland, some apps cannot receive a synthetic paste — press Ctrl+V if the text stays on the clipboard. If the app crashes mid-paste, the snapshot is restored from disk.",
+  modelReady: "Ready on this computer.",
+};
+
+const LINUX_RU: Partial<UiCopy> = {
+  onboardingTitle: "Говорите. Отпустите. Вставка — полностью на этом компьютере.",
+  onboarding1:
+    "1. Разрешите микрофон. В X11 текст вставляется через Ctrl+V. В Wayland скопируйте и нажмите Ctrl+V, если автоматическая вставка недоступна.",
+  homeHelp:
+    "Введите пример и нажмите «Обработать локально» или удерживайте хоткей над полем. Whisper.cpp распознаёт речь, когда модель установлена. Escape отменяет. Ctrl+Alt+C/V копируют или вставляют последний текст.",
+  hotkeyHelp:
+    "Super+Space часто занят переключателем раскладки. Проверьте сочетания клавиш рабочего стола. Смена хоткея здесь перерегистрирует его сразу.",
+  speechModelHelp:
+    "В списке только Whisper, уже лежащие на этом компьютере. Small/Base быстрее, Medium точнее. Остальные скачиваются в разделе «Модели».",
+  deleteModel: "Удалить с этого компьютера",
+  clipboardHelp:
+    "Возвращает прежний буфер после Ctrl+V. В Wayland некоторые приложения не принимают синтетическую вставку — нажмите Ctrl+V, если текст остался в буфере. Если приложение упадёт во время вставки, снимок восстановится с диска.",
+  modelReady: "Готова на этом компьютере.",
+};
+
+export function copy(lang: string | undefined | null, host: HostKind = "macos"): UiCopy {
+  const base = isRu(lang) ? RU : EN;
+  if (host === "windows") {
+    return { ...base, ...(isRu(lang) ? WINDOWS_RU : WINDOWS_EN) };
+  }
+  if (host === "linux") {
+    return { ...base, ...(isRu(lang) ? LINUX_RU : LINUX_EN) };
+  }
+  return base;
 }

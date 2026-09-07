@@ -1,8 +1,7 @@
 use crate::error::{LfError, LfResult};
-use std::io::Write;
+use crate::platform::{self, InsertRequest};
 use std::path::PathBuf;
 use std::sync::Mutex;
-use std::time::Duration;
 
 static CLIPBOARD_BACKUP: Mutex<Option<PathBuf>> = Mutex::new(None);
 
@@ -30,13 +29,13 @@ struct ClipboardDiskSnapshot {
     items: Vec<(String, String)>,
 }
 
-fn persist_clipboard_snapshot(items: &[(String, Vec<u8>)]) -> std::io::Result<()> {
+pub(crate) fn persist_clipboard_snapshot(items: &[platform::ClipboardItem]) -> std::io::Result<()> {
     persist_clipboard_snapshot_at(&clipboard_snapshot_path(), items)
 }
 
 fn persist_clipboard_snapshot_at(
     path: &std::path::Path,
-    items: &[(String, Vec<u8>)],
+    items: &[platform::ClipboardItem],
 ) -> std::io::Result<()> {
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;
@@ -51,11 +50,11 @@ fn persist_clipboard_snapshot_at(
     std::fs::write(path, serde_json::to_vec(&disk)?)
 }
 
-fn take_clipboard_snapshot() -> Option<Vec<(String, Vec<u8>)>> {
+fn take_clipboard_snapshot() -> Option<Vec<platform::ClipboardItem>> {
     take_clipboard_snapshot_at(&clipboard_snapshot_path())
 }
 
-fn take_clipboard_snapshot_at(path: &std::path::Path) -> Option<Vec<(String, Vec<u8>)>> {
+fn take_clipboard_snapshot_at(path: &std::path::Path) -> Option<Vec<platform::ClipboardItem>> {
     let bytes = std::fs::read(path).ok()?;
     let _ = std::fs::remove_file(path);
     let disk: ClipboardDiskSnapshot = serde_json::from_slice(&bytes).ok()?;
@@ -72,12 +71,12 @@ fn take_clipboard_snapshot_at(path: &std::path::Path) -> Option<Vec<(String, Vec
     Some(items)
 }
 
-fn clear_clipboard_backups() {
+pub(crate) fn clear_clipboard_backups() {
     let _ = std::fs::remove_file(clipboard_backup_path());
     let _ = std::fs::remove_file(clipboard_snapshot_path());
 }
 
-pub fn persist_clipboard_backup(text: &str) -> std::io::Result<()> {
+pub(crate) fn persist_clipboard_backup(text: &str) -> std::io::Result<()> {
     persist_clipboard_backup_at(&clipboard_backup_path(), text)
 }
 
@@ -111,9 +110,8 @@ pub fn apply_native_paste(haystack: &str, sel_start: usize, sel_end: usize, clip
 }
 
 pub fn restore_orphaned_clipboard() {
-    #[cfg(target_os = "macos")]
-    {
-        if macos::restore_orphaned_snapshot() {
+    if let Some(items) = take_clipboard_snapshot() {
+        if platform::current().restore_clipboard_items(&items) {
             let _ = std::fs::remove_file(clipboard_backup_path());
             return;
         }
@@ -121,35 +119,11 @@ pub fn restore_orphaned_clipboard() {
     let Some(text) = take_clipboard_backup() else {
         return;
     };
-    let _ = write_pasteboard(&text);
+    let _ = platform::current().set_clipboard_text(&text);
 }
 
-fn write_pasteboard(text: &str) -> LfResult<()> {
-    #[cfg(target_os = "macos")]
-    {
-        let mut child = std::process::Command::new("pbcopy")
-            .stdin(std::process::Stdio::piped())
-            .spawn()
-            .map_err(|e| LfError::InjectionFailed(e.to_string()))?;
-        if let Some(stdin) = child.stdin.as_mut() {
-            stdin
-                .write_all(text.as_bytes())
-                .map_err(|e| LfError::InjectionFailed(e.to_string()))?;
-        }
-        let status = child
-            .wait()
-            .map_err(|e| LfError::InjectionFailed(e.to_string()))?;
-        if status.success() {
-            Ok(())
-        } else {
-            Err(LfError::InjectionFailed("pbcopy failed".into()))
-        }
-    }
-    #[cfg(not(target_os = "macos"))]
-    {
-        let _ = text;
-        Ok(())
-    }
+pub fn set_clipboard_text(text: &str) -> LfResult<()> {
+    platform::current().set_clipboard_text(text)
 }
 
 pub trait TextInjector: Send + Sync {
@@ -187,13 +161,13 @@ pub struct ClipboardInjector {
 
 impl TextInjector for ClipboardInjector {
     fn insert_text(&self, text: &str, restore_clipboard: bool) -> LfResult<()> {
-        insert_via_clipboard(
+        platform::current().insert_text(&InsertRequest {
             text,
             restore_clipboard,
-            self.target_pid,
-            self.target_app.as_deref(),
-            self.insert_delay_ms,
-        )
+            target_pid: self.target_pid,
+            target_app: self.target_app.as_deref(),
+            insert_delay_ms: self.insert_delay_ms,
+        })
     }
 }
 
@@ -206,578 +180,25 @@ pub fn frontmost_app_name() -> Option<String> {
 }
 
 pub fn frontmost_target() -> (Option<i32>, Option<String>) {
-    #[cfg(target_os = "macos")]
-    {
-        let (tx, rx) = std::sync::mpsc::channel();
-        std::thread::spawn(move || {
-            let _ = tx.send(frontmost_target_blocking());
-        });
-        rx.recv_timeout(Duration::from_millis(250))
-            .unwrap_or((None, None))
-    }
-    #[cfg(not(target_os = "macos"))]
-    {
-        (None, None)
-    }
-}
-
-#[cfg(target_os = "macos")]
-fn frontmost_target_blocking() -> (Option<i32>, Option<String>) {
-    let output = std::process::Command::new("osascript")
-        .args([
-            "-e",
-            "tell application \"System Events\" to tell first application process whose frontmost is true to get name & tab & unix id",
-        ])
-        .output();
-    let Ok(output) = output else {
-        return (None, None);
-    };
-    if !output.status.success() {
-        return (None, None);
-    }
-    let text = String::from_utf8(output.stdout).unwrap_or_default();
-    let text = text.trim();
-    if text.is_empty() {
-        return (None, None);
-    }
-    match text.rsplit_once('\t') {
-        Some((name, id)) => (
-            id.trim().parse().ok(),
-            Some(name.trim())
-                .filter(|n| !n.is_empty())
-                .map(str::to_string),
-        ),
-        None => (text.parse().ok(), None),
-    }
+    platform::current().frontmost_target()
 }
 
 pub fn space_key_down() -> bool {
-    #[cfg(target_os = "macos")]
-    {
-        macos::key_down(macos::VK_SPACE)
-    }
-    #[cfg(not(target_os = "macos"))]
-    {
-        false
-    }
+    platform::current().space_key_down()
 }
 
 /// True while the configured talk chord is physically held (including Space).
 pub fn talk_combo_held(hotkey: &str) -> bool {
-    #[cfg(target_os = "macos")]
-    {
-        macos::talk_combo_held(hotkey)
-    }
-    #[cfg(not(target_os = "macos"))]
-    {
-        let _ = hotkey;
-        false
-    }
+    platform::current().talk_combo_held(hotkey)
 }
 
 /// True while Control/Shift/Command/Option from the talk hotkey are down (Space ignored).
 pub fn talk_modifiers_held(hotkey: &str) -> bool {
-    #[cfg(target_os = "macos")]
-    {
-        macos::talk_modifiers_held(hotkey)
-    }
-    #[cfg(not(target_os = "macos"))]
-    {
-        let _ = hotkey;
-        false
-    }
-}
-
-fn insert_via_clipboard(
-    text: &str,
-    restore_clipboard: bool,
-    target_pid: Option<i32>,
-    target_app: Option<&str>,
-    insert_delay_ms: u64,
-) -> LfResult<()> {
-    #[cfg(target_os = "macos")]
-    {
-        macos::insert_text(
-            text,
-            restore_clipboard,
-            target_pid,
-            target_app,
-            insert_delay_ms,
-        )
-    }
-    #[cfg(not(target_os = "macos"))]
-    {
-        let _ = (
-            text,
-            restore_clipboard,
-            target_pid,
-            target_app,
-            insert_delay_ms,
-        );
-        Err(LfError::InjectionFailed(
-            "clipboard injection is implemented for macOS in this MVP".into(),
-        ))
-    }
-}
-
-#[cfg(target_os = "macos")]
-mod macos {
-    use super::*;
-    use std::ffi::c_void;
-    use std::time::{Duration, Instant};
-
-    const VK_COMMAND: u16 = 0x37;
-    const VK_RIGHT_COMMAND: u16 = 0x36;
-    const VK_SHIFT: u16 = 0x38;
-    const VK_RIGHT_SHIFT: u16 = 0x3C;
-    const VK_CONTROL: u16 = 0x3B;
-    const VK_RIGHT_CONTROL: u16 = 0x3E;
-    const VK_OPTION: u16 = 0x3A;
-    const VK_RIGHT_OPTION: u16 = 0x3D;
-    pub(super) const VK_SPACE: u16 = 0x31;
-    const VK_ANSI_V: u16 = 0x09;
-    const COMMAND_FLAG: u64 = 0x0010_0000;
-    const SESSION_EVENT_TAP: u32 = 1;
-    const HID_SYSTEM_STATE: i32 = 1;
-    const COMBINED_SESSION_STATE: i32 = 0;
-
-    #[link(name = "CoreGraphics", kind = "framework")]
-    extern "C" {
-        fn CGEventSourceCreate(state_id: i32) -> *mut c_void;
-        fn CGEventSourceKeyState(state_id: i32, key: u16) -> bool;
-        fn CGEventCreateKeyboardEvent(
-            source: *mut c_void,
-            virtual_key: u16,
-            key_down: bool,
-        ) -> *mut c_void;
-        fn CGEventSetFlags(event: *mut c_void, flags: u64);
-        fn CGEventPost(tap: u32, event: *mut c_void);
-    }
-
-    #[link(name = "CoreFoundation", kind = "framework")]
-    extern "C" {
-        fn CFRelease(cf: *const c_void);
-    }
-
-    pub fn prepare_keyboard() {
-        wait_for_modifiers_up(Duration::from_millis(250));
-        release_stuck_modifiers();
-    }
-
-    pub(super) fn key_down(vk: u16) -> bool {
-        unsafe {
-            CGEventSourceKeyState(COMBINED_SESSION_STATE, vk)
-                || CGEventSourceKeyState(HID_SYSTEM_STATE, vk)
-        }
-    }
-
-    fn control_down() -> bool {
-        key_down(VK_CONTROL) || key_down(VK_RIGHT_CONTROL)
-    }
-
-    fn shift_down() -> bool {
-        key_down(VK_SHIFT) || key_down(VK_RIGHT_SHIFT)
-    }
-
-    fn command_down() -> bool {
-        key_down(VK_COMMAND) || key_down(VK_RIGHT_COMMAND)
-    }
-
-    fn option_down() -> bool {
-        key_down(VK_OPTION) || key_down(VK_RIGHT_OPTION)
-    }
-
-    pub(super) fn talk_combo_held(hotkey: &str) -> bool {
-        let t = hotkey.to_ascii_lowercase();
-        let mut required = false;
-        if t.contains("control") || t.contains("ctrl") {
-            required = true;
-            if !control_down() {
-                return false;
-            }
-        }
-        if t.contains("shift") {
-            required = true;
-            if !shift_down() {
-                return false;
-            }
-        }
-        if t.contains("command") || t.contains("cmd") || t.contains("super") {
-            required = true;
-            if !command_down() {
-                return false;
-            }
-        }
-        if t.contains("option") || t.contains("alt") {
-            required = true;
-            if !option_down() {
-                return false;
-            }
-        }
-        if t.contains("space") {
-            return required && key_down(VK_SPACE);
-        }
-        required
-    }
-
-    pub(super) fn talk_modifiers_held(hotkey: &str) -> bool {
-        let t = hotkey.to_ascii_lowercase();
-        let mut any = false;
-        if t.contains("control") || t.contains("ctrl") {
-            any = true;
-            if !control_down() {
-                return false;
-            }
-        }
-        if t.contains("shift") {
-            any = true;
-            if !shift_down() {
-                return false;
-            }
-        }
-        if t.contains("command") || t.contains("cmd") || t.contains("super") {
-            any = true;
-            if !command_down() {
-                return false;
-            }
-        }
-        if t.contains("option") || t.contains("alt") {
-            any = true;
-            if !option_down() {
-                return false;
-            }
-        }
-        any
-    }
-
-    const PASTEBOARD_MAIN_WAIT: Duration = Duration::from_secs(2);
-
-    pub(super) fn on_main<T: Send + 'static>(
-        f: impl FnOnce() -> T + Send + 'static,
-        fallback: T,
-    ) -> T {
-        if cfg!(test) {
-            return f();
-        }
-        if objc2::MainThreadMarker::new().is_some() {
-            return f();
-        }
-        let (tx, rx) = std::sync::mpsc::sync_channel(1);
-        dispatch2::DispatchQueue::main().exec_async(move || {
-            let _ = tx.send(f());
-        });
-        rx.recv_timeout(PASTEBOARD_MAIN_WAIT).unwrap_or(fallback)
-    }
-
-    pub fn insert_text(
-        text: &str,
-        restore_clipboard: bool,
-        target_pid: Option<i32>,
-        target_app: Option<&str>,
-        insert_delay_ms: u64,
-    ) -> LfResult<()> {
-        if secure_event_input_enabled() {
-            return Err(LfError::PermissionDenied(
-                "secure input blocked paste".into(),
-            ));
-        }
-        prepare_keyboard();
-        focus_pid(target_pid);
-        let delay = insert_delay_ms.max(40);
-        let extra = if is_editor_or_terminal(target_app) {
-            delay.saturating_add(40)
-        } else {
-            delay
-        };
-        std::thread::sleep(Duration::from_millis(extra));
-
-        let previous = if restore_clipboard {
-            Some(snapshot_pasteboard())
-        } else {
-            None
-        };
-        if let Some(prev) = &previous {
-            let _ = super::persist_clipboard_snapshot(&prev.items);
-            if let Some(plain) = prev.plain_text() {
-                let _ = super::persist_clipboard_backup(plain);
-            }
-        }
-
-        write_pasteboard_string(text)?;
-        std::thread::sleep(Duration::from_millis(16));
-        let paste_result = post_paste();
-        release_stuck_modifiers();
-
-        if let Some(prev) = previous {
-            std::thread::spawn(move || {
-                std::thread::sleep(Duration::from_millis(80));
-                restore_pasteboard(&prev);
-                super::clear_clipboard_backups();
-            });
-        }
-        paste_result
-    }
-
-    pub(crate) fn secure_event_input_enabled() -> bool {
-        #[link(name = "Carbon", kind = "framework")]
-        extern "C" {
-            fn IsSecureEventInputEnabled() -> u8;
-        }
-        unsafe { IsSecureEventInputEnabled() != 0 }
-    }
-
-    struct PasteboardSnapshot {
-        items: Vec<(String, Vec<u8>)>,
-    }
-
-    impl PasteboardSnapshot {
-        fn plain_text(&self) -> Option<&str> {
-            self.items.iter().find_map(|(ty, bytes)| {
-                if ty == "public.utf8-plain-text" || ty == "NSStringPboardType" {
-                    std::str::from_utf8(bytes).ok()
-                } else {
-                    None
-                }
-            })
-        }
-    }
-
-    fn snapshot_pasteboard() -> PasteboardSnapshot {
-        on_main(
-            snapshot_pasteboard_on_main,
-            PasteboardSnapshot { items: vec![] },
-        )
-    }
-
-    fn snapshot_pasteboard_on_main() -> PasteboardSnapshot {
-        use objc2_app_kit::NSPasteboard;
-        let pb = NSPasteboard::generalPasteboard();
-        let mut items = Vec::new();
-        let mut total = 0usize;
-        if let Some(types) = pb.types() {
-            for ty in types.iter() {
-                let name = ty.to_string();
-                let keep = name == "public.utf8-plain-text"
-                    || name == "NSStringPboardType"
-                    || name == "public.utf16-plain-text"
-                    || name.contains("plain-text");
-                if !keep {
-                    continue;
-                }
-                let Some(data) = pb.dataForType(&ty) else {
-                    continue;
-                };
-                let bytes = unsafe { data.as_bytes_unchecked() }.to_vec();
-                total = total.saturating_add(bytes.len());
-                if total > 16 * 1024 * 1024 {
-                    break;
-                }
-                items.push((ty.to_string(), bytes));
-            }
-        }
-        PasteboardSnapshot { items }
-    }
-
-    fn restore_pasteboard(snapshot: &PasteboardSnapshot) {
-        let snapshot = PasteboardSnapshot {
-            items: snapshot.items.clone(),
-        };
-        on_main(move || restore_pasteboard_on_main(&snapshot), ());
-    }
-
-    fn restore_pasteboard_on_main(snapshot: &PasteboardSnapshot) {
-        use objc2_app_kit::NSPasteboard;
-        use objc2_foundation::{NSData, NSString};
-        let pb = NSPasteboard::generalPasteboard();
-        pb.clearContents();
-        for (ty, bytes) in &snapshot.items {
-            let ns_ty = NSString::from_str(ty);
-            let data = NSData::with_bytes(bytes);
-            let _ = pb.setData_forType(Some(&data), &ns_ty);
-        }
-    }
-
-    pub(super) fn restore_orphaned_snapshot() -> bool {
-        let Some(items) = super::take_clipboard_snapshot() else {
-            return false;
-        };
-        if items.is_empty() {
-            return false;
-        }
-        restore_pasteboard(&PasteboardSnapshot { items });
-        true
-    }
-
-    fn write_pasteboard_string(text: &str) -> LfResult<()> {
-        let text = text.to_string();
-        on_main(
-            move || write_pasteboard_string_on_main(&text),
-            Err(LfError::InjectionFailed("pasteboard timed out".into())),
-        )
-    }
-
-    fn write_pasteboard_string_on_main(text: &str) -> LfResult<()> {
-        use objc2_app_kit::{NSPasteboard, NSPasteboardTypeString};
-        use objc2_foundation::NSString;
-        let pb = NSPasteboard::generalPasteboard();
-        pb.clearContents();
-        let ns = NSString::from_str(text);
-        let ok = pb.setString_forType(&ns, unsafe { NSPasteboardTypeString });
-        if !ok {
-            return super::write_pasteboard(text);
-        }
-        let got = pb
-            .stringForType(unsafe { NSPasteboardTypeString })
-            .map(|s| s.to_string())
-            .unwrap_or_default();
-        if got == text {
-            Ok(())
-        } else {
-            super::write_pasteboard(text)
-        }
-    }
-
-    fn is_editor_or_terminal(app: Option<&str>) -> bool {
-        let Some(name) = app else {
-            return false;
-        };
-        let n = name.to_ascii_lowercase();
-        n.contains("term")
-            || n.contains("iterm")
-            || n.contains("warp")
-            || n.contains("kitty")
-            || n.contains("ghostty")
-            || n.contains("alacritty")
-            || n.contains("code")
-            || n.contains("cursor")
-            || n.contains("zed")
-            || n.contains("xcode")
-            || n.contains("sublime")
-            || n.contains("vim")
-            || n.contains("nvim")
-            || n.contains("helix")
-    }
-
-    fn focus_pid(pid: Option<i32>) {
-        let Some(pid) = pid else {
-            return;
-        };
-        let script = format!(
-            "tell application \"System Events\" to set frontmost of first application process whose unix id is {pid} to true"
-        );
-        let (tx, rx) = std::sync::mpsc::channel();
-        std::thread::spawn(move || {
-            let _ = std::process::Command::new("osascript")
-                .args(["-e", &script])
-                .status();
-            let _ = tx.send(());
-        });
-        let _ = rx.recv_timeout(Duration::from_millis(150));
-    }
-
-    fn modifier_down() -> bool {
-        unsafe {
-            CGEventSourceKeyState(COMBINED_SESSION_STATE, VK_CONTROL)
-                || CGEventSourceKeyState(COMBINED_SESSION_STATE, VK_RIGHT_CONTROL)
-                || CGEventSourceKeyState(COMBINED_SESSION_STATE, VK_SHIFT)
-                || CGEventSourceKeyState(COMBINED_SESSION_STATE, VK_RIGHT_SHIFT)
-                || CGEventSourceKeyState(COMBINED_SESSION_STATE, VK_COMMAND)
-                || CGEventSourceKeyState(COMBINED_SESSION_STATE, VK_RIGHT_COMMAND)
-                || CGEventSourceKeyState(COMBINED_SESSION_STATE, VK_OPTION)
-                || CGEventSourceKeyState(COMBINED_SESSION_STATE, VK_RIGHT_OPTION)
-        }
-    }
-
-    fn wait_for_modifiers_up(timeout: Duration) {
-        let start = Instant::now();
-        while modifier_down() && start.elapsed() < timeout {
-            std::thread::sleep(Duration::from_millis(16));
-        }
-        if modifier_down() {
-            release_stuck_modifiers();
-            std::thread::sleep(Duration::from_millis(30));
-        }
-    }
-
-    fn post_paste() -> LfResult<()> {
-        unsafe {
-            let source = CGEventSourceCreate(HID_SYSTEM_STATE);
-            let down = CGEventCreateKeyboardEvent(source, VK_ANSI_V, true);
-            let up = CGEventCreateKeyboardEvent(source, VK_ANSI_V, false);
-            if down.is_null() || up.is_null() {
-                if !down.is_null() {
-                    CFRelease(down);
-                }
-                if !up.is_null() {
-                    CFRelease(up);
-                }
-                if !source.is_null() {
-                    CFRelease(source);
-                }
-                return fallback_osascript_paste();
-            }
-            CGEventSetFlags(down, COMMAND_FLAG);
-            CGEventSetFlags(up, COMMAND_FLAG);
-            CGEventPost(SESSION_EVENT_TAP, down);
-            CGEventPost(SESSION_EVENT_TAP, up);
-            CFRelease(down);
-            CFRelease(up);
-            if !source.is_null() {
-                CFRelease(source);
-            }
-        }
-        Ok(())
-    }
-
-    fn fallback_osascript_paste() -> LfResult<()> {
-        let status = std::process::Command::new("osascript")
-            .args([
-                "-e",
-                "tell application \"System Events\" to key code 9 using command down",
-            ])
-            .status()
-            .map_err(|e| LfError::InjectionFailed(e.to_string()))?;
-        if status.success() {
-            Ok(())
-        } else {
-            Err(LfError::PermissionDenied(
-                "Accessibility permission required for insertion".into(),
-            ))
-        }
-    }
-
-    fn release_stuck_modifiers() {
-        unsafe {
-            let source = CGEventSourceCreate(HID_SYSTEM_STATE);
-            for key in [
-                VK_CONTROL,
-                VK_RIGHT_CONTROL,
-                VK_SHIFT,
-                VK_RIGHT_SHIFT,
-                VK_OPTION,
-                VK_RIGHT_OPTION,
-                VK_COMMAND,
-                VK_RIGHT_COMMAND,
-            ] {
-                let up = CGEventCreateKeyboardEvent(source, key, false);
-                if !up.is_null() {
-                    CGEventSetFlags(up, 0);
-                    CGEventPost(SESSION_EVENT_TAP, up);
-                    CFRelease(up);
-                }
-            }
-            if !source.is_null() {
-                CFRelease(source);
-            }
-        }
-    }
+    platform::current().talk_modifiers_held(hotkey)
 }
 
 pub fn prepare_keyboard_for_insert() {
-    #[cfg(target_os = "macos")]
-    {
-        macos::prepare_keyboard();
-    }
+    platform::current().prepare_keyboard();
 }
 
 #[cfg(test)]
@@ -813,23 +234,6 @@ mod tests {
     }
 
     #[test]
-    fn paste_posts_command_v_and_never_select_all() {
-        let prod = include_str!("injection.rs")
-            .split("#[cfg(test)]")
-            .next()
-            .unwrap();
-        assert!(prod.contains("VK_ANSI_V"), "paste must send Command+V");
-        assert!(
-            !prod.contains("VK_ANSI_A"),
-            "Select-All would wipe the field and break mid-text insert"
-        );
-        assert!(
-            prod.contains("Duration::from_millis(250)"),
-            "do not wait a full second for leftover modifiers"
-        );
-    }
-
-    #[test]
     fn clipboard_backup_roundtrip_on_disk() {
         // Addresses an explicit path rather than the process-global one: every
         // `AppEngine::open` rebinds that global, so a parallel engine test used
@@ -859,18 +263,5 @@ mod tests {
         let backup = dir.path().join("clipboard-restore.txt");
         set_clipboard_backup_path(backup.clone());
         assert_eq!(clipboard_snapshot_path(), backup.with_extension("json"));
-    }
-
-    #[cfg(target_os = "macos")]
-    #[test]
-    fn pasteboard_main_hop_runs_when_already_on_main() {
-        let n = macos::on_main(|| 7, 0);
-        assert_eq!(n, 7);
-    }
-
-    #[cfg(target_os = "macos")]
-    #[test]
-    fn secure_event_input_query_does_not_panic() {
-        let _ = macos::secure_event_input_enabled();
     }
 }

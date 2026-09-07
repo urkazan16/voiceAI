@@ -8,7 +8,7 @@ const lines = [];
 for (const name of readdirSync(dir)) {
   const full = path.join(dir, name);
   if (!statSync(full).isFile()) continue;
-  if (name === "SHA256SUMS") continue;
+  if (name === "SHA256SUMS" || name.startsWith(".")) continue;
   const hash = createHash("sha256").update(readFileSync(full)).digest("hex");
   lines.push(`${hash}  ${name}`);
 }

@@ -113,9 +113,9 @@ pub fn bound_hotkeys() -> (String, String, String, String) {
         .unwrap_or_else(|| {
             (
                 "Control+Shift+Space".into(),
-                "Command+Control+C".into(),
-                "Command+Control+V".into(),
-                "Command+Control+E".into(),
+                crate::platform::default_copy_hotkey().into(),
+                crate::platform::default_paste_hotkey().into(),
+                crate::platform::default_edit_hotkey().into(),
             )
         })
 }
@@ -726,7 +726,7 @@ fn finish_recording(app: &AppHandle, engine: &SharedEngine, capture: &SharedCapt
             }
         };
         if keep_audio {
-            let _ = crate::macos_stt::write_wav_s16le_mono(&last_wav, 16_000, &pcm);
+            let _ = crate::media::write_wav_s16le_mono(&last_wav, 16_000, &pcm);
         } else {
             let _ = std::fs::remove_file(&last_wav);
         }
@@ -992,9 +992,9 @@ mod tests {
     fn ptt_combo_release_is_space_up_for_default_hotkey() {
         remember_hotkeys(
             "Control+Shift+Space".into(),
-            "Command+Control+C".into(),
-            "Command+Control+V".into(),
-            "Command+Control+E".into(),
+            crate::platform::default_copy_hotkey().into(),
+            crate::platform::default_paste_hotkey().into(),
+            crate::platform::default_edit_hotkey().into(),
         );
         let (talk, copy, paste, edit) = bound_hotkeys();
         assert!(talk.to_ascii_lowercase().contains("space"));

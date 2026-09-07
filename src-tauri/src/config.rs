@@ -19,7 +19,9 @@ pub struct AppSettings {
     pub active_llm_model: Option<String>,
     pub restore_clipboard: bool,
     pub onboarding_complete: bool,
+    #[serde(default = "default_copy_hotkey")]
     pub copy_last_hotkey: String,
+    #[serde(default = "default_paste_hotkey")]
     pub paste_last_hotkey: String,
     pub show_flow_bar: bool,
     pub profile_override: Option<String>,
@@ -97,7 +99,15 @@ fn default_cue_volume() -> f32 {
 }
 
 fn default_edit_hotkey() -> String {
-    "Command+Control+E".into()
+    crate::platform::default_edit_hotkey().into()
+}
+
+fn default_copy_hotkey() -> String {
+    crate::platform::default_copy_hotkey().into()
+}
+
+fn default_paste_hotkey() -> String {
+    crate::platform::default_paste_hotkey().into()
 }
 
 fn default_ui_language() -> String {
@@ -186,8 +196,8 @@ impl Default for AppSettings {
             active_llm_model: Some("Qwen3-4B-Instruct-2507".into()),
             restore_clipboard: true,
             onboarding_complete: false,
-            copy_last_hotkey: "Command+Control+C".into(),
-            paste_last_hotkey: "Command+Control+V".into(),
+            copy_last_hotkey: default_copy_hotkey(),
+            paste_last_hotkey: default_paste_hotkey(),
             show_flow_bar: true,
             profile_override: None,
             personalization_enabled: true,
@@ -294,6 +304,10 @@ mod tests {
         let json = serde_json::to_string_pretty(&exported).unwrap();
         let imported = import_config(&json, &catalog).unwrap();
         assert_eq!(imported.settings.hotkey, "Control+Shift+Space");
+        assert_eq!(
+            imported.settings.copy_last_hotkey,
+            crate::platform::default_copy_hotkey()
+        );
         assert_eq!(imported.settings.stt_language, "ru");
         assert_eq!(
             imported.settings.active_stt_model.as_deref(),

@@ -2240,6 +2240,8 @@ dependencies = [
  "tokio",
  "uuid",
  "whisper-rs",
+ "windows-sys 0.59.0",
+ "x11rb",
 ]
 
 [[package]]

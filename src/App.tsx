@@ -23,8 +23,24 @@ import {
   type DiskUsage,
   type ViewId,
 } from "./api";
-import { copy, formatBytes, navItems, canDeleteDownloadedModel } from "./ui";
+import {
+  copy,
+  formatBytes,
+  navItems,
+  canDeleteDownloadedModel,
+  hostKindFrom,
+  hostKindFromUa,
+  showMacOnlyControls,
+  type HostKind,
+} from "./ui";
 import { listen } from "@tauri-apps/api/event";
+
+const fallbackCopyHotkey = () =>
+  showMacOnlyControls(hostKindFromUa()) ? "Command+Control+C" : "Control+Alt+C";
+const fallbackPasteHotkey = () =>
+  showMacOnlyControls(hostKindFromUa()) ? "Command+Control+V" : "Control+Alt+V";
+const fallbackEditHotkey = () =>
+  showMacOnlyControls(hostKindFromUa()) ? "Command+Control+E" : "Control+Alt+E";
 
 const fallbackSettings = (): AppSettings => ({
   hotkey: "Control+Shift+Space",
@@ -34,8 +50,8 @@ const fallbackSettings = (): AppSettings => ({
   active_llm_model: "Qwen3-4B-Instruct-2507",
   restore_clipboard: true,
   onboarding_complete: false,
-  copy_last_hotkey: "Command+Control+C",
-  paste_last_hotkey: "Command+Control+V",
+  copy_last_hotkey: fallbackCopyHotkey(),
+  paste_last_hotkey: fallbackPasteHotkey(),
   show_flow_bar: true,
   profile_override: null,
   personalization_enabled: true,
@@ -55,7 +71,7 @@ const fallbackSettings = (): AppSettings => ({
   date_format: "DMY",
   compute_device: "cpu",
   keep_last_audio: true,
-  edit_hotkey: "Command+Control+E",
+  edit_hotkey: fallbackEditHotkey(),
   ui_language: "en",
 });
 
@@ -81,8 +97,9 @@ function describeSelectedModel(
   models: ModelRecord[],
   statuses: ModelInstallStatus[],
   lang: string,
+  host: HostKind,
 ): { id: string | null; name: string; ready: boolean; detail: string; version: string } {
-  const t = copy(lang);
+  const t = copy(lang, host);
   if (!id) {
     return {
       id: null,
@@ -292,10 +309,7 @@ export function App() {
   }, []);
 
   useEffect(() => {
-    if (
-      (view !== "models" && view !== "onboarding" && view !== "home") ||
-      !isTauriRuntime()
-    ) {
+    if ((view !== "models" && view !== "onboarding" && view !== "home") || !isTauriRuntime()) {
       return;
     }
     let cancelled = false;
@@ -385,8 +399,14 @@ export function App() {
     if (view !== "settings" || !isTauriRuntime()) {
       return;
     }
-    void api.listModelStatus().then(setModelStatus).catch(() => undefined);
-    void api.listModels().then(setModels).catch(() => undefined);
+    void api
+      .listModelStatus()
+      .then(setModelStatus)
+      .catch(() => undefined);
+    void api
+      .listModels()
+      .then(setModels)
+      .catch(() => undefined);
   }, [view]);
 
   async function save(next: AppSettings) {
@@ -400,7 +420,9 @@ export function App() {
     }
   }
 
-  const t = copy(settings.ui_language);
+  const host = hostKindFrom(build?.platform);
+  const macOnly = showMacOnlyControls(host);
+  const t = copy(settings.ui_language, host);
   const installedSpeech = downloadedModels(models, modelStatus, "stt");
   const installedFormatting = downloadedModels(models, modelStatus, "llm");
   const speechChoices =
@@ -424,9 +446,7 @@ export function App() {
   }
 
   const menu = [
-    ...(!settings.onboarding_complete
-      ? [{ id: "onboarding" as const, label: t.setupNav }]
-      : []),
+    ...(!settings.onboarding_complete ? [{ id: "onboarding" as const, label: t.setupNav }] : []),
     ...navItems(settings.ui_language),
   ];
 
@@ -471,12 +491,14 @@ export function App() {
               >
                 {t.openMicSettings}
               </button>
-              <button
-                className="rounded-full border border-paper/30 px-4 py-2"
-                onClick={() => void api.openPrivacyPane("accessibility")}
-              >
-                {t.openAccessSettings}
-              </button>
+              {macOnly && (
+                <button
+                  className="rounded-full border border-paper/30 px-4 py-2"
+                  onClick={() => void api.openPrivacyPane("accessibility")}
+                >
+                  {t.openAccessSettings}
+                </button>
+              )}
             </div>
             <label className="mt-8 block max-w-xl text-sm text-paper/70">
               {t.microphone}
@@ -532,7 +554,7 @@ export function App() {
                       : sttBusy
                         ? `${t.sttDownloading} ${percent}%`
                         : t.sttWillDownload}
-                    {permissions
+                    {macOnly && permissions
                       ? permissions.accessibility_trusted
                         ? t.accessibilityTrusted
                         : t.accessibilityNotTrusted
@@ -607,9 +629,7 @@ export function App() {
               </p>
             )}
             <p className="mt-2 text-paper/70">{status}</p>
-            <p className="mt-1 text-sm text-paper/50">
-              {t.homeHelp}
-            </p>
+            <p className="mt-1 text-sm text-paper/50">{t.homeHelp}</p>
             <textarea
               className="mt-6 h-32 w-full rounded-2xl border border-paper/15 bg-paper/5 p-4"
               placeholder={t.homePlaceholder}
@@ -659,7 +679,9 @@ export function App() {
                     <button
                       className="rounded-full border border-paper/30 px-3 py-1"
                       onClick={() =>
-                        void api.copyLastTranscript().then(() => setStatus("Copied last transcript."))
+                        void api
+                          .copyLastTranscript()
+                          .then(() => setStatus("Copied last transcript."))
                       }
                     >
                       Copy
@@ -726,9 +748,7 @@ export function App() {
                 onChange={(e) => void save({ ...settings, hotkey: e.target.value })}
               />
             </label>
-            <p className="text-xs text-paper/60">
-              {t.hotkeyHelp}
-            </p>
+            <p className="text-xs text-paper/60">{t.hotkeyHelp}</p>
             <label className="block text-sm text-paper/70">
               {t.speechLanguage}
               <select
@@ -741,9 +761,7 @@ export function App() {
                 <option value="auto">{t.langAuto}</option>
               </select>
             </label>
-            <p className="text-xs text-paper/60">
-              {t.speechLangHelp}
-            </p>
+            <p className="text-xs text-paper/60">{t.speechLangHelp}</p>
             <label className="block text-sm text-paper/70">
               {t.speechModel}
               <select
@@ -762,9 +780,7 @@ export function App() {
                   speechChoices.map((model) => (
                     <option key={model.model_id} value={model.model_id}>
                       {model.display_name}
-                      {modelFileReady(
-                        modelStatus.find((item) => item.model_id === model.model_id),
-                      )
+                      {modelFileReady(modelStatus.find((item) => item.model_id === model.model_id))
                         ? model.model_id === "whisper-medium"
                           ? " · default"
                           : ""
@@ -859,9 +875,7 @@ export function App() {
                                   await refresh();
                                 })
                                 .catch((error) => {
-                                  setStatus(
-                                    error instanceof Error ? error.message : String(error),
-                                  );
+                                  setStatus(error instanceof Error ? error.message : String(error));
                                 });
                             }}
                           >
@@ -957,21 +971,26 @@ export function App() {
               >
                 {t.micPermission}
               </button>
-              <button
-                className="rounded-full border border-paper/30 px-4 py-2 text-sm"
-                onClick={() => void api.openPrivacyPane("accessibility")}
-              >
-                {t.accessPermission}
-              </button>
+              {macOnly && (
+                <button
+                  className="rounded-full border border-paper/30 px-4 py-2 text-sm"
+                  onClick={() => void api.openPrivacyPane("accessibility")}
+                >
+                  {t.accessPermission}
+                </button>
+              )}
             </div>
             {permissions && (
               <p className="text-xs text-paper/50">
                 {permissions.microphone_device_count} input device
-                {permissions.microphone_device_count === 1 ? "" : "s"} visible. Accessibility{" "}
-                {permissions.accessibility_trusted
-                  ? "is trusted"
-                  : "is not trusted — paste may fail"}
-                .
+                {permissions.microphone_device_count === 1 ? "" : "s"} visible
+                {macOnly
+                  ? `. Accessibility ${
+                      permissions.accessibility_trusted
+                        ? "is trusted"
+                        : "is not trusted — paste may fail"
+                    }.`
+                  : "."}
               </p>
             )}
             <label className="flex items-center gap-2 text-sm">
@@ -1037,13 +1056,9 @@ export function App() {
                 max={0.08}
                 step={0.001}
                 value={settings.vad_threshold ?? 0.012}
-                onChange={(e) =>
-                  void save({ ...settings, vad_threshold: Number(e.target.value) })
-                }
+                onChange={(e) => void save({ ...settings, vad_threshold: Number(e.target.value) })}
               />
-              <span className="text-xs text-paper/50">
-                {t.vadHelp}
-              </span>
+              <span className="text-xs text-paper/50">{t.vadHelp}</span>
             </label>
             <label className="block text-sm text-paper/70">
               {t.fallbackMode}
@@ -1088,9 +1103,7 @@ export function App() {
               />
               {t.restoreClipboard}
             </label>
-            <p className="text-xs text-paper/50">
-              {t.clipboardHelp}
-            </p>
+            <p className="text-xs text-paper/50">{t.clipboardHelp}</p>
             <label className="flex items-center gap-2 text-sm">
               <input
                 type="checkbox"
@@ -1187,15 +1200,17 @@ export function App() {
                 }
               />
             </label>
-            <button
-              className="rounded-full border border-paper/30 px-4 py-2"
-              onClick={async () => {
-                const path = await api.installDictateMacro();
-                setStatus(`Macro installed: ${path}. Double-click it to fire the talk hotkey.`);
-              }}
-            >
-              {t.installMacro}
-            </button>
+            {macOnly && (
+              <button
+                className="rounded-full border border-paper/30 px-4 py-2"
+                onClick={async () => {
+                  const path = await api.installDictateMacro();
+                  setStatus(`Macro installed: ${path}. Double-click it to fire the talk hotkey.`);
+                }}
+              >
+                {t.installMacro}
+              </button>
+            )}
             <label className="block text-sm text-paper/70">
               {t.copyLastHotkey}
               <input
@@ -1216,7 +1231,7 @@ export function App() {
               {t.editHotkey}
               <input
                 className="mt-1 w-full rounded-lg bg-paper/10 p-2"
-                value={settings.edit_hotkey ?? "Command+Control+E"}
+                value={settings.edit_hotkey ?? fallbackEditHotkey()}
                 onChange={(e) => void save({ ...settings, edit_hotkey: e.target.value })}
               />
             </label>
@@ -1243,7 +1258,7 @@ export function App() {
                   }
                 }}
               >
-                      {t.pasteLast}
+                {t.pasteLast}
               </button>
             </div>
             <div className="flex gap-3">
@@ -1275,21 +1290,21 @@ export function App() {
         {view === "models" && (
           <section>
             <h1 className="text-4xl">{t.modelsTitle}</h1>
-            <p className="mt-2 max-w-2xl text-paper/70">
-              {t.modelsHelp}
-            </p>
+            <p className="mt-2 max-w-2xl text-paper/70">{t.modelsHelp}</p>
             {(() => {
               const speech = describeSelectedModel(
                 settings.active_stt_model,
                 models,
                 modelStatus,
                 settings.ui_language,
+                host,
               );
               const formatting = describeSelectedModel(
                 settings.active_llm_model,
                 models,
                 modelStatus,
                 settings.ui_language,
+                host,
               );
               return (
                 <div className="mt-4 grid gap-3 rounded-2xl border border-copper/50 bg-copper/10 p-4 sm:grid-cols-2">
@@ -1320,9 +1335,7 @@ export function App() {
                           );
                           await refresh();
                         } catch (error) {
-                          setModelMessage(
-                            error instanceof Error ? error.message : String(error),
-                          );
+                          setModelMessage(error instanceof Error ? error.message : String(error));
                         }
                       }}
                     >
@@ -1342,7 +1355,9 @@ export function App() {
                     {formatting.version && (
                       <p className="mt-1 font-mono text-xs text-paper/50">{formatting.version}</p>
                     )}
-                    <p className={`mt-1 text-sm ${formatting.ready ? "text-moss" : "text-paper/60"}`}>
+                    <p
+                      className={`mt-1 text-sm ${formatting.ready ? "text-moss" : "text-paper/60"}`}
+                    >
                       {formatting.ready
                         ? formatting.detail
                         : `${formatting.detail} Dictation still works without it.`}
@@ -1441,8 +1456,8 @@ export function App() {
                     )}
                     {isActive && !ready && (
                       <p className="mt-2 text-sm text-copper">
-                        Selected as the current {isSpeechActive ? "speech" : "formatting"} model, but
-                        the file is not ready yet.
+                        Selected as the current {isSpeechActive ? "speech" : "formatting"} model,
+                        but the file is not ready yet.
                       </p>
                     )}
                     {status?.local_path && !ready && (
@@ -1570,9 +1585,7 @@ export function App() {
         {view === "dictionary" && (
           <section className="max-w-2xl">
             <h1 className="text-4xl">{t.dictionaryTitle}</h1>
-            <p className="mt-2 text-sm text-paper/60">
-              {t.dictionaryHelp}
-            </p>
+            <p className="mt-2 text-sm text-paper/60">{t.dictionaryHelp}</p>
             <input
               className="mt-4 w-full rounded-lg bg-paper/10 p-2"
               placeholder={t.searchPlaceholder}
@@ -1696,9 +1709,7 @@ export function App() {
         {view === "snippets" && (
           <section className="max-w-2xl">
             <h1 className="text-4xl">{t.snippetsTitle}</h1>
-            <p className="mt-2 text-sm text-paper/60">
-              {t.snippetsHelp}
-            </p>
+            <p className="mt-2 text-sm text-paper/60">{t.snippetsHelp}</p>
             <input
               className="mt-4 w-full rounded-lg bg-paper/10 p-2"
               placeholder="trigger (≤ 60)"
@@ -1861,9 +1872,7 @@ export function App() {
               />
               {t.learnCorrections}
             </label>
-            <p className="text-sm text-paper/60">
-              {t.personalizationHelp}
-            </p>
+            <p className="text-sm text-paper/60">{t.personalizationHelp}</p>
             <div className="flex gap-2">
               <input
                 className="flex-1 rounded-lg bg-paper/10 p-2"
@@ -2155,8 +2164,8 @@ export function App() {
                     <p className="text-paper/60">WPM by application</p>
                     {stats.wpm_by_application.map((row) => (
                       <p key={row.application}>
-                        {row.application || "(unknown)"}: {row.wpm_avg.toFixed(0)} (
-                        {row.utterances})
+                        {row.application || "(unknown)"}: {row.wpm_avg.toFixed(0)} ({row.utterances}
+                        )
                       </p>
                     ))}
                   </div>
@@ -2191,9 +2200,7 @@ export function App() {
             {privacy.network_operations.map((item) => (
               <p key={item}>{item}</p>
             ))}
-            <p className="text-sm text-paper/70">
-              {t.privacyLogs}
-            </p>
+            <p className="text-sm text-paper/70">{t.privacyLogs}</p>
             <div className="flex flex-wrap gap-3 pt-2">
               <button
                 className="rounded-full border border-paper/30 px-4 py-2"
