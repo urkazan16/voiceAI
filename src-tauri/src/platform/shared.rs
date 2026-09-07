@@ -2,7 +2,7 @@
 //! macOS keeps its original in-file logic so a helper rename cannot drift it.
 //! The helpers still compile on macOS so CI can unit-test them.
 
-#![cfg_attr(target_os = "macos", allow(dead_code))]
+#![cfg_attr(not(target_os = "linux"), allow(dead_code))]
 
 use std::time::Duration;
 
