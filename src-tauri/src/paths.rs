@@ -111,7 +111,14 @@ pub fn display_home_relative(path: &Path) -> String {
         return path.display().to_string();
     }
     match path.strip_prefix(&home) {
-        Ok(rest) => Path::new("~").join(rest).display().to_string(),
+        Ok(rest) => {
+            let rest = rest.to_string_lossy().replace('\\', "/");
+            if rest.is_empty() {
+                "~".into()
+            } else {
+                format!("~/{rest}")
+            }
+        }
         Err(_) => path.display().to_string(),
     }
 }
@@ -132,13 +139,16 @@ mod tests {
 
     #[test]
     fn privacy_display_hides_the_account_name() {
-        let home = std::env::var("HOME").unwrap_or_else(|_| "/home/tester".into());
+        let home = std::env::var("HOME")
+            .or_else(|_| std::env::var("USERPROFILE"))
+            .unwrap_or_else(|_| "/home/tester".into());
         let shown = display_home_relative(&PathBuf::from(&home).join("LocalFlow"));
         assert_eq!(shown, "~/LocalFlow");
         assert!(!shown.contains(&home));
+        let outside = Path::new("/opt/LocalFlow");
         assert_eq!(
-            display_home_relative(Path::new("/opt/LocalFlow")),
-            "/opt/LocalFlow"
+            display_home_relative(outside),
+            outside.display().to_string()
         );
     }
 

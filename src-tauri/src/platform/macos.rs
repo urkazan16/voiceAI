@@ -26,6 +26,7 @@ const VK_RIGHT_OPTION: u16 = 0x3D;
 const VK_SPACE: u16 = 0x31;
 const VK_ANSI_V: u16 = 0x09;
 const COMMAND_FLAG: u64 = 0x0010_0000;
+const HID_EVENT_TAP: u32 = 0;
 const SESSION_EVENT_TAP: u32 = 1;
 const HID_SYSTEM_STATE: i32 = 1;
 const COMBINED_SESSION_STATE: i32 = 0;
@@ -88,7 +89,7 @@ impl Platform for MacOs {
             ));
         }
         prepare_keyboard();
-        focus_pid(request.target_pid);
+        focus_target(request.target_pid, request.target_app);
         let delay = request.insert_delay_ms.max(40);
         let extra = if is_editor_or_terminal(request.target_app) {
             delay.saturating_add(40)
@@ -110,16 +111,21 @@ impl Platform for MacOs {
         }
 
         write_pasteboard_string(request.text)?;
-        std::thread::sleep(Duration::from_millis(16));
+        // Give other apps time to observe the new changeCount before Cmd+V.
+        std::thread::sleep(Duration::from_millis(40));
         let paste_result = post_paste();
         release_stuck_modifiers();
 
         if let Some(prev) = previous {
-            std::thread::spawn(move || {
-                std::thread::sleep(Duration::from_millis(80));
-                restore_pasteboard(&prev);
-                crate::injection::clear_clipboard_backups();
-            });
+            if paste_result.is_ok() {
+                std::thread::spawn(move || {
+                    std::thread::sleep(Duration::from_millis(250));
+                    restore_pasteboard(&prev);
+                    crate::injection::clear_clipboard_backups();
+                });
+            }
+            // Failed paste: leave the transcript on the pasteboard so a
+            // manual Cmd+V still works after enabling Accessibility.
         }
         paste_result
     }
@@ -550,7 +556,17 @@ fn is_editor_or_terminal(app: Option<&str>) -> bool {
         || n.contains("helix")
 }
 
-fn focus_pid(pid: Option<i32>) {
+fn focus_target(pid: Option<i32>, app: Option<&str>) {
+    if let Some(pid) = pid {
+        if activate_pid(pid) {
+            return;
+        }
+    }
+    if let Some(name) = app.map(str::trim).filter(|n| !n.is_empty()) {
+        if activate_named_app(name) {
+            return;
+        }
+    }
     let Some(pid) = pid else {
         return;
     };
@@ -563,6 +579,31 @@ fn focus_pid(pid: Option<i32>) {
         let _ = tx.send(());
     });
     let _ = rx.recv_timeout(Duration::from_millis(150));
+}
+
+fn activate_pid(pid: i32) -> bool {
+    on_main(move || {
+        use objc2_app_kit::{NSApplicationActivationOptions, NSRunningApplication};
+        let Some(app) =
+            NSRunningApplication::runningApplicationWithProcessIdentifier(pid as libc::pid_t)
+        else {
+            return false;
+        };
+        app.activateWithOptions(NSApplicationActivationOptions::empty())
+    })
+}
+
+fn activate_named_app(name: &str) -> bool {
+    let safe: String = name.chars().filter(|c| *c != '"' && *c != '\\').collect();
+    if safe.is_empty() {
+        return false;
+    }
+    let script = format!("tell application \"{safe}\" to activate");
+    Command::new("osascript")
+        .args(["-e", &script])
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
 }
 
 fn modifier_down() -> bool {
@@ -590,33 +631,52 @@ fn wait_for_modifiers_up(timeout: Duration) {
 }
 
 fn post_paste() -> LfResult<()> {
-    unsafe {
-        let source = CGEventSourceCreate(HID_SYSTEM_STATE);
-        let down = CGEventCreateKeyboardEvent(source, VK_ANSI_V, true);
-        let up = CGEventCreateKeyboardEvent(source, VK_ANSI_V, false);
-        if down.is_null() || up.is_null() {
-            if !down.is_null() {
-                CFRelease(down);
+    // CGEventPost returns void and is dropped when the process is not in
+    // Accessibility. A freshly installed .app is a new TCC identity, so the
+    // old "post V with Command flags and assume it worked" path left the
+    // transcript on the pasteboard and never typed it.
+    if !unsafe { AXIsProcessTrusted() } {
+        match fallback_osascript_paste() {
+            Ok(()) => return Ok(()),
+            Err(err) => {
+                let _ = MacOs.open_privacy_pane("accessibility");
+                return Err(err);
             }
-            if !up.is_null() {
-                CFRelease(up);
-            }
-            if !source.is_null() {
-                CFRelease(source);
-            }
-            return fallback_osascript_paste();
-        }
-        CGEventSetFlags(down, COMMAND_FLAG);
-        CGEventSetFlags(up, COMMAND_FLAG);
-        CGEventPost(SESSION_EVENT_TAP, down);
-        CGEventPost(SESSION_EVENT_TAP, up);
-        CFRelease(down);
-        CFRelease(up);
-        if !source.is_null() {
-            CFRelease(source);
         }
     }
-    Ok(())
+    if post_command_v() {
+        std::thread::sleep(Duration::from_millis(40));
+        return Ok(());
+    }
+    fallback_osascript_paste()
+}
+
+fn post_command_v() -> bool {
+    unsafe {
+        let source = CGEventSourceCreate(HID_SYSTEM_STATE);
+        if source.is_null() {
+            return false;
+        }
+        let ok = post_key(source, VK_COMMAND, true, COMMAND_FLAG)
+            && post_key(source, VK_ANSI_V, true, COMMAND_FLAG)
+            && post_key(source, VK_ANSI_V, false, COMMAND_FLAG)
+            && post_key(source, VK_COMMAND, false, 0);
+        CFRelease(source);
+        ok
+    }
+}
+
+fn post_key(source: *mut c_void, vk: u16, down: bool, flags: u64) -> bool {
+    unsafe {
+        let event = CGEventCreateKeyboardEvent(source, vk, down);
+        if event.is_null() {
+            return false;
+        }
+        CGEventSetFlags(event, flags);
+        CGEventPost(HID_EVENT_TAP, event);
+        CFRelease(event);
+        true
+    }
 }
 
 fn fallback_osascript_paste() -> LfResult<()> {
@@ -673,6 +733,18 @@ mod tests {
             .next()
             .unwrap();
         assert!(prod.contains("VK_ANSI_V"), "paste must send Command+V");
+        assert!(
+            prod.contains("VK_COMMAND"),
+            "Command must be posted, not only set as a flag on V"
+        );
+        assert!(
+            prod.contains("HID_EVENT_TAP"),
+            "installed apps need the HID tap so Cmd+V reaches the other process"
+        );
+        assert!(
+            prod.contains("AXIsProcessTrusted"),
+            "do not report a successful paste when Accessibility dropped the events"
+        );
         assert!(
             !prod.contains("VK_ANSI_A"),
             "Select-All would wipe the field and break mid-text insert"
