@@ -68,7 +68,8 @@
     ],
     "resources": ["resources/model-catalog.json"],
     "macOS": {
-      "minimumSystemVersion": "12.0"
+      "minimumSystemVersion": "12.0",
+      "entitlements": "./Entitlements.plist"
     }
   }
 }

@@ -42,6 +42,7 @@ extern "C" {
     ) -> *mut c_void;
     fn CGEventSetFlags(event: *mut c_void, flags: u64);
     fn CGEventPost(tap: u32, event: *mut c_void);
+    fn CGEventPostToPid(pid: i32, event: *mut c_void);
 }
 
 #[link(name = "CoreFoundation", kind = "framework")]
@@ -112,14 +113,16 @@ impl Platform for MacOs {
 
         write_pasteboard_string(request.text)?;
         // Give other apps time to observe the new changeCount before Cmd+V.
-        std::thread::sleep(Duration::from_millis(40));
-        let paste_result = post_paste();
+        std::thread::sleep(Duration::from_millis(80));
+        let paste_result = post_paste(request.target_pid);
         release_stuck_modifiers();
 
         if let Some(prev) = previous {
             if paste_result.is_ok() {
                 std::thread::spawn(move || {
-                    std::thread::sleep(Duration::from_millis(250));
+                    // Installed .app: wait long enough that Cmd+V is consumed
+                    // before we put the previous clipboard back.
+                    std::thread::sleep(Duration::from_millis(800));
                     restore_pasteboard(&prev);
                     crate::injection::clear_clipboard_backups();
                 });
@@ -557,39 +560,37 @@ fn is_editor_or_terminal(app: Option<&str>) -> bool {
 }
 
 fn focus_target(pid: Option<i32>, app: Option<&str>) {
+    // Packaged LocalFlow is a regular app with a window. On macOS 14+,
+    // activateWithOptions(empty()) reports success without taking focus
+    // away from us, so Cmd+V lands in LocalFlow instead of the field.
     if let Some(pid) = pid {
-        if activate_pid(pid) {
-            return;
-        }
+        let _ = activate_pid(pid);
     }
     if let Some(name) = app.map(str::trim).filter(|n| !n.is_empty()) {
-        if activate_named_app(name) {
-            return;
-        }
+        let _ = activate_named_app(name);
     }
-    let Some(pid) = pid else {
-        return;
-    };
-    let script = format!(
-        "tell application \"System Events\" to set frontmost of first application process whose unix id is {pid} to true"
-    );
-    let (tx, rx) = std::sync::mpsc::channel();
-    std::thread::spawn(move || {
-        let _ = Command::new("osascript").args(["-e", &script]).status();
-        let _ = tx.send(());
-    });
-    let _ = rx.recv_timeout(Duration::from_millis(150));
+    if let Some(pid) = pid {
+        system_events_frontmost(pid);
+    }
+    std::thread::sleep(Duration::from_millis(80));
 }
 
 fn activate_pid(pid: i32) -> bool {
     on_main(move || {
         use objc2_app_kit::{NSApplicationActivationOptions, NSRunningApplication};
-        let Some(app) =
+        let Some(target) =
             NSRunningApplication::runningApplicationWithProcessIdentifier(pid as libc::pid_t)
         else {
             return false;
         };
-        app.activateWithOptions(NSApplicationActivationOptions::empty())
+        let current = NSRunningApplication::currentApplication();
+        // Bit 1 is NSApplicationActivateIgnoringOtherApps. The named constant
+        // is deprecated on macOS 14 but still required to take focus from a
+        // packaged LocalFlow window; empty() reports success and does nothing.
+        let steal = NSApplicationActivationOptions::ActivateAllWindows
+            | NSApplicationActivationOptions(1 << 1);
+        let _ = target.activateFromApplication_options(&current, steal);
+        target.activateWithOptions(steal)
     })
 }
 
@@ -604,6 +605,18 @@ fn activate_named_app(name: &str) -> bool {
         .status()
         .map(|s| s.success())
         .unwrap_or(false)
+}
+
+fn system_events_frontmost(pid: i32) {
+    let script = format!(
+        "tell application \"System Events\" to set frontmost of first application process whose unix id is {pid} to true"
+    );
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = Command::new("osascript").args(["-e", &script]).status();
+        let _ = tx.send(());
+    });
+    let _ = rx.recv_timeout(Duration::from_millis(250));
 }
 
 fn modifier_down() -> bool {
@@ -630,43 +643,57 @@ fn wait_for_modifiers_up(timeout: Duration) {
     }
 }
 
-fn post_paste() -> LfResult<()> {
+fn post_paste(target_pid: Option<i32>) -> LfResult<()> {
     // CGEventPost returns void and is dropped when the process is not in
-    // Accessibility. A freshly installed .app is a new TCC identity, so the
-    // old "post V with Command flags and assume it worked" path left the
-    // transcript on the pasteboard and never typed it.
-    if !unsafe { AXIsProcessTrusted() } {
-        match fallback_osascript_paste() {
-            Ok(()) => return Ok(()),
-            Err(err) => {
-                let _ = MacOs.open_privacy_pane("accessibility");
-                return Err(err);
+    // Accessibility. A freshly installed .app is a new TCC identity.
+    let trusted = prompt_accessibility();
+    let posted = post_command_v(target_pid);
+    std::thread::sleep(Duration::from_millis(40));
+    match fallback_osascript_paste() {
+        Ok(()) => Ok(()),
+        Err(err) => {
+            if posted && trusted {
+                Ok(())
+            } else {
+                if !trusted {
+                    let _ = MacOs.open_privacy_pane("accessibility");
+                }
+                Err(err)
             }
         }
     }
-    if post_command_v() {
-        std::thread::sleep(Duration::from_millis(40));
-        return Ok(());
-    }
-    fallback_osascript_paste()
 }
 
-fn post_command_v() -> bool {
+fn prompt_accessibility() -> bool {
+    if unsafe { AXIsProcessTrusted() } {
+        return true;
+    }
+    let _ = MacOs.open_privacy_pane("accessibility");
+    let _ = Command::new("osascript")
+        .args([
+            "-e",
+            "tell application \"System Events\" to get unix id of first process",
+        ])
+        .status();
+    unsafe { AXIsProcessTrusted() }
+}
+
+fn post_command_v(target_pid: Option<i32>) -> bool {
     unsafe {
         let source = CGEventSourceCreate(HID_SYSTEM_STATE);
         if source.is_null() {
             return false;
         }
-        let ok = post_key(source, VK_COMMAND, true, COMMAND_FLAG)
-            && post_key(source, VK_ANSI_V, true, COMMAND_FLAG)
-            && post_key(source, VK_ANSI_V, false, COMMAND_FLAG)
-            && post_key(source, VK_COMMAND, false, 0);
+        let ok = post_key(source, VK_COMMAND, true, COMMAND_FLAG, target_pid)
+            && post_key(source, VK_ANSI_V, true, COMMAND_FLAG, target_pid)
+            && post_key(source, VK_ANSI_V, false, COMMAND_FLAG, target_pid)
+            && post_key(source, VK_COMMAND, false, 0, target_pid);
         CFRelease(source);
         ok
     }
 }
 
-fn post_key(source: *mut c_void, vk: u16, down: bool, flags: u64) -> bool {
+fn post_key(source: *mut c_void, vk: u16, down: bool, flags: u64, target_pid: Option<i32>) -> bool {
     unsafe {
         let event = CGEventCreateKeyboardEvent(source, vk, down);
         if event.is_null() {
@@ -674,6 +701,10 @@ fn post_key(source: *mut c_void, vk: u16, down: bool, flags: u64) -> bool {
         }
         CGEventSetFlags(event, flags);
         CGEventPost(HID_EVENT_TAP, event);
+        CGEventPost(SESSION_EVENT_TAP, event);
+        if let Some(pid) = target_pid {
+            CGEventPostToPid(pid, event);
+        }
         CFRelease(event);
         true
     }
@@ -738,8 +769,16 @@ mod tests {
             "Command must be posted, not only set as a flag on V"
         );
         assert!(
-            prod.contains("HID_EVENT_TAP"),
-            "installed apps need the HID tap so Cmd+V reaches the other process"
+            prod.contains("NSApplicationActivationOptions(1 << 1)"),
+            "packaged LocalFlow is frontmost; empty() activation does not steal focus on macOS 14+"
+        );
+        assert!(
+            prod.contains("system_events_frontmost"),
+            "always ask System Events to front the target, do not return early on activate()"
+        );
+        assert!(
+            prod.contains("CGEventPostToPid"),
+            "post Cmd+V to the remembered pid, not only the session tap"
         );
         assert!(
             prod.contains("AXIsProcessTrusted"),
