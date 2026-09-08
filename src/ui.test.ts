@@ -53,6 +53,10 @@ describe("copy", () => {
     expect(copy("ru").deleteUnusedAll).toMatch(/неиспользуем/i);
     expect(copy("ru").onboardingTitle).toMatch(/Mac/);
     expect(copy("ru").interfaceLanguage).toBe("Язык интерфейса");
+    expect(copy("en").uninstallButton).toMatch(/completely/i);
+    expect(copy("ru").uninstallButton).toMatch(/полностью/i);
+    expect(copy("en").uninstallConfirm).toMatch(/models/i);
+    expect(copy("ru").uninstallConfirm).toMatch(/модели/i);
   });
 
   it("keeps macOS wording when host is omitted", () => {

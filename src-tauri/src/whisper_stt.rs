@@ -27,7 +27,12 @@ struct TranscribeJob {
     reply: Sender<LfResult<String>>,
 }
 
-static JOBS: OnceLock<Sender<TranscribeJob>> = OnceLock::new();
+enum WorkerCmd {
+    Transcribe(TranscribeJob),
+    Unload(Sender<()>),
+}
+
+static JOBS: OnceLock<Sender<WorkerCmd>> = OnceLock::new();
 static LAST_CUES: OnceLock<Mutex<Vec<TranscriptCue>>> = OnceLock::new();
 
 fn cues_slot() -> &'static Mutex<Vec<TranscriptCue>> {
@@ -76,36 +81,56 @@ pub fn transcribe(
     store_cues(Vec::new());
     let tx = worker();
     let (reply_tx, reply_rx) = mpsc::channel();
-    tx.send(TranscribeJob {
+    tx.send(WorkerCmd::Transcribe(TranscribeJob {
         model_path: model_path.to_path_buf(),
         pcm: pad_to_whisper_window(pcm),
         language: language.to_string(),
         options: options.clone(),
         reply: reply_tx,
-    })
+    }))
     .map_err(|_| LfError::RuntimeUnsupported("whisper worker stopped".into()))?;
     reply_rx
         .recv()
         .map_err(|_| LfError::RuntimeUnsupported("whisper worker stopped".into()))?
 }
 
-fn worker() -> Sender<TranscribeJob> {
+/// Drop the mmap'd ggml so uninstall can delete model files.
+pub fn unload() {
+    let Some(tx) = JOBS.get() else {
+        return;
+    };
+    let (done, rx) = mpsc::channel();
+    if tx.send(WorkerCmd::Unload(done)).is_err() {
+        return;
+    }
+    let _ = rx.recv_timeout(std::time::Duration::from_secs(8));
+}
+
+fn worker() -> Sender<WorkerCmd> {
     JOBS.get_or_init(|| {
         silence_whisper_logs();
-        let (tx, rx) = mpsc::channel::<TranscribeJob>();
+        let (tx, rx) = mpsc::channel::<WorkerCmd>();
         std::thread::Builder::new()
             .name("localflow-whisper".into())
             .spawn(move || {
                 let mut loaded: Option<(PathBuf, WhisperContext)> = None;
-                while let Ok(job) = rx.recv() {
-                    let result = run_job(
-                        &mut loaded,
-                        job.model_path,
-                        &job.pcm,
-                        &job.language,
-                        &job.options,
-                    );
-                    let _ = job.reply.send(result);
+                while let Ok(cmd) = rx.recv() {
+                    match cmd {
+                        WorkerCmd::Unload(done) => {
+                            loaded = None;
+                            let _ = done.send(());
+                        }
+                        WorkerCmd::Transcribe(job) => {
+                            let result = run_job(
+                                &mut loaded,
+                                job.model_path,
+                                &job.pcm,
+                                &job.language,
+                                &job.options,
+                            );
+                            let _ = job.reply.send(result);
+                        }
+                    }
                 }
             })
             .expect("start whisper worker");

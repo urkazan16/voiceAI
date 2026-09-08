@@ -59,6 +59,48 @@ Ready-made installers from the [latest GitHub Release](https://github.com/urkaza
 
 All versions / Все версии: [github.com/urkazan16/voiceAI/releases](https://github.com/urkazan16/voiceAI/releases)
 
+macOS shows _“Apple could not verify LocalFlow is free of malware”_ when the `.dmg` is **not notarized**. That is Gatekeeper, not a virus. New GitHub `package` jobs sign with Developer ID and notarize; download a **new** `.dmg` after that job is green.
+
+macOS пишет _«не удалось подтвердить, что LocalFlow не содержит вредоносного ПО»_, если `.dmg` **не нотаризован**. Это Gatekeeper, не вирус. Новые job `package` подписывают Developer ID и нотаризуют; после зелёного прогона скачайте **новый** `.dmg`.
+
+Until that build exists, open an already-downloaded copy with **Open Anyway**:
+
+Пока новой сборки нет, уже скачанный файл можно открыть через **Открыть всё равно**:
+
+1. **System Settings → Privacy & Security** (scroll to the bottom) → **Open Anyway** next to LocalFlow.  
+   **Системные настройки → Конфиденциальность и безопасность** (вниз страницы) → **Открыть всё равно**.
+2. Confirm with the password or Touch ID. / Подтвердите паролем или Touch ID.
+3. Or in Terminal / Или в Терминале:
+
+```bash
+xattr -cr /Applications/LocalFlow.app
+open /Applications/LocalFlow.app
+```
+
+Then enable **Accessibility** and **Microphone** for LocalFlow, or dictated text stays on the clipboard.  
+Затем включите **Универсальный доступ** и **Микрофон**, иначе текст останется в буфере.
+
+Notarization uses the GitHub **environment** named `APPLE_CERTIFICATE` (Settings → Environments). Put the six secrets there, not under Actions → Repository secrets. Do not put them in git or chat. macOS `package` fails until they are set.
+
+Для нотаризации нужен environment **`APPLE_CERTIFICATE`** (Settings → Environments), не обычные Repository secrets. **Не** коммитьте их и не присылайте в чат. Job `package` на macOS падает, пока секреты не заданы.
+
+| Secret                       | What it is                                               |
+| ---------------------------- | -------------------------------------------------------- |
+| `APPLE_CERTIFICATE`          | base64 of the `.p12` (see command below)                 |
+| `APPLE_CERTIFICATE_PASSWORD` | password you set when exporting the `.p12`               |
+| `APPLE_SIGNING_IDENTITY`     | `Developer ID Application: Maksim Zhadobov (UZ676B64S2)` |
+| `APPLE_ID`                   | Apple ID email                                           |
+| `APPLE_PASSWORD`             | Apple **app-specific** password (`xxxx-xxxx-xxxx-xxxx`)  |
+| `APPLE_TEAM_ID`              | `UZ676B64S2`                                             |
+
+```bash
+openssl base64 -A -in "$HOME/Downloads/Сертификаты.p12" | pbcopy
+```
+
+That copies `APPLE_CERTIFICATE` to the clipboard. Paste it into the GitHub secret. After the next green `package` job on `main`, download a new `.dmg`.
+
+После успешного `package` на `main` скачайте новый `.dmg`.
+
 After installing on macOS, enable **System Settings → Privacy & Security → Accessibility** and **Microphone** for LocalFlow, or dictated text stays on the clipboard.  
 После установки на macOS включите **Системные настройки → Конфиденциальность и безопасность → Универсальный доступ** и **Микрофон**, иначе текст останется в буфере.
 
@@ -90,8 +132,8 @@ Hold **Control+Shift+Space**, speak, release.
 Packaged builds are in [Download](#download--скачать): `.dmg` (macOS), NSIS `.exe` (Windows, current user), `.deb` and AppImage (Linux).  
 Готовые сборки — в [Скачать](#download--скачать).
 
-One-file uninstall: `scripts/uninstall.sh` on macOS/Linux, `scripts/uninstall.ps1` on Windows (asks whether to keep history). The Privacy screen has the same Uninstall button.  
-Удаление одним скриптом: `scripts/uninstall.sh` на macOS/Linux, `scripts/uninstall.ps1` на Windows (спросит, оставлять ли историю). Та же кнопка есть на экране «Конфиденциальность».
+Full uninstall (models, settings, history, autostart, and the `.app` on macOS): Settings or Privacy → **Delete LocalFlow completely**, or `scripts/uninstall.sh` / `scripts/uninstall.ps1` (`--keep-history` keeps only the database).  
+Полное удаление (модели, настройки, история, автозапуск и `.app` на macOS): Настройки или Приватность → **Удалить LocalFlow полностью**, либо `scripts/uninstall.sh` / `scripts/uninstall.ps1` (`--keep-history` оставляет только базу).
 
 ## Prerequisites (minimum versions)
 

@@ -14,6 +14,7 @@ use crate::snippets::Snippet;
 use serde::Serialize;
 use std::collections::HashSet;
 use std::sync::{Mutex, OnceLock};
+use std::time::Duration;
 use tauri::{AppHandle, Emitter};
 
 #[derive(Debug, Serialize)]
@@ -902,9 +903,20 @@ pub fn export_history_timecodes(
 
 #[tauri::command]
 pub fn uninstall_localflow(
+    app: AppHandle,
+    engine: tauri::State<SharedEngine>,
     keep_history: bool,
 ) -> Result<crate::uninstall::UninstallReport, CommandError> {
-    Ok(crate::uninstall::uninstall(keep_history)?)
+    crate::whisper_stt::unload();
+    lock(&engine)?.release_files_for_uninstall()?;
+    crate::instance::release_gui_lock();
+    let report = crate::uninstall::uninstall(keep_history)?;
+    let handle = app.clone();
+    std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(900));
+        handle.exit(0);
+    });
+    Ok(report)
 }
 
 #[tauri::command]

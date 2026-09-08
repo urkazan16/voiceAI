@@ -259,6 +259,10 @@ impl AppEngine {
         Ok(path)
     }
 
+    pub fn release_files_for_uninstall(&mut self) -> LfResult<()> {
+        self.store.release_file()
+    }
+
     pub fn remove_model_files(&self, model_id: &str) -> LfResult<u64> {
         let status = self.model_status(model_id)?;
         if !crate::download::can_delete_on_disk(&status) {

@@ -162,6 +162,8 @@ jobs:
       github.event_name == 'workflow_dispatch' ||
       (github.event_name == 'push' &&
         (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')))
+    # Secrets live in the APPLE_CERTIFICATE environment, not repository secrets.
+    environment: APPLE_CERTIFICATE
     runs-on: ${{ matrix.os }}
     needs: [build, security]
     strategy:
@@ -178,6 +180,27 @@ jobs:
             artifact: LocalFlow-linux-x64
     steps:
       - uses: actions/checkout@v4
+      - name: Require Apple signing and notarization secrets
+        if: runner.os == 'macOS'
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          missing=()
+          for key in APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_ID APPLE_PASSWORD APPLE_TEAM_ID; do
+            if [[ -z "${!key}" ]]; then
+              missing+=("$key")
+            fi
+          done
+          if [[ ${#missing[@]} -gt 0 ]]; then
+            echo "macOS .dmg files are blocked by Gatekeeper unless they are Developer ID signed and notarized."
+            echo "Add these GitHub Actions secrets: ${missing[*]}"
+            echo "See README.md (Download section)."
+            exit 1
+          fi
       - if: runner.os == 'Linux'
         uses: ./.github/actions/linux-deps
       - if: runner.os == 'Linux'
@@ -194,6 +217,14 @@ jobs:
           toolchain: 1.88.0
       - run: npm ci
       - run: npm run build:release
+        env:
+          LOCALFLOW_GIT_SHA: ${{ github.sha }}
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact }}
@@ -239,7 +270,7 @@ jobs:
           fi
           find dist -name SHA256SUMS -exec cat {} \; | grep -E '  LocalFlow-' | sort -u > SHA256SUMS
           files+=(SHA256SUMS)
-          notes=$'Installers for macOS, Windows, and Linux.\nУстановщики для macOS, Windows и Linux.\n\nSpeech models download on first launch (~1.5 GB).\nРечевая модель скачивается при первом запуске (~1.5 ГБ).'
+          notes=$'Installers for macOS, Windows, and Linux.\nУстановщики для macOS, Windows и Linux.\n\nSpeech models download on first launch (~1.5 GB).\nРечевая модель скачивается при первом запуске (~1.5 ГБ).\n\nmacOS builds are Developer ID signed and notarized. If an older download still shows Apple could not verify LocalFlow, replace it with this .dmg, then enable Accessibility and Microphone.\n\nСборки macOS подписаны Developer ID и нотаризованы. Если старый файл всё ещё блокирует Gatekeeper, скачайте этот .dmg заново, затем включите Универсальный доступ и Микрофон.'
           if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
             tag="${GITHUB_REF_NAME}"
             if gh release view "$tag" >/dev/null 2>&1; then

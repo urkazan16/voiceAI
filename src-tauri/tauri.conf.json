@@ -69,7 +69,9 @@
     "resources": ["resources/model-catalog.json"],
     "macOS": {
       "minimumSystemVersion": "12.0",
-      "entitlements": "./Entitlements.plist"
+      "hardenedRuntime": true,
+      "entitlements": "./Entitlements.plist",
+      "signingIdentity": "Developer ID Application: Maksim Zhadobov (UZ676B64S2)"
     }
   }
 }

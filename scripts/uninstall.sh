@@ -28,6 +28,7 @@ fi
 
 echo "Uninstalling LocalFlow data in $ROOT"
 if [[ -n "$AGENT" && -f "$AGENT" ]]; then
+  launchctl bootout "gui/$(id -u)/app.localflow.desktop" 2>/dev/null || true
   launchctl unload -w "$AGENT" 2>/dev/null || true
   rm -f "$AGENT"
   echo "removed autostart $AGENT"
@@ -36,24 +37,27 @@ if [[ -n "$DESKTOP" && -f "$DESKTOP" ]]; then
   rm -f "$DESKTOP"
   echo "removed autostart $DESKTOP"
 fi
-REMOVED=()
 rm_path() {
   local p="$1"
   if [[ -e "$p" ]]; then
     rm -rf "$p"
-    REMOVED+=("$p")
     echo "removed $p"
   fi
 }
-rm_path "$ROOT/audio"
-rm_path "$ROOT/models"
-rm_path "$ROOT/logs"
-rm_path "$ROOT/config"
+rm_path "${HOME}/Applications/LocalFlow Dictate.command"
 if [[ "$KEEP" -eq 0 ]]; then
-  rm_path "$ROOT/database"
-  rmdir "$ROOT" 2>/dev/null || true
+  rm_path "$ROOT"
 else
+  rm_path "$ROOT/audio"
+  rm_path "$ROOT/models"
+  rm_path "$ROOT/logs"
+  rm_path "$ROOT/config"
+  rm_path "$ROOT/localflow.lock"
+  rm_path "$ROOT/clipboard-restore.txt"
   echo "kept $ROOT/database"
 fi
-echo "Removed components:"
-printf '  %s\n' "${REMOVED[@]:-(none)}"
+if [[ "$UNAME" == "Darwin" && "$KEEP" -eq 0 ]]; then
+  rm_path "/Applications/LocalFlow.app"
+  rm_path "${HOME}/Applications/LocalFlow.app"
+fi
+echo "LocalFlow data and models removed."

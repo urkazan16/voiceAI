@@ -83,6 +83,12 @@ impl Store {
         self.query_history(None, None, None)
     }
 
+    /// Close the on-disk SQLite file so uninstall can delete the data root.
+    pub fn release_file(&mut self) -> LfResult<()> {
+        self.conn = Connection::open_in_memory()?;
+        Ok(())
+    }
+
     pub fn query_history(
         &self,
         query: Option<&str>,

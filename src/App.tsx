@@ -433,6 +433,17 @@ export function App() {
   const host = hostKindFrom(build?.platform);
   const macOnly = showMacOnlyControls(host);
   const t = copy(settings.ui_language, host);
+  async function wipeLocalFlow() {
+    if (!window.confirm(t.uninstallConfirm)) {
+      return;
+    }
+    try {
+      const report = await api.uninstallLocalflow(false);
+      setStatus(`${t.uninstallDone}\n${report.removed.join("\n")}`);
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : String(error));
+    }
+  }
   const installedSpeech = downloadedModels(models, modelStatus, "stt");
   const installedFormatting = downloadedModels(models, modelStatus, "llm");
   const speechChoices =
@@ -1040,6 +1051,13 @@ export function App() {
               }}
             >
               {t.resetSettings}
+            </button>
+            <p className="text-sm text-paper/60">{t.uninstallHelp}</p>
+            <button
+              className="rounded-full border border-copper px-4 py-2 text-sm text-copper"
+              onClick={() => void wipeLocalFlow()}
+            >
+              {t.uninstallButton}
             </button>
             <label className="block text-sm text-paper/70">
               {t.historySize}
@@ -2232,6 +2250,7 @@ export function App() {
               <p key={item}>{item}</p>
             ))}
             <p className="text-sm text-paper/70">{t.privacyLogs}</p>
+            <p className="text-sm text-paper/60">{t.uninstallHelp}</p>
             <div className="flex flex-wrap gap-3 pt-2">
               <button
                 className="rounded-full border border-paper/30 px-4 py-2"
@@ -2254,19 +2273,10 @@ export function App() {
                 Reset statistics
               </button>
               <button
-                className="rounded-full border border-paper/30 px-4 py-2"
-                onClick={async () => {
-                  if (!window.confirm("Uninstall LocalFlow data? You can keep history.")) {
-                    return;
-                  }
-                  const keep = window.confirm("Keep dictation history?");
-                  const report = await api.uninstallLocalflow(keep);
-                  setStatus(
-                    `Removed:\n${report.removed.join("\n")}\nSkipped:\n${report.skipped.join("\n")}`,
-                  );
-                }}
+                className="rounded-full border border-copper px-4 py-2 text-copper"
+                onClick={() => void wipeLocalFlow()}
               >
-                Uninstall…
+                {t.uninstallButton}
               </button>
             </div>
           </section>

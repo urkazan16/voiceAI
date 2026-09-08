@@ -208,6 +208,12 @@ const EN = {
   processing: "Processing recording…",
   devicesRefreshed: "Microphone list refreshed.",
   settingsReset: "Settings restored to defaults.",
+  uninstallButton: "Delete LocalFlow completely…",
+  uninstallHelp:
+    "Removes Whisper and Qwen files, settings, history, logs, autostart, and the app from Applications. LocalFlow quits when this finishes.",
+  uninstallConfirm:
+    "Delete LocalFlow completely? This removes all downloaded models, settings, and history. The app will quit.",
+  uninstallDone: "LocalFlow data and models were deleted. The app will quit.",
 };
 
 const RU: typeof EN = {
@@ -352,6 +358,12 @@ const RU: typeof EN = {
   processing: "Обработка записи…",
   devicesRefreshed: "Список микрофонов обновлён.",
   settingsReset: "Настройки сброшены к значениям по умолчанию.",
+  uninstallButton: "Удалить LocalFlow полностью…",
+  uninstallHelp:
+    "Удаляет файлы Whisper и Qwen, настройки, историю, логи, автозапуск и приложение из Программ. LocalFlow закроется после этого.",
+  uninstallConfirm:
+    "Удалить LocalFlow полностью? Будут удалены все скачанные модели, настройки и история. Приложение закроется.",
+  uninstallDone: "Данные и модели LocalFlow удалены. Приложение сейчас закроется.",
 };
 
 export type UiCopy = typeof EN;
@@ -404,6 +416,8 @@ const WINDOWS_EN: Partial<UiCopy> = {
     "Keeps the previous clipboard after Ctrl+V. If the app crashes mid-paste, the same snapshot is restored from disk. Password fields may block paste — use Copy last after leaving the field.",
   modelReady: "Ready on this PC.",
   privacyLogs: "Audio cache uses a private folder. Logs rotate by size and never store tokens.",
+  uninstallHelp:
+    "Removes Whisper and Qwen files, settings, history, logs, autostart, and the LocalFlow install folder after the app quits.",
 };
 
 const WINDOWS_RU: Partial<UiCopy> = {
@@ -420,6 +434,8 @@ const WINDOWS_RU: Partial<UiCopy> = {
     "Возвращает прежний буфер после Ctrl+V. Если приложение упадёт во время вставки, снимок восстановится с диска. Поля пароля могут блокировать вставку — используйте «Копировать последнее» после выхода из поля.",
   modelReady: "Готова на этом ПК.",
   privacyLogs: "Кэш аудио лежит в закрытой папке. Логи ротируются по размеру и не хранят токены.",
+  uninstallHelp:
+    "Удаляет файлы Whisper и Qwen, настройки, историю, логи, автозапуск и папку установки LocalFlow после выхода.",
 };
 
 const LINUX_EN: Partial<UiCopy> = {
@@ -436,6 +452,8 @@ const LINUX_EN: Partial<UiCopy> = {
   clipboardHelp:
     "Keeps the previous clipboard after Ctrl+V. On Wayland, some apps cannot receive a synthetic paste — press Ctrl+V if the text stays on the clipboard. If the app crashes mid-paste, the snapshot is restored from disk.",
   modelReady: "Ready on this computer.",
+  uninstallHelp:
+    "Removes Whisper and Qwen files, settings, history, logs, and autostart. Remove the .deb or AppImage separately if you installed one.",
 };
 
 const LINUX_RU: Partial<UiCopy> = {
@@ -452,6 +470,8 @@ const LINUX_RU: Partial<UiCopy> = {
   clipboardHelp:
     "Возвращает прежний буфер после Ctrl+V. В Wayland некоторые приложения не принимают синтетическую вставку — нажмите Ctrl+V, если текст остался в буфере. Если приложение упадёт во время вставки, снимок восстановится с диска.",
   modelReady: "Готова на этом компьютере.",
+  uninstallHelp:
+    "Удаляет файлы Whisper и Qwen, настройки, историю, логи и автозапуск. Пакет .deb или AppImage удалите отдельно, если ставили его.",
 };
 
 export function copy(lang: string | undefined | null, host: HostKind = "macos"): UiCopy {

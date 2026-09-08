@@ -36,6 +36,10 @@ pub fn acquire_gui_lock(paths: &DataPaths) -> LfResult<()> {
     Ok(())
 }
 
+pub fn release_gui_lock() {
+    *HELD.lock().unwrap_or_else(|e| e.into_inner()) = None;
+}
+
 fn activate_lock_holder(contents: &str) -> bool {
     let Ok(pid) = contents.trim().parse::<u32>() else {
         return false;

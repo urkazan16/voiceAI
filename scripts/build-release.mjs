@@ -39,6 +39,11 @@ function run(cmd, args, opts = {}) {
 
 process.chdir(root);
 
+const ciMacos = host === "darwin" && process.env.CI === "true";
+if (ciMacos) {
+  requireAppleNotarizationEnv();
+}
+
 const catalog = path.join(root, "src-tauri/resources/model-catalog.json");
 if (!existsSync(catalog)) {
   console.error("missing model catalog");
@@ -96,6 +101,9 @@ for (const kind of ["dmg", "macos", "nsis", "msi", "deb", "rpm", "appimage"]) {
 }
 
 renameInstallers(artifacts, os.arch());
+if (ciMacos) {
+  assertDmgNotarized(artifacts);
+}
 
 run("node", ["scripts/generate-sbom.mjs", artifacts]);
 run("node", ["scripts/write-sha256sums.mjs", artifacts]);
@@ -121,6 +129,36 @@ function stableInstallerName(fileName, arch) {
   if (lower.endsWith(".deb")) return `LocalFlow-linux-${cpu}.deb`;
   if (lower.endsWith(".appimage")) return `LocalFlow-linux-${cpu}.AppImage`;
   return null;
+}
+
+/** GitHub-hosted macOS installers must be Developer ID signed and notarized. */
+function requireAppleNotarizationEnv() {
+  const required = [
+    "APPLE_CERTIFICATE",
+    "APPLE_CERTIFICATE_PASSWORD",
+    "APPLE_ID",
+    "APPLE_PASSWORD",
+    "APPLE_TEAM_ID",
+  ];
+  const missing = required.filter((key) => !process.env[key]?.trim());
+  if (missing.length === 0) {
+    return;
+  }
+  console.error("macOS CI package refuses to ship an unsigned .dmg (Gatekeeper blocks it).");
+  console.error(`Missing GitHub Actions secrets: ${missing.join(", ")}`);
+  console.error("See README.md Download section.");
+  process.exit(1);
+}
+
+function assertDmgNotarized(dir) {
+  const dmgs = readdirSync(dir).filter((name) => name.toLowerCase().endsWith(".dmg"));
+  if (dmgs.length === 0) {
+    console.error("macOS CI package produced no .dmg to notarization-check");
+    process.exit(1);
+  }
+  for (const name of dmgs) {
+    run("xcrun", ["stapler", "validate", path.join(dir, name)]);
+  }
 }
 
 function renameInstallers(dir, arch) {
