@@ -87,7 +87,7 @@ fn default_vad() -> f32 {
 }
 
 fn default_compute() -> String {
-    "cpu".into()
+    "auto".into()
 }
 
 fn default_date_format() -> String {
@@ -131,7 +131,12 @@ impl AppSettings {
         if self.date_format != "ISO" {
             self.date_format = default_date_format();
         }
-        self.compute_device = default_compute();
+        let compute = self.compute_device.trim().to_ascii_lowercase();
+        self.compute_device = match compute.as_str() {
+            "gpu" | "metal" => "gpu".into(),
+            "cpu" => "cpu".into(),
+            _ => "auto".into(),
+        };
         if self.insert_delay_ms < 40 {
             self.insert_delay_ms = 40;
         }
@@ -357,6 +362,22 @@ mod tests {
         settings.hotkey.clear();
         let err = settings.validate().unwrap_err();
         assert_eq!(err.code(), "CONFIG_INVALID");
+    }
+
+    #[test]
+    fn compute_device_normalizes_to_auto_gpu_or_cpu() {
+        let mut settings = AppSettings {
+            compute_device: "Metal".into(),
+            ..AppSettings::default()
+        };
+        settings.normalize();
+        assert_eq!(settings.compute_device, "gpu");
+        settings.compute_device = "cpu".into();
+        settings.normalize();
+        assert_eq!(settings.compute_device, "cpu");
+        settings.compute_device = "whatever".into();
+        settings.normalize();
+        assert_eq!(settings.compute_device, "auto");
     }
 
     #[test]

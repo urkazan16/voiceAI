@@ -707,19 +707,24 @@ fn finish_recording(app: &AppHandle, engine: &SharedEngine, capture: &SharedCapt
             keep_audio,
             decode_options,
         ) = match engine.lock() {
-            Ok(eng) => (
-                eng.ready_model_path("stt"),
-                eng.settings.stt_language.clone(),
-                eng.insert_target_pid,
-                eng.insert_target_app.clone(),
-                eng.settings.insert_delay_ms,
-                eng.settings.postprocess_timeout_ms,
-                eng.settings.sound_cues,
-                eng.settings.sound_cue_volume,
-                eng.paths.last_utterance(),
-                eng.settings.keep_last_audio,
-                eng.decode_options(),
-            ),
+            Ok(eng) => {
+                crate::whisper_stt::set_use_gpu(crate::whisper_stt::use_gpu_from_setting(
+                    &eng.settings.compute_device,
+                ));
+                (
+                    eng.ready_model_path("stt"),
+                    eng.settings.stt_language.clone(),
+                    eng.insert_target_pid,
+                    eng.insert_target_app.clone(),
+                    eng.settings.insert_delay_ms,
+                    eng.settings.postprocess_timeout_ms,
+                    eng.settings.sound_cues,
+                    eng.settings.sound_cue_volume,
+                    eng.paths.last_utterance(),
+                    eng.settings.keep_last_audio,
+                    eng.decode_options(),
+                )
+            }
             Err(_) => {
                 fail(&app, &engine, "engine lock poisoned", duration_ms);
                 return;

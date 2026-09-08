@@ -33,6 +33,7 @@ import {
   showMacOnlyControls,
   type HostKind,
 } from "./ui";
+import { HotkeyField } from "./HotkeyField";
 import { listen } from "@tauri-apps/api/event";
 
 const fallbackCopyHotkey = () =>
@@ -69,7 +70,7 @@ const fallbackSettings = (): AppSettings => ({
   hands_free: false,
   digits_from_speech: true,
   date_format: "DMY",
-  compute_device: "cpu",
+  compute_device: "auto",
   keep_last_audio: true,
   edit_hotkey: fallbackEditHotkey(),
   ui_language: "en",
@@ -761,14 +762,12 @@ export function App() {
                 </ul>
               </div>
             )}
-            <label className="block text-sm text-paper/70">
-              {t.hotkeyLabel}
-              <input
-                className="mt-1 w-full rounded-lg bg-paper/10 p-2"
-                value={settings.hotkey}
-                onChange={(e) => void save({ ...settings, hotkey: e.target.value })}
-              />
-            </label>
+            <HotkeyField
+              label={t.hotkeyLabel}
+              value={settings.hotkey}
+              listeningLabel={t.hotkeyListening}
+              onChange={(hotkey) => void save({ ...settings, hotkey })}
+            />
             <p className="text-xs text-paper/60">{t.hotkeyHelp}</p>
             <label className="block text-sm text-paper/70">
               {t.speechLanguage}
@@ -1206,12 +1205,23 @@ export function App() {
               {t.acceleration}
               <select
                 className="mt-1 w-full rounded-lg bg-paper/10 p-2"
-                value={settings.compute_device}
-                disabled
+                value={
+                  settings.compute_device === "gpu" ||
+                  settings.compute_device === "cpu" ||
+                  settings.compute_device === "auto"
+                    ? settings.compute_device
+                    : "auto"
+                }
+                onChange={(e) => void save({ ...settings, compute_device: e.target.value })}
               >
-                <option value="cpu">{t.cpuBuild}</option>
+                <option value="auto">{t.computeAuto}</option>
+                <option value="gpu" disabled={!build?.gpu_available}>
+                  {t.computeGpu}
+                </option>
+                <option value="cpu">{t.computeCpu}</option>
               </select>
             </label>
+            <p className="text-xs text-paper/60">{t.accelerationHelp}</p>
             <label className="block text-sm text-paper/70">
               {t.postTimeout}
               <input
@@ -1239,30 +1249,24 @@ export function App() {
                 {t.installMacro}
               </button>
             )}
-            <label className="block text-sm text-paper/70">
-              {t.copyLastHotkey}
-              <input
-                className="mt-1 w-full rounded-lg bg-paper/10 p-2"
-                value={settings.copy_last_hotkey}
-                onChange={(e) => void save({ ...settings, copy_last_hotkey: e.target.value })}
-              />
-            </label>
-            <label className="block text-sm text-paper/70">
-              {t.pasteLastHotkey}
-              <input
-                className="mt-1 w-full rounded-lg bg-paper/10 p-2"
-                value={settings.paste_last_hotkey}
-                onChange={(e) => void save({ ...settings, paste_last_hotkey: e.target.value })}
-              />
-            </label>
-            <label className="block text-sm text-paper/70">
-              {t.editHotkey}
-              <input
-                className="mt-1 w-full rounded-lg bg-paper/10 p-2"
-                value={settings.edit_hotkey ?? fallbackEditHotkey()}
-                onChange={(e) => void save({ ...settings, edit_hotkey: e.target.value })}
-              />
-            </label>
+            <HotkeyField
+              label={t.copyLastHotkey}
+              value={settings.copy_last_hotkey}
+              listeningLabel={t.hotkeyListening}
+              onChange={(copy_last_hotkey) => void save({ ...settings, copy_last_hotkey })}
+            />
+            <HotkeyField
+              label={t.pasteLastHotkey}
+              value={settings.paste_last_hotkey}
+              listeningLabel={t.hotkeyListening}
+              onChange={(paste_last_hotkey) => void save({ ...settings, paste_last_hotkey })}
+            />
+            <HotkeyField
+              label={t.editHotkey}
+              value={settings.edit_hotkey ?? fallbackEditHotkey()}
+              listeningLabel={t.hotkeyListening}
+              onChange={(edit_hotkey) => void save({ ...settings, edit_hotkey })}
+            />
             <div className="flex gap-3">
               <button
                 className="rounded-full border border-paper/30 px-4 py-2"

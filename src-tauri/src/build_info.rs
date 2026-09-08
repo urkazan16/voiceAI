@@ -11,6 +11,7 @@ pub struct BuildInfo {
     pub tauri_version: String,
     pub rustc_version: String,
     pub native_runtime: String,
+    pub gpu_available: bool,
 }
 
 pub fn current() -> BuildInfo {
@@ -36,6 +37,7 @@ pub fn current() -> BuildInfo {
         tauri_version: "2.2.5".into(),
         rustc_version: "1.88.0".into(),
         native_runtime: crate::runtime::runtime_id(),
+        gpu_available: crate::whisper_stt::gpu_compiled(),
     }
 }
 

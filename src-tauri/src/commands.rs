@@ -74,13 +74,25 @@ pub fn save_settings(
     settings.normalize();
     let autostart_changed;
     let autostart;
+    let compute_changed;
+    let compute;
+    let preload_path;
     {
         let mut eng = lock(&engine)?;
         crate::journal::set_max_bytes(settings.log_max_bytes);
         autostart_changed = eng.settings.autostart != settings.autostart;
         autostart = settings.autostart;
+        compute_changed = eng.settings.compute_device != settings.compute_device;
+        compute = settings.compute_device.clone();
         eng.settings = settings;
         eng.persist()?;
+        preload_path = eng.ready_model_path("stt");
+    }
+    crate::whisper_stt::set_use_gpu(crate::whisper_stt::use_gpu_from_setting(&compute));
+    if compute_changed {
+        if let Some(path) = preload_path {
+            crate::whisper_stt::preload(path);
+        }
     }
     if autostart_changed {
         crate::autostart::apply(autostart)?;
@@ -529,10 +541,12 @@ pub fn spawn_required_model_downloads(app: AppHandle, engine: SharedEngine) {
 
 fn spawn_required_kind_download(app: AppHandle, engine: SharedEngine, kind: &'static str) {
     tauri::async_runtime::spawn(async move {
-        let ready = engine
-            .lock()
-            .ok()
-            .and_then(|eng| eng.ready_model_path(kind));
+        let ready = engine.lock().ok().and_then(|eng| {
+            crate::whisper_stt::set_use_gpu(crate::whisper_stt::use_gpu_from_setting(
+                &eng.settings.compute_device,
+            ));
+            eng.ready_model_path(kind)
+        });
         if let Some(path) = ready {
             if kind != "llm" {
                 crate::whisper_stt::preload(path);
@@ -632,6 +646,9 @@ async fn download_model_inner(
     let path = {
         let mut eng = lock(&engine)?;
         eng.mark_active(&model_id)?;
+        crate::whisper_stt::set_use_gpu(crate::whisper_stt::use_gpu_from_setting(
+            &eng.settings.compute_device,
+        ));
         let record = eng.catalog.get(&model_id)?.clone();
         eng.model_path(&record)
     };
@@ -662,6 +679,12 @@ pub async fn set_active_model(
         .map_err(CommandError::from)?;
     }
     lock(&engine)?.mark_active(&model_id)?;
+    {
+        let eng = lock(&engine)?;
+        crate::whisper_stt::set_use_gpu(crate::whisper_stt::use_gpu_from_setting(
+            &eng.settings.compute_device,
+        ));
+    }
     crate::whisper_stt::preload(path.clone());
     Ok(path.display().to_string())
 }

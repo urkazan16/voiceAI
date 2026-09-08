@@ -61,6 +61,12 @@ libc = "0.2"
 whisper-rs = { version = "0.13.2", default-features = false }
 whisper-rs-sys = "0.11.1"
 
+# Metal is for Apple Silicon. whisper.cpp's Metal path hangs or fails on Intel
+# GPUs (and when the x64 .dmg is cross-compiled on an arm64 runner). Intel
+# builds use Accelerate on CPU instead.
+[target.'cfg(all(target_os = "macos", target_arch = "aarch64"))'.dependencies]
+whisper-rs = { version = "0.13.2", default-features = false, features = ["metal"] }
+
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.59.0", features = [
     "Win32_Foundation",
@@ -81,7 +87,6 @@ windows-sys = { version = "0.59.0", features = [
 x11rb = { version = "0.13.1", features = ["xtest"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
-whisper-rs = { version = "0.13.2", default-features = false, features = ["metal"] }
 dispatch2 = "0.3.1"
 objc2 = "0.6.4"
 objc2-foundation = { version = "0.3.2", default-features = false, features = [

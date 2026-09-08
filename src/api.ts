@@ -24,6 +24,7 @@ export interface BuildInfo {
   tauri_version: string;
   rustc_version: string;
   native_runtime: string;
+  gpu_available: boolean;
 }
 
 export interface AppSettings {

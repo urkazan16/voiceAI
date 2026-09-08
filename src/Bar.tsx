@@ -39,7 +39,13 @@ export function Bar() {
     >
       <div className="flex items-center justify-between gap-3">
         <p className="text-xs uppercase tracking-[0.2em] text-copper">
-          {recording ? "Listening" : state.phase}
+          {recording
+            ? "Listening"
+            : failed
+              ? "Not pasted"
+              : state.phase === "error"
+                ? "Failed"
+                : state.phase}
         </p>
         <span className="flex items-center gap-2">
           {state.wpm ? (

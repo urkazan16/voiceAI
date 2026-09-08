@@ -3,6 +3,7 @@ use crate::pipeline::TranscriptCue;
 use std::ffi::c_void;
 use std::os::raw::c_char;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Sender};
 use std::sync::{Mutex, Once, OnceLock};
 use whisper_rs::{FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters};
@@ -34,6 +35,29 @@ enum WorkerCmd {
 
 static JOBS: OnceLock<Sender<WorkerCmd>> = OnceLock::new();
 static LAST_CUES: OnceLock<Mutex<Vec<TranscriptCue>>> = OnceLock::new();
+static USE_GPU: AtomicBool = AtomicBool::new(false);
+
+/// Metal is compiled only for Apple Silicon. Intel/Windows/Linux stay on CPU.
+pub fn gpu_compiled() -> bool {
+    cfg!(all(target_os = "macos", target_arch = "aarch64"))
+}
+
+pub fn use_gpu_from_setting(compute: &str) -> bool {
+    if !gpu_compiled() {
+        return false;
+    }
+    matches!(
+        compute.trim().to_ascii_lowercase().as_str(),
+        "auto" | "gpu" | "metal"
+    )
+}
+
+pub fn set_use_gpu(on: bool) {
+    let previous = USE_GPU.swap(on, Ordering::Relaxed);
+    if previous != on {
+        unload();
+    }
+}
 
 fn cues_slot() -> &'static Mutex<Vec<TranscriptCue>> {
     LAST_CUES.get_or_init(|| Mutex::new(Vec::new()))
@@ -89,9 +113,15 @@ pub fn transcribe(
         reply: reply_tx,
     }))
     .map_err(|_| LfError::RuntimeUnsupported("whisper worker stopped".into()))?;
-    reply_rx
-        .recv()
-        .map_err(|_| LfError::RuntimeUnsupported("whisper worker stopped".into()))?
+    match reply_rx.recv_timeout(std::time::Duration::from_secs(180)) {
+        Ok(result) => result,
+        Err(mpsc::RecvTimeoutError::Timeout) => Err(LfError::RuntimeUnsupported(
+            "Speech recognition timed out. On Intel Macs use Whisper Small or Base.".into(),
+        )),
+        Err(mpsc::RecvTimeoutError::Disconnected) => {
+            Err(LfError::RuntimeUnsupported("whisper worker stopped".into()))
+        }
+    }
 }
 
 /// Drop the mmap'd ggml so uninstall can delete model files.
@@ -113,7 +143,7 @@ fn worker() -> Sender<WorkerCmd> {
         std::thread::Builder::new()
             .name("localflow-whisper".into())
             .spawn(move || {
-                let mut loaded: Option<(PathBuf, WhisperContext)> = None;
+                let mut loaded: Option<(PathBuf, bool, WhisperContext)> = None;
                 while let Ok(cmd) = rx.recv() {
                     match cmd {
                         WorkerCmd::Unload(done) => {
@@ -140,26 +170,32 @@ fn worker() -> Sender<WorkerCmd> {
 }
 
 fn run_job(
-    loaded: &mut Option<(PathBuf, WhisperContext)>,
+    loaded: &mut Option<(PathBuf, bool, WhisperContext)>,
     model_path: PathBuf,
     pcm: &[f32],
     language: &str,
     options: &DecodeOptions,
 ) -> LfResult<String> {
+    let use_gpu = USE_GPU.load(Ordering::Relaxed) && gpu_compiled();
     let needs_reload = match loaded {
-        Some((path, _)) => path != &model_path,
+        Some((path, gpu, _)) => path != &model_path || *gpu != use_gpu,
         None => true,
     };
     if needs_reload {
         let path = model_path
             .to_str()
             .ok_or_else(|| LfError::Other("model path is not UTF-8".into()))?;
-        eprintln!("localflow: loading whisper model {}", model_path.display());
-        let ctx = WhisperContext::new_with_params(path, WhisperContextParameters::default())
+        eprintln!(
+            "localflow: loading whisper model {} (gpu={use_gpu})",
+            model_path.display()
+        );
+        let mut params = WhisperContextParameters::default();
+        params.use_gpu(use_gpu);
+        let ctx = WhisperContext::new_with_params(path, params)
             .map_err(|err| LfError::RuntimeUnsupported(format!("whisper.cpp: {err}")))?;
-        *loaded = Some((model_path, ctx));
+        *loaded = Some((model_path, use_gpu, ctx));
     }
-    let ctx = &loaded.as_ref().expect("whisper context").1;
+    let ctx = &loaded.as_ref().expect("whisper context").2;
     decode(ctx, pcm, language, options)
 }
 

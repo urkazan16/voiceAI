@@ -120,6 +120,10 @@ pub fn user_guidance(err: &LfError) -> String {
                 "Microphone is unavailable. Allow this app to use the microphone in your system settings, then pick the device in Settings.".into()
             }
         }
+        LfError::RuntimeUnsupported(msg) if msg.to_lowercase().contains("timed out") => {
+            "Speech recognition timed out. On an Intel Mac pick Whisper Small or Base in Models."
+                .into()
+        }
         LfError::InjectionFailed(msg) if msg.to_lowercase().contains("wayland") => msg.clone(),
         LfError::InjectionFailed(_) => {
             if cfg!(target_os = "macos") {

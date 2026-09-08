@@ -105,9 +105,10 @@ const EN = {
   free: "free",
   speechFits: "speech model fits",
   speechNeeds: "speech still needs",
-  hotkeyLabel: "Hotkey (Tauri syntax, e.g. Control+Shift+Space)",
+  hotkeyLabel: "Talk shortcut",
   hotkeyHelp:
-    "Option+Space and Control+Space are often taken by macOS (Spotlight / input source). Check System Settings → Keyboard → Keyboard Shortcuts. Changing the hotkey here re-registers it immediately.",
+    "Click the field, then press the combination. Escape cancels. Option+Space and Control+Space are often taken by macOS (Spotlight / input source). Check System Settings → Keyboard → Keyboard Shortcuts.",
+  hotkeyListening: "Press the shortcut…",
   speechLanguage: "Speech language",
   langRussian: "Russian",
   langEnglish: "English",
@@ -158,8 +159,12 @@ const EN = {
     "Hands-free (press to start, press again to stop). Hold-to-talk stays the default when this is off.",
   spokenDigits: "Write spoken numbers as digits",
   dateFormat: "Date format",
-  acceleration: "Acceleration device",
-  cpuBuild: "CPU (this build)",
+  acceleration: "Acceleration",
+  computeAuto: "Auto",
+  computeGpu: "GPU (Metal)",
+  computeCpu: "CPU",
+  accelerationHelp:
+    "Auto uses the GPU on Apple Silicon. Intel Macs and other platforms stay on CPU. GPU can hang on Intel — leave Auto or CPU there.",
   postTimeout: "Post-processing timeout (ms)",
   installMacro: "Install Dictate macro",
   copyLastHotkey: "Copy last transcript",
@@ -256,9 +261,10 @@ const RU: typeof EN = {
   free: "свободно",
   speechFits: "модель речи помещается",
   speechNeeds: "для речи ещё нужно",
-  hotkeyLabel: "Хоткей (синтаксис Tauri, например Control+Shift+Space)",
+  hotkeyLabel: "Хоткей диктовки",
   hotkeyHelp:
-    "Option+Space и Control+Space часто заняты macOS (Spotlight / раскладка). Проверьте Системные настройки → Клавиатура → Сочетания клавиш. Смена хоткея здесь перерегистрирует его сразу.",
+    "Нажмите поле, затем сочетание клавиш. Escape отменяет. Option+Space и Control+Space часто заняты macOS (Spotlight / раскладка). Проверьте Системные настройки → Клавиатура → Сочетания клавиш.",
+  hotkeyListening: "Нажмите сочетание…",
   speechLanguage: "Язык речи",
   langRussian: "Русский",
   langEnglish: "Английский",
@@ -309,7 +315,11 @@ const RU: typeof EN = {
   spokenDigits: "Писать произнесённые числа цифрами",
   dateFormat: "Формат даты",
   acceleration: "Ускорение",
-  cpuBuild: "CPU (эта сборка)",
+  computeAuto: "Авто",
+  computeGpu: "GPU (Metal)",
+  computeCpu: "CPU",
+  accelerationHelp:
+    "Авто включает GPU на Apple Silicon. На Intel и других платформах остаётся CPU. GPU на Intel может зависать — там оставьте Авто или CPU.",
   postTimeout: "Таймаут постобработки (мс)",
   installMacro: "Установить макрос Dictate",
   copyLastHotkey: "Копировать последний транскрипт",
@@ -408,7 +418,7 @@ const WINDOWS_EN: Partial<UiCopy> = {
   homeHelp:
     "Type a sample and click Process locally, or hold the hotkey over a field. Whisper.cpp transcribes when the model is installed. Escape cancels. Ctrl+Alt+C/V copy or paste the last transcript.",
   hotkeyHelp:
-    "Win+Space and some Ctrl+Shift chords are often taken by Windows. Check Settings → Time & language → Typing / Keyboard. Changing the hotkey here re-registers it immediately.",
+    "Click the field, then press the combination. Escape cancels. Win+Space and some Ctrl+Shift chords are often taken by Windows. Check Settings → Time & language → Typing / Keyboard.",
   speechModelHelp:
     "Only Whisper files already on this PC are listed. Small/Base are faster; Medium is more accurate. Download others on the Models page.",
   deleteModel: "Delete from this PC",
@@ -426,7 +436,7 @@ const WINDOWS_RU: Partial<UiCopy> = {
   homeHelp:
     "Введите пример и нажмите «Обработать локально» или удерживайте хоткей над полем. Whisper.cpp распознаёт речь, когда модель установлена. Escape отменяет. Ctrl+Alt+C/V копируют или вставляют последний текст.",
   hotkeyHelp:
-    "Win+Space и некоторые сочетания Ctrl+Shift часто заняты Windows. Проверьте Параметры → Время и язык → Ввод. Смена хоткея здесь перерегистрирует его сразу.",
+    "Нажмите поле, затем сочетание клавиш. Escape отменяет. Win+Space и некоторые сочетания Ctrl+Shift часто заняты Windows. Проверьте Параметры → Время и язык → Ввод.",
   speechModelHelp:
     "В списке только Whisper, уже лежащие на этом ПК. Small/Base быстрее, Medium точнее. Остальные скачиваются в разделе «Модели».",
   deleteModel: "Удалить с этого ПК",
@@ -445,7 +455,7 @@ const LINUX_EN: Partial<UiCopy> = {
   homeHelp:
     "Type a sample and click Process locally, or hold the hotkey over a field. Whisper.cpp transcribes when the model is installed. Escape cancels. Ctrl+Alt+C/V copy or paste the last transcript.",
   hotkeyHelp:
-    "Super+Space is often taken by the desktop input switcher. Check your keyboard shortcuts. Changing the hotkey here re-registers it immediately.",
+    "Click the field, then press the combination. Escape cancels. Super+Space is often taken by the desktop input switcher. Check your keyboard shortcuts.",
   speechModelHelp:
     "Only Whisper files already on this computer are listed. Small/Base are faster; Medium is more accurate. Download others on the Models page.",
   deleteModel: "Delete from this computer",
@@ -463,7 +473,7 @@ const LINUX_RU: Partial<UiCopy> = {
   homeHelp:
     "Введите пример и нажмите «Обработать локально» или удерживайте хоткей над полем. Whisper.cpp распознаёт речь, когда модель установлена. Escape отменяет. Ctrl+Alt+C/V копируют или вставляют последний текст.",
   hotkeyHelp:
-    "Super+Space часто занят переключателем раскладки. Проверьте сочетания клавиш рабочего стола. Смена хоткея здесь перерегистрирует его сразу.",
+    "Нажмите поле, затем сочетание клавиш. Escape отменяет. Super+Space часто занят переключателем раскладки. Проверьте сочетания клавиш рабочего стола.",
   speechModelHelp:
     "В списке только Whisper, уже лежащие на этом компьютере. Small/Base быстрее, Medium точнее. Остальные скачиваются в разделе «Модели».",
   deleteModel: "Удалить с этого компьютера",
