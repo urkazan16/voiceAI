@@ -17,6 +17,24 @@ import { fileURLToPath } from "node:url";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const host = process.platform;
+const cargoTarget = process.env.CARGO_BUILD_TARGET?.trim() || "";
+
+function releaseArch() {
+  if (cargoTarget.startsWith("x86_64") || cargoTarget.startsWith("i686")) {
+    return "x64";
+  }
+  if (cargoTarget.startsWith("aarch64") || cargoTarget.includes("arm64")) {
+    return "arm64";
+  }
+  return os.arch();
+}
+
+function rustReleaseDir() {
+  if (cargoTarget) {
+    return path.join(root, "src-tauri/target", cargoTarget, "release");
+  }
+  return path.join(root, "src-tauri/target/release");
+}
 
 function run(cmd, args, opts = {}) {
   // Windows cannot spawn npm/npx shims (.cmd) without a shell; the old
@@ -59,11 +77,15 @@ if (!skipBuild) {
   // speech.m / lock.m are compiled from build.rs on macOS only. The CMake
   // target is an INTERFACE include and is unused on Windows/Linux.
   if (host === "darwin") {
-    run("cmake", ["-S", "src-tauri/native", "-B", "src-tauri/native/build"]);
+    const cmakeArgs = ["-S", "src-tauri/native", "-B", "src-tauri/native/build"];
+    if (cargoTarget === "x86_64-apple-darwin") {
+      cmakeArgs.push("-DCMAKE_OSX_ARCHITECTURES=x86_64");
+    } else if (cargoTarget === "aarch64-apple-darwin") {
+      cmakeArgs.push("-DCMAKE_OSX_ARCHITECTURES=arm64");
+    }
+    run("cmake", cmakeArgs);
     run("cmake", ["--build", "src-tauri/native/build"]);
   }
-
-  run("cargo", ["build", "--manifest-path", "src-tauri/Cargo.toml", "--locked", "--release"]);
 
   if (ciMacos) {
     // Tauri CLI 2.2.x shells out to macOS `base64 --decode`, which rejects
@@ -75,15 +97,22 @@ if (!skipBuild) {
     }
   }
 
+  // One compile: tauri build already runs cargo --release. --locked keeps CI
+  // on Cargo.lock; --target is required when packaging Intel from Apple silicon.
   const bundles = host === "darwin" ? "app,dmg" : host === "win32" ? "nsis" : "deb,appimage";
-  run("npx", ["tauri", "build", "--bundles", bundles]);
+  const tauriArgs = ["tauri", "build", "--bundles", bundles];
+  if (cargoTarget) {
+    tauriArgs.push("--target", cargoTarget);
+  }
+  tauriArgs.push("--", "--locked");
+  run("npx", tauriArgs);
 }
 
 const version = JSON.parse(readFileSync(path.join(root, "package.json"), "utf8")).version;
 const artifacts = path.join(root, "release-artifacts");
 mkdirSync(artifacts, { recursive: true });
 
-const bundleDir = path.join(root, "src-tauri/target/release/bundle");
+const bundleDir = path.join(rustReleaseDir(), "bundle");
 const ARTIFACT_FILE = /\.(dmg|exe|msi|deb|rpm|AppImage)$/i;
 
 function collect(kind) {
@@ -110,9 +139,9 @@ for (const kind of ["dmg", "macos", "nsis", "msi", "deb", "rpm", "appimage"]) {
   collect(kind);
 }
 
-renameInstallers(artifacts, os.arch());
+renameInstallers(artifacts, releaseArch());
 if (ciMacos) {
-  assertDmgNotarized(artifacts);
+  notarizeAndStapleDmgs(artifacts);
 }
 
 run("node", ["scripts/generate-sbom.mjs", artifacts]);
@@ -125,7 +154,7 @@ copyFileSync(path.join(root, "NOTICE"), path.join(artifacts, "NOTICE"));
 writeFileSync(path.join(artifacts, "CHANGELOG.md"), readFileSync(path.join(root, "CHANGELOG.md")));
 
 console.log(
-  `Release artifacts for LocalFlow ${version} (${host}/${os.arch()}) written to ${artifacts}`,
+  `Release artifacts for LocalFlow ${version} (${host}/${releaseArch()}) written to ${artifacts}`,
 );
 
 /** Stable names so README / GitHub Releases latest URLs do not change with the version. */
@@ -171,14 +200,75 @@ function unlockCiSigningKeychain() {
   }
 }
 
-function assertDmgNotarized(dir) {
+function stapleWithRetry(dmg) {
+  const pausesSec = [0, 15, 30];
+  for (let i = 0; i < pausesSec.length; i += 1) {
+    if (pausesSec[i] > 0) {
+      spawnSync("sleep", [String(pausesSec[i])], { stdio: "inherit" });
+    }
+    const result = spawnSync("xcrun", ["stapler", "staple", dmg], {
+      stdio: "inherit",
+      cwd: root,
+      env: process.env,
+    });
+    if (result.status === 0) {
+      return;
+    }
+    console.error(`stapler staple attempt ${i + 1} failed for the .dmg`);
+  }
+  console.error("stapler staple failed for the .dmg after retries");
+  process.exit(1);
+}
+
+function runWithoutArgLog(cmd, args, failureMessage) {
+  const result = spawnSync(cmd, args, {
+    stdio: "inherit",
+    cwd: root,
+    env: process.env,
+  });
+  if (result.error) {
+    console.error(`failed to start ${cmd}: ${result.error.message}`);
+  }
+  if (result.status !== 0) {
+    console.error(failureMessage);
+    process.exit(result.status ?? 1);
+  }
+}
+
+/** Tauri notarizes the .app; the shipped .dmg is a new container and needs its own ticket. */
+function notarizeAndStapleDmgs(dir) {
   const dmgs = readdirSync(dir).filter((name) => name.toLowerCase().endsWith(".dmg"));
   if (dmgs.length === 0) {
-    console.error("macOS CI package produced no .dmg to notarization-check");
+    console.error("macOS CI package produced no .dmg to notarize");
+    process.exit(1);
+  }
+  const appleId = process.env.APPLE_ID?.trim();
+  const password = process.env.APPLE_PASSWORD;
+  const teamId = process.env.APPLE_TEAM_ID?.trim();
+  if (!appleId || !password || !teamId) {
+    console.error("missing Apple ID credentials to notarize the .dmg");
     process.exit(1);
   }
   for (const name of dmgs) {
-    run("xcrun", ["stapler", "validate", path.join(dir, name)]);
+    const dmg = path.join(dir, name);
+    runWithoutArgLog(
+      "xcrun",
+      [
+        "notarytool",
+        "submit",
+        dmg,
+        "--apple-id",
+        appleId,
+        "--password",
+        password,
+        "--team-id",
+        teamId,
+        "--wait",
+      ],
+      "notarytool submit failed for the .dmg",
+    );
+    stapleWithRetry(dmg);
+    run("xcrun", ["stapler", "validate", dmg]);
   }
 }
 

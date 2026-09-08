@@ -50,6 +50,10 @@ jobs:
         with:
           toolchain: 1.88.0
           components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+          prefix-key: lint-${{ matrix.os }}
       - run: npm ci
       - run: npm run check:rust
 
@@ -60,7 +64,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [macos-15-intel, macos-14, windows-latest, ubuntu-22.04]
+        os: [macos-14, windows-latest, ubuntu-22.04]
     steps:
       - uses: actions/checkout@v4
       - if: runner.os == 'Linux'
@@ -75,8 +79,11 @@ jobs:
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: 1.88.0
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+          prefix-key: test-${{ matrix.os }}
       - run: npm ci
-      - run: npm test
       - run: npm run test:all
 
   license:
@@ -110,7 +117,9 @@ jobs:
           toolchain: 1.88.0
       - run: npm ci
       - run: npm audit --omit=dev --audit-level=high
-      - run: cargo install cargo-audit --locked
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-audit
       - run: cargo audit --file src-tauri/Cargo.lock
 
   build:
@@ -121,12 +130,16 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: macos-15-intel
+          # Intel .app is cross-compiled on Apple silicon. macos-15-intel is
+          # several times slower and dominated billed minutes.
+          - os: macos-14
             target: x86_64-apple-darwin
             name: macos-x64
+            cmake_osx_arch: x86_64
           - os: macos-14
             target: aarch64-apple-darwin
             name: macos-arm64
+            cmake_osx_arch: arm64
           - os: windows-latest
             target: x86_64-pc-windows-msvc
             name: windows-x64
@@ -148,11 +161,17 @@ jobs:
         with:
           toolchain: 1.88.0
           targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+          prefix-key: build-${{ matrix.name }}
       - run: npm ci
       - run: npm run build:ui
       - run: bash scripts/run-with-toolchain.sh cargo build --manifest-path src-tauri/Cargo.toml --target ${{ matrix.target }}
         env:
           LOCALFLOW_GIT_SHA: ${{ github.sha }}
+          MACOSX_DEPLOYMENT_TARGET: "12.0"
+          CMAKE_OSX_ARCHITECTURES: ${{ matrix.cmake_osx_arch }}
 
   # Installers are uploaded as run artifacts. Skip on pull_request (including
   # Dependabot): those runs only compile. Tag a v* release or push main / Run workflow.
@@ -170,14 +189,20 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: macos-15-intel
+          - os: macos-14
             artifact: LocalFlow-macos-x64
+            cargo_target: x86_64-apple-darwin
+            cmake_osx_arch: x86_64
           - os: macos-14
             artifact: LocalFlow-macos-arm64
+            cargo_target: aarch64-apple-darwin
+            cmake_osx_arch: arm64
           - os: windows-latest
             artifact: LocalFlow-windows-x64
+            cargo_target: x86_64-pc-windows-msvc
           - os: ubuntu-22.04
             artifact: LocalFlow-linux-x64
+            cargo_target: x86_64-unknown-linux-gnu
     steps:
       - uses: actions/checkout@v4
       - name: Require Apple signing and notarization secrets
@@ -216,6 +241,11 @@ jobs:
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: 1.88.0
+          targets: ${{ matrix.cargo_target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+          prefix-key: package-${{ matrix.artifact }}
       - run: npm ci
       - name: Import Developer ID certificate
         if: runner.os == 'macOS'
@@ -226,6 +256,9 @@ jobs:
       - run: npm run build:release
         env:
           LOCALFLOW_GIT_SHA: ${{ github.sha }}
+          CARGO_BUILD_TARGET: ${{ matrix.cargo_target }}
+          MACOSX_DEPLOYMENT_TARGET: "12.0"
+          CMAKE_OSX_ARCHITECTURES: ${{ matrix.cmake_osx_arch }}
           APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
