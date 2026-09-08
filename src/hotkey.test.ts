@@ -1,11 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { chordFromKeyboardEvent, keyFromCode, metaModifierName } from "./hotkey";
+import { chordFromKeyboardEvent, isFnKey, keyFromCode, metaModifierName } from "./hotkey";
 
 describe("chordFromKeyboardEvent", () => {
   it("builds Control+Shift+Space", () => {
     expect(
       chordFromKeyboardEvent({
         code: "Space",
+        key: " ",
         repeat: false,
         ctrlKey: true,
         altKey: false,
@@ -15,11 +16,77 @@ describe("chordFromKeyboardEvent", () => {
     ).toBe("Control+Shift+Space");
   });
 
+  it("builds Control+Space", () => {
+    expect(
+      chordFromKeyboardEvent({
+        code: "Space",
+        key: " ",
+        repeat: false,
+        ctrlKey: true,
+        altKey: false,
+        shiftKey: false,
+        metaKey: false,
+      }),
+    ).toBe("Control+Space");
+  });
+
+  it("accepts a single Space or letter", () => {
+    expect(
+      chordFromKeyboardEvent({
+        code: "Space",
+        key: " ",
+        repeat: false,
+        ctrlKey: false,
+        altKey: false,
+        shiftKey: false,
+        metaKey: false,
+      }),
+    ).toBe("Space");
+    expect(
+      chordFromKeyboardEvent({
+        code: "KeyA",
+        key: "a",
+        repeat: false,
+        ctrlKey: false,
+        altKey: false,
+        shiftKey: false,
+        metaKey: false,
+      }),
+    ).toBe("A");
+  });
+
+  it("records Fn by itself", () => {
+    expect(isFnKey({ code: "Fn", key: "Fn" })).toBe(true);
+    expect(
+      chordFromKeyboardEvent({
+        code: "Fn",
+        key: "Fn",
+        repeat: false,
+        ctrlKey: false,
+        altKey: false,
+        shiftKey: false,
+        metaKey: false,
+      }),
+    ).toBe("Fn");
+    expect(
+      chordFromKeyboardEvent({
+        code: "",
+        key: "Globe",
+        repeat: false,
+        ctrlKey: false,
+        altKey: false,
+        shiftKey: false,
+        metaKey: false,
+      }),
+    ).toBe("Fn");
+  });
+
   it("uses Command on macOS for the meta key", () => {
     expect(
       chordFromKeyboardEvent(
         {
           code: "KeyC",
+          key: "c",
           repeat: false,
           ctrlKey: true,
           altKey: false,
@@ -37,6 +104,7 @@ describe("chordFromKeyboardEvent", () => {
       chordFromKeyboardEvent(
         {
           code: "KeyV",
+          key: "v",
           repeat: false,
           ctrlKey: true,
           altKey: true,
@@ -48,10 +116,11 @@ describe("chordFromKeyboardEvent", () => {
     ).toBe("Control+Alt+V");
   });
 
-  it("ignores modifier-only and bare letters", () => {
+  it("ignores modifier-only chords until a real key arrives", () => {
     expect(
       chordFromKeyboardEvent({
         code: "ShiftLeft",
+        key: "Shift",
         repeat: false,
         ctrlKey: false,
         altKey: false,
@@ -61,7 +130,8 @@ describe("chordFromKeyboardEvent", () => {
     ).toBeNull();
     expect(
       chordFromKeyboardEvent({
-        code: "KeyA",
+        code: "Escape",
+        key: "Escape",
         repeat: false,
         ctrlKey: false,
         altKey: false,
@@ -76,6 +146,7 @@ describe("chordFromKeyboardEvent", () => {
     expect(
       chordFromKeyboardEvent({
         code: "F13",
+        key: "F13",
         repeat: false,
         ctrlKey: false,
         altKey: false,

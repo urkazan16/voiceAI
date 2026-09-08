@@ -13,6 +13,13 @@ export function Bar() {
     wpm: null,
   });
 
+  const [needsAccess, setNeedsAccess] = useState(false);
+  const preview = state.transcript ?? state.message;
+  const recording = state.phase === "recording" || state.phase === "pressed";
+  const busy = recording || state.phase === "processing";
+  const rms = state.rms ?? 0;
+  const failed = state.insert_ok === false && Boolean(state.transcript || state.phase === "error");
+
   useEffect(() => {
     if (!isTauriRuntime()) {
       return;
@@ -26,11 +33,27 @@ export function Bar() {
     return () => unlisten?.();
   }, []);
 
-  const preview = state.transcript ?? state.message;
-  const recording = state.phase === "recording" || state.phase === "pressed";
-  const busy = recording || state.phase === "processing";
-  const rms = state.rms ?? 0;
-  const failed = state.insert_ok === false && (state.transcript || state.phase === "error");
+  useEffect(() => {
+    if (!failed || !isTauriRuntime()) {
+      return;
+    }
+    let cancelled = false;
+    void api
+      .permissionStatus()
+      .then((status) => {
+        if (!cancelled) {
+          setNeedsAccess(!status.accessibility_trusted);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setNeedsAccess(false);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [failed]);
 
   return (
     <div
@@ -71,9 +94,24 @@ export function Bar() {
         </div>
       )}
       <p className="line-clamp-3 text-sm text-paper/85">{preview}</p>
+      {failed && (
+        <p className="text-[11px] text-paper/60">
+          {needsAccess
+            ? "Enable Accessibility for LocalFlow, then Paste last."
+            : "Click the field, then Paste last."}
+        </p>
+      )}
       <div className="flex justify-end gap-2">
         {failed && (
           <>
+            {needsAccess && (
+              <button
+                className="rounded-full border border-paper/30 px-3 py-1 text-xs"
+                onClick={() => void api.openPrivacyPane("accessibility")}
+              >
+                Accessibility
+              </button>
+            )}
             <button
               className="rounded-full border border-paper/30 px-3 py-1 text-xs"
               onClick={() => void api.copyLastTranscript()}

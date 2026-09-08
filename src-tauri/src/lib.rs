@@ -198,8 +198,7 @@ pub fn run() {
             }
 
             if let Some(bar) = app.get_webview_window("bar") {
-                position_flow_bar(&bar);
-                let _ = bar.hide();
+                crate::hide_flow_bar_window(&bar);
             }
 
             macos_activity::prevent_app_nap();
@@ -289,6 +288,53 @@ pub(crate) fn show_main_window(app: &AppHandle) {
         let _ = window.show();
         let _ = window.set_focus();
     }
+}
+
+pub(crate) fn show_flow_bar(bar: &WebviewWindow, target_pid: Option<i32>) {
+    position_flow_bar(bar);
+    #[cfg(target_os = "macos")]
+    {
+        show_macos_overlay_without_activating(bar);
+        if let Some(pid) = target_pid {
+            if pid > 0 && pid != crate::injection::own_process_id() {
+                let _ = crate::platform::current().activate_pid(pid as u32);
+            }
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = bar.show();
+        let _ = target_pid;
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn show_macos_overlay_without_activating(bar: &WebviewWindow) {
+    // Tauri's show() maps to makeKeyAndOrderFront, which takes the caret
+    // out of Chrome so the later Cmd+V never reaches the field.
+    if let Ok(ptr) = bar.ns_window() {
+        if !ptr.is_null() {
+            unsafe {
+                let window = ptr as *mut objc2::runtime::AnyObject;
+                let _: () = objc2::msg_send![window, orderFrontRegardless];
+            }
+            return;
+        }
+    }
+    let _ = bar.show();
+}
+
+pub(crate) fn hide_flow_bar_window(bar: &WebviewWindow) {
+    #[cfg(target_os = "macos")]
+    if let Ok(ptr) = bar.ns_window() {
+        if !ptr.is_null() {
+            unsafe {
+                let window = ptr as *mut objc2::runtime::AnyObject;
+                let _: () = objc2::msg_send![window, orderOut: std::ptr::null::<objc2::runtime::AnyObject>()];
+            }
+        }
+    }
+    let _ = bar.hide();
 }
 
 pub(crate) fn position_flow_bar(bar: &WebviewWindow) {

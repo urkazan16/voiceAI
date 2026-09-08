@@ -302,13 +302,28 @@ pub fn copy_text(text: String) -> Result<(), CommandError> {
 
 #[tauri::command]
 pub fn paste_text(engine: tauri::State<SharedEngine>, text: String) -> Result<(), CommandError> {
-    let restore = lock(&engine)?.settings.restore_clipboard;
+    let (restore, remembered_pid, remembered_app, delay) = {
+        let eng = lock(&engine)?;
+        (
+            eng.settings.restore_clipboard,
+            eng.insert_target_pid,
+            eng.insert_target_app.clone(),
+            eng.settings.insert_delay_ms,
+        )
+    };
+    crate::dictation::conceal_overlay();
+    let (target_pid, target_app) = crate::injection::prefer_insert_target(
+        crate::injection::frontmost_target(),
+        remembered_pid,
+        remembered_app,
+    );
     crate::injection::ClipboardInjector {
-        target_pid: crate::injection::frontmost_unix_id(),
-        target_app: crate::injection::frontmost_app_name(),
-        insert_delay_ms: lock(&engine)?.settings.insert_delay_ms,
+        target_pid,
+        target_app,
+        insert_delay_ms: delay,
     }
-    .insert_text(&text, restore)?;
+    .insert_text(&text, restore)
+    .inspect_err(|_| crate::dictation::reveal_overlay())?;
     Ok(())
 }
 

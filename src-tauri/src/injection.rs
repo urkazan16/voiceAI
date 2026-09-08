@@ -183,6 +183,36 @@ pub fn frontmost_target() -> (Option<i32>, Option<String>) {
     platform::current().frontmost_target()
 }
 
+pub fn own_process_id() -> i32 {
+    i32::try_from(std::process::id()).unwrap_or(i32::MAX)
+}
+
+pub fn is_own_process(pid: Option<i32>, app: Option<&str>) -> bool {
+    if pid == Some(own_process_id()) {
+        return true;
+    }
+    app.is_some_and(|name| {
+        let n = name.to_ascii_lowercase();
+        n.contains("localflow")
+    })
+}
+
+/// When LocalFlow (or its overlay) is frontmost, keep the app that was focused
+/// at talk-hotkey time so Cmd+V does not land in the bar.
+pub fn prefer_insert_target(
+    current: (Option<i32>, Option<String>),
+    remembered_pid: Option<i32>,
+    remembered_app: Option<String>,
+) -> (Option<i32>, Option<String>) {
+    if is_own_process(current.0, current.1.as_deref())
+        && !is_own_process(remembered_pid, remembered_app.as_deref())
+        && (remembered_pid.is_some() || remembered_app.as_ref().is_some_and(|s| !s.is_empty()))
+    {
+        return (remembered_pid, remembered_app);
+    }
+    current
+}
+
 pub fn space_key_down() -> bool {
     platform::current().space_key_down()
 }
@@ -210,6 +240,22 @@ mod tests {
         let inj = MemoryInjector::default();
         inj.insert_text("hello", true).unwrap();
         assert_eq!(inj.last.lock().unwrap().clone(), Some("hello".into()));
+    }
+
+    #[test]
+    fn prefer_insert_target_skips_localflow_overlay() {
+        let chrome = (Some(4242), Some("Google Chrome".into()));
+        let overlay = (Some(own_process_id()), Some("LocalFlow Bar".into()));
+        assert_eq!(
+            prefer_insert_target(overlay.clone(), chrome.0, chrome.1.clone()),
+            chrome
+        );
+        assert_eq!(
+            prefer_insert_target(chrome.clone(), Some(1), Some("Mail".into())),
+            chrome
+        );
+        assert!(is_own_process(Some(own_process_id()), Some("LocalFlow")));
+        assert!(!is_own_process(Some(4242), Some("Google Chrome")));
     }
 
     #[test]

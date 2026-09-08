@@ -42,8 +42,9 @@ describe("navItems", () => {
 
 describe("copy", () => {
   it("translates settings descriptions when the interface language is Russian", () => {
-    expect(copy("en").hotkeyListening).toMatch(/Press/);
-    expect(copy("ru").hotkeyListening).toMatch(/Нажмите/);
+    expect(copy("en").hotkeyListening).toMatch(/key or combination/);
+    expect(copy("ru").hotkeyListening).toMatch(/клавишу или сочетание/);
+    expect(copy("en").hotkeyHelp).toMatch(/Fn/);
     expect(copy("en").computeGpu).toMatch(/Metal/);
     expect(copy("ru").hotkeyHelp).toMatch(/Spotlight|раскладка/);
     expect(copy("ru").speechLangHelp).not.toBe(copy("en").speechLangHelp);

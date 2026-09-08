@@ -497,6 +497,7 @@ impl AppEngine {
             crate::format::space_between_utterances(&self.session_text, &final_text)
         };
         if self.inject_enabled && !inject_text.is_empty() && !crate::dictation::is_cancelled() {
+            crate::dictation::conceal_overlay();
             if let Err(err) = injector.insert_text(&inject_text, self.settings.restore_clipboard) {
                 insert_ok = false;
                 insert_err = Some(err);
@@ -658,12 +659,20 @@ impl AppEngine {
             .map(|o| o.final_text.clone())
             .filter(|t| !t.is_empty())
             .ok_or_else(|| LfError::Other("no last transcript".into()))?;
+        crate::dictation::conceal_overlay();
+        let current = crate::injection::frontmost_target();
+        let (target_pid, target_app) = crate::injection::prefer_insert_target(
+            current,
+            self.insert_target_pid,
+            self.insert_target_app.clone(),
+        );
         crate::injection::ClipboardInjector {
-            target_pid: crate::injection::frontmost_unix_id(),
-            target_app: crate::injection::frontmost_app_name(),
+            target_pid,
+            target_app,
             insert_delay_ms: self.settings.insert_delay_ms,
         }
-        .insert_text(&text, self.settings.restore_clipboard)?;
+        .insert_text(&text, self.settings.restore_clipboard)
+        .inspect_err(|_| crate::dictation::reveal_overlay())?;
         Ok(text)
     }
 

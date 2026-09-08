@@ -17,9 +17,25 @@ export function metaModifierName(platform = navigator.platform): "Command" | "Su
   return /mac/i.test(platform) ? "Command" : "Super";
 }
 
+export function isFnKey(event: Pick<KeyboardEvent, "code" | "key">): boolean {
+  const code = event.code ?? "";
+  const key = event.key ?? "";
+  return (
+    code === "Fn" ||
+    code === "FnLeft" ||
+    code === "FnRight" ||
+    key === "Fn" ||
+    key === "Function" ||
+    key === "Globe"
+  );
+}
+
 export function keyFromCode(code: string): string | null {
   if (!code || MODIFIER_CODES.has(code)) {
     return null;
+  }
+  if (code === "Fn" || code === "FnLeft" || code === "FnRight") {
+    return "Fn";
   }
   if (code === "Space") {
     return "Space";
@@ -63,20 +79,25 @@ export function keyFromCode(code: string): string | null {
   return null;
 }
 
-/** Null while only modifiers are down, or for a bare letter/space that would steal typing. */
+/** Null while only Control/Shift/Alt/Meta are down. Escape is handled by the field. */
 export function chordFromKeyboardEvent(
-  event: Pick<KeyboardEvent, "code" | "repeat" | "ctrlKey" | "altKey" | "shiftKey" | "metaKey">,
+  event: Pick<
+    KeyboardEvent,
+    "code" | "key" | "repeat" | "ctrlKey" | "altKey" | "shiftKey" | "metaKey"
+  >,
   platform = navigator.platform,
 ): string | null {
   if (event.repeat) {
     return null;
   }
-  const key = keyFromCode(event.code);
-  if (!key) {
+  if (event.code === "Escape" || event.key === "Escape") {
     return null;
   }
-  const hasModifier = event.ctrlKey || event.altKey || event.shiftKey || event.metaKey;
-  if (!hasModifier && !key.startsWith("F")) {
+  if (isFnKey(event)) {
+    return "Fn";
+  }
+  const key = keyFromCode(event.code);
+  if (!key) {
     return null;
   }
   const parts: string[] = [];

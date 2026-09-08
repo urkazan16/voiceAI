@@ -24,6 +24,7 @@ const VK_RIGHT_CONTROL: u16 = 0x3E;
 const VK_OPTION: u16 = 0x3A;
 const VK_RIGHT_OPTION: u16 = 0x3D;
 const VK_SPACE: u16 = 0x31;
+const VK_FUNCTION: u16 = 0x3F;
 const VK_ANSI_V: u16 = 0x09;
 const COMMAND_FLAG: u64 = 0x0010_0000;
 const HID_EVENT_TAP: u32 = 0;
@@ -92,7 +93,7 @@ impl Platform for MacOs {
         prepare_keyboard();
         focus_target(request.target_pid, request.target_app);
         let delay = request.insert_delay_ms.max(40);
-        let extra = if is_editor_or_terminal(request.target_app) {
+        let extra = if is_editor_or_terminal(request.target_app) || is_browser(request.target_app) {
             delay.saturating_add(40)
         } else {
             delay
@@ -176,6 +177,9 @@ impl Platform for MacOs {
             if !option_down() {
                 return false;
             }
+        }
+        if t == "fn" || t == "function" || t == "globe" {
+            return key_down(VK_FUNCTION);
         }
         if t.contains("space") {
             return required && key_down(VK_SPACE);
@@ -548,15 +552,38 @@ fn is_editor_or_terminal(app: Option<&str>) -> bool {
         || n.contains("helix")
 }
 
+fn is_browser(app: Option<&str>) -> bool {
+    let Some(name) = app else {
+        return false;
+    };
+    let n = name.to_ascii_lowercase();
+    n.contains("chrome")
+        || n.contains("safari")
+        || n.contains("firefox")
+        || n.contains("edge")
+        || n.contains("arc")
+        || n.contains("brave")
+        || n.contains("vivaldi")
+        || n.contains("opera")
+        || n.contains("chromium")
+        || n.contains("yandex")
+}
+
 fn focus_target(pid: Option<i32>, app: Option<&str>) {
     // Packaged LocalFlow is a regular app with a window. On macOS 14+,
     // activateWithOptions(empty()) reports success without taking focus
     // away from us, so Cmd+V lands in LocalFlow instead of the field.
-    if let Some(pid) = pid {
-        let _ = activate_pid(pid);
+    let own = crate::injection::own_process_id();
+    if let Some(pid) = pid.filter(|&p| p != own) {
+        if activate_pid(pid) {
+            std::thread::sleep(Duration::from_millis(120));
+            return;
+        }
     }
     if let Some(name) = app.map(str::trim).filter(|n| !n.is_empty()) {
-        let _ = activate_named_app(name);
+        if !crate::injection::is_own_process(None, Some(name)) {
+            let _ = activate_named_app(name);
+        }
     }
     std::thread::sleep(Duration::from_millis(80));
 }
@@ -637,15 +664,16 @@ fn post_paste(target_pid: Option<i32>) -> LfResult<()> {
 }
 
 fn post_command_v(target_pid: Option<i32>) -> bool {
+    let pid = target_pid.filter(|&p| p != crate::injection::own_process_id());
     unsafe {
         let source = CGEventSourceCreate(HID_SYSTEM_STATE);
         if source.is_null() {
             return false;
         }
-        let ok = post_key(source, VK_COMMAND, true, COMMAND_FLAG, target_pid)
-            && post_key(source, VK_ANSI_V, true, COMMAND_FLAG, target_pid)
-            && post_key(source, VK_ANSI_V, false, COMMAND_FLAG, target_pid)
-            && post_key(source, VK_COMMAND, false, 0, target_pid);
+        let ok = post_key(source, VK_COMMAND, true, COMMAND_FLAG, pid)
+            && post_key(source, VK_ANSI_V, true, COMMAND_FLAG, pid)
+            && post_key(source, VK_ANSI_V, false, COMMAND_FLAG, pid)
+            && post_key(source, VK_COMMAND, false, 0, pid);
         CFRelease(source);
         ok
     }
@@ -740,6 +768,18 @@ mod tests {
         assert!(
             prod.contains("wait_for_modifiers_up(Duration::from_millis(250))"),
             "do not wait a full second for leftover modifiers"
+        );
+        assert!(
+            prod.contains("own_process_id"),
+            "never activate LocalFlow or post Cmd+V to the overlay pid"
+        );
+        assert!(
+            include_str!("../lib.rs").contains("orderFrontRegardless"),
+            "overlay must not become the key window or Chrome loses the caret"
+        );
+        assert!(
+            prod.contains("is_browser"),
+            "Chrome needs the extra pause after activation"
         );
     }
 

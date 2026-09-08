@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { chordFromKeyboardEvent } from "./hotkey";
+import { chordFromKeyboardEvent, isFnKey } from "./hotkey";
 
 type HotkeyFieldProps = {
   label: string;
@@ -20,10 +20,10 @@ export function HotkeyField({ label, value, listeningLabel, onChange }: HotkeyFi
     if (!listening) {
       return;
     }
-    const onKeyDown = (event: KeyboardEvent) => {
+    const commit = (event: KeyboardEvent) => {
       event.preventDefault();
       event.stopPropagation();
-      if (event.code === "Escape") {
+      if (event.code === "Escape" || event.key === "Escape") {
         setListening(false);
         return;
       }
@@ -34,8 +34,19 @@ export function HotkeyField({ label, value, listeningLabel, onChange }: HotkeyFi
       onChangeRef.current(chord);
       setListening(false);
     };
+    const onKeyDown = (event: KeyboardEvent) => commit(event);
+    const onKeyUp = (event: KeyboardEvent) => {
+      // Fn/Globe often only appears on keyup in WKWebView.
+      if (isFnKey(event)) {
+        commit(event);
+      }
+    };
     window.addEventListener("keydown", onKeyDown, true);
-    return () => window.removeEventListener("keydown", onKeyDown, true);
+    window.addEventListener("keyup", onKeyUp, true);
+    return () => {
+      window.removeEventListener("keydown", onKeyDown, true);
+      window.removeEventListener("keyup", onKeyUp, true);
+    };
   }, [listening]);
 
   return (

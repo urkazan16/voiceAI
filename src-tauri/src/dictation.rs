@@ -23,6 +23,7 @@ static VAD_BITS: AtomicU32 = AtomicU32::new(0);
 static HANDS_FREE: AtomicBool = AtomicBool::new(false);
 static TRAY_MARK: Mutex<String> = Mutex::new(String::new());
 static TRAY_TIP: Mutex<String> = Mutex::new(String::new());
+static APP: Mutex<Option<AppHandle>> = Mutex::new(None);
 
 /// Holds shorter than this are discarded. A 320 ms tap used to enter hands-free
 /// and leave the microphone open.
@@ -165,6 +166,9 @@ pub enum DictationCmd {
 }
 
 pub fn start_worker(app: AppHandle, engine: SharedEngine, capture: SharedCapture) {
+    if let Ok(mut slot) = APP.lock() {
+        *slot = Some(app.clone());
+    }
     let (tx, rx) = mpsc::channel();
     let _ = WORKER.set(tx);
     std::thread::Builder::new()
@@ -273,10 +277,12 @@ pub fn emit_state(app: &AppHandle, state: DictationState) {
         sync_tray(app, &state.phase);
         for label in ["main", "bar"] {
             if let Some(window) = app.get_webview_window(label) {
-                let visible = window.is_visible().unwrap_or(false);
-                let minimized = window.is_minimized().unwrap_or(false);
-                if !window_accepts_dictation_events(visible, minimized) {
-                    continue;
+                if label != "bar" {
+                    let visible = window.is_visible().unwrap_or(false);
+                    let minimized = window.is_minimized().unwrap_or(false);
+                    if !window_accepts_dictation_events(visible, minimized) {
+                        continue;
+                    }
                 }
                 let _ = window.emit("dictation-state", &state);
             }
@@ -313,18 +319,40 @@ pub fn show_bar(app: &AppHandle, engine: &SharedEngine) {
     if !enabled {
         return;
     }
-    on_ui(app, |app| {
+    let target_pid = engine.try_lock().ok().and_then(|eng| eng.insert_target_pid);
+    on_ui(app, move |app| {
         if let Some(window) = app.get_webview_window("bar") {
-            crate::position_flow_bar(&window);
-            let _ = window.show();
+            crate::show_flow_bar(&window, target_pid);
         }
     });
+}
+
+/// Hide the overlay so Cmd+V is not delivered to LocalFlow.
+pub fn conceal_overlay() {
+    if let Ok(guard) = APP.lock() {
+        if let Some(app) = guard.as_ref() {
+            hide_bar(app);
+        }
+    }
+}
+
+pub fn reveal_overlay() {
+    if let Ok(guard) = APP.lock() {
+        if let Some(app) = guard.as_ref() {
+            let app = app.clone();
+            let _ = app.clone().run_on_main_thread(move || {
+                if let Some(window) = app.get_webview_window("bar") {
+                    crate::show_flow_bar(&window, None);
+                }
+            });
+        }
+    }
 }
 
 fn hide_bar(app: &AppHandle) {
     on_ui(app, |app| {
         if let Some(window) = app.get_webview_window("bar") {
-            let _ = window.hide();
+            crate::hide_flow_bar_window(&window);
         }
     });
 }
@@ -398,14 +426,16 @@ pub fn on_hotkey_pressed(app: &AppHandle, engine: &SharedEngine, capture: &Share
         }
         Err(_) => cached_microphone(),
     };
-    let engine_for_target = engine.clone();
-    std::thread::spawn(move || {
-        let (pid, name) = crate::injection::frontmost_target();
-        if let Ok(mut eng) = engine_for_target.lock() {
+    // Capture Chrome/etc. before the overlay is shown. Showing the bar with
+    // Tauri's show() makes LocalFlow frontmost, so a delayed NSWorkspace
+    // read would paste into the bar instead of the field.
+    let (pid, name) = crate::injection::frontmost_target();
+    if let Ok(mut eng) = engine.lock() {
+        if !crate::injection::is_own_process(pid, name.as_deref()) {
             eng.insert_target_pid = pid;
             eng.insert_target_app = name;
         }
-    });
+    }
     match capture.start(mic) {
         Ok(()) => {
             crate::journal::log("record_start", "microphone on");
@@ -833,6 +863,14 @@ fn finish_recording(app: &AppHandle, engine: &SharedEngine, capture: &SharedCapt
                 let empty = output.final_text.is_empty();
                 let words = crate::uttlog::word_count(&output.final_text);
                 let wpm = crate::uttlog::wpm(words, duration_ms);
+                let access_hint = if !inserted
+                    && !empty
+                    && !crate::permissions::accessibility_trusted()
+                {
+                    " Enable Accessibility for LocalFlow in Privacy & Security, then Paste last."
+                } else {
+                    ""
+                };
                 emit_state(
                     &app,
                     DictationState {
@@ -847,7 +885,7 @@ fn finish_recording(app: &AppHandle, engine: &SharedEngine, capture: &SharedCapt
                             format!("Inserted: {}", output.final_text)
                         } else {
                             format!(
-                                "Text ready but insert failed. Copy last / Paste last: {}",
+                                "Text ready but insert failed.{access_hint} Copy last / Paste last: {}",
                                 output.final_text
                             )
                         },
@@ -861,6 +899,8 @@ fn finish_recording(app: &AppHandle, engine: &SharedEngine, capture: &SharedCapt
                 );
                 if inserted || empty {
                     hide_bar_later(&app);
+                } else {
+                    show_bar(&app, &engine);
                 }
             }
             Err(err) => fail(
@@ -1070,5 +1110,27 @@ mod tests {
         assert!(!window_accepts_dictation_events(false, false));
         assert!(!window_accepts_dictation_events(true, true));
         assert!(!window_accepts_dictation_events(false, true));
+    }
+
+    #[test]
+    fn talk_press_records_frontmost_before_showing_the_bar() {
+        let src = include_str!("dictation.rs");
+        let press = src
+            .split("pub fn on_hotkey_pressed")
+            .nth(1)
+            .unwrap()
+            .split("pub fn on_hotkey_released")
+            .next()
+            .unwrap();
+        let frontmost = press.find("frontmost_target()").expect("capture target");
+        let show = press.find("show_bar(").expect("show overlay");
+        assert!(
+            frontmost < show,
+            "showing the bar first makes LocalFlow frontmost"
+        );
+        assert!(
+            !press[..frontmost].contains("std::thread::spawn"),
+            "frontmost must be read on this thread before the overlay appears"
+        );
     }
 }

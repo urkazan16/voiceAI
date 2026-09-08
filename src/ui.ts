@@ -107,8 +107,8 @@ const EN = {
   speechNeeds: "speech still needs",
   hotkeyLabel: "Talk shortcut",
   hotkeyHelp:
-    "Click the field, then press the combination. Escape cancels. Option+Space and Control+Space are often taken by macOS (Spotlight / input source). Check System Settings → Keyboard → Keyboard Shortcuts.",
-  hotkeyListening: "Press the shortcut…",
+    "Click the field, then press one key (Fn, Space, F13) or a combination (Control+Space, Control+Shift+Space). Escape cancels. Option+Space and Control+Space are often taken by macOS (Spotlight / input source).",
+  hotkeyListening: "Press a key or combination…",
   speechLanguage: "Speech language",
   langRussian: "Russian",
   langEnglish: "English",
@@ -263,8 +263,8 @@ const RU: typeof EN = {
   speechNeeds: "для речи ещё нужно",
   hotkeyLabel: "Хоткей диктовки",
   hotkeyHelp:
-    "Нажмите поле, затем сочетание клавиш. Escape отменяет. Option+Space и Control+Space часто заняты macOS (Spotlight / раскладка). Проверьте Системные настройки → Клавиатура → Сочетания клавиш.",
-  hotkeyListening: "Нажмите сочетание…",
+    "Нажмите поле, затем одну клавишу (Fn, Space, F13) или сочетание (Control+Space, Control+Shift+Space). Escape отменяет. Option+Space и Control+Space часто заняты macOS (Spotlight / раскладка).",
+  hotkeyListening: "Нажмите клавишу или сочетание…",
   speechLanguage: "Язык речи",
   langRussian: "Русский",
   langEnglish: "Английский",
@@ -418,7 +418,7 @@ const WINDOWS_EN: Partial<UiCopy> = {
   homeHelp:
     "Type a sample and click Process locally, or hold the hotkey over a field. Whisper.cpp transcribes when the model is installed. Escape cancels. Ctrl+Alt+C/V copy or paste the last transcript.",
   hotkeyHelp:
-    "Click the field, then press the combination. Escape cancels. Win+Space and some Ctrl+Shift chords are often taken by Windows. Check Settings → Time & language → Typing / Keyboard.",
+    "Click the field, then press one key or a combination (Ctrl+Space, Ctrl+Shift+Space). Escape cancels. Win+Space and some Ctrl+Shift chords are often taken by Windows.",
   speechModelHelp:
     "Only Whisper files already on this PC are listed. Small/Base are faster; Medium is more accurate. Download others on the Models page.",
   deleteModel: "Delete from this PC",
@@ -436,7 +436,7 @@ const WINDOWS_RU: Partial<UiCopy> = {
   homeHelp:
     "Введите пример и нажмите «Обработать локально» или удерживайте хоткей над полем. Whisper.cpp распознаёт речь, когда модель установлена. Escape отменяет. Ctrl+Alt+C/V копируют или вставляют последний текст.",
   hotkeyHelp:
-    "Нажмите поле, затем сочетание клавиш. Escape отменяет. Win+Space и некоторые сочетания Ctrl+Shift часто заняты Windows. Проверьте Параметры → Время и язык → Ввод.",
+    "Нажмите поле, затем одну клавишу или сочетание (Ctrl+Space, Ctrl+Shift+Space). Escape отменяет. Win+Space и некоторые сочетания Ctrl+Shift часто заняты Windows.",
   speechModelHelp:
     "В списке только Whisper, уже лежащие на этом ПК. Small/Base быстрее, Medium точнее. Остальные скачиваются в разделе «Модели».",
   deleteModel: "Удалить с этого ПК",
@@ -455,7 +455,7 @@ const LINUX_EN: Partial<UiCopy> = {
   homeHelp:
     "Type a sample and click Process locally, or hold the hotkey over a field. Whisper.cpp transcribes when the model is installed. Escape cancels. Ctrl+Alt+C/V copy or paste the last transcript.",
   hotkeyHelp:
-    "Click the field, then press the combination. Escape cancels. Super+Space is often taken by the desktop input switcher. Check your keyboard shortcuts.",
+    "Click the field, then press one key or a combination (Ctrl+Space, Ctrl+Shift+Space). Escape cancels. Super+Space is often taken by the desktop input switcher.",
   speechModelHelp:
     "Only Whisper files already on this computer are listed. Small/Base are faster; Medium is more accurate. Download others on the Models page.",
   deleteModel: "Delete from this computer",
@@ -473,7 +473,7 @@ const LINUX_RU: Partial<UiCopy> = {
   homeHelp:
     "Введите пример и нажмите «Обработать локально» или удерживайте хоткей над полем. Whisper.cpp распознаёт речь, когда модель установлена. Escape отменяет. Ctrl+Alt+C/V копируют или вставляют последний текст.",
   hotkeyHelp:
-    "Нажмите поле, затем сочетание клавиш. Escape отменяет. Super+Space часто занят переключателем раскладки. Проверьте сочетания клавиш рабочего стола.",
+    "Нажмите поле, затем одну клавишу или сочетание (Ctrl+Space, Ctrl+Shift+Space). Escape отменяет. Super+Space часто занят переключателем раскладки.",
   speechModelHelp:
     "В списке только Whisper, уже лежащие на этом компьютере. Small/Base быстрее, Medium точнее. Остальные скачиваются в разделе «Модели».",
   deleteModel: "Удалить с этого компьютера",
