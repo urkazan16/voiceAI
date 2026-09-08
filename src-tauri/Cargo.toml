@@ -68,7 +68,7 @@ whisper-rs-sys = "0.11.1"
 whisper-rs = { version = "0.13.2", default-features = false, features = ["metal"] }
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.59.0", features = [
+windows-sys = { version = "0.61.2", features = [
     "Win32_Foundation",
     "Win32_Graphics_Gdi",
     "Win32_Storage_FileSystem",

@@ -2241,7 +2241,7 @@ dependencies = [
  "uuid",
  "whisper-rs",
  "whisper-rs-sys",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
  "x11rb",
 ]
 
@@ -3353,7 +3353,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys 0.4.15",
- "windows-sys 0.59.0",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
