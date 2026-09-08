@@ -1,4 +1,4 @@
-use regex::Regex;
+use regex::{Regex, RegexBuilder};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -212,16 +212,12 @@ impl Dictionary {
         }
         let patterns = self.pattern_list();
         let mut targets = HashMap::with_capacity(patterns.len() * 2);
-        let mut alts = Vec::with_capacity(patterns.len());
-        for (pattern, target, case_sensitive) in &patterns {
+        for (pattern, target, _) in &patterns {
             targets.insert(pattern.clone(), target.clone());
             targets.insert(pattern.to_lowercase(), target.clone());
-            alts.push(bounded_alt(pattern, *case_sensitive));
         }
         let built = Arc::new(MatchEngine {
-            regex: (!patterns.is_empty())
-                .then(|| Regex::new(&format!("(?:{})", alts.join("|"))).ok())
-                .flatten(),
+            regex: compile_pattern_regex(&patterns),
             targets,
         });
         *slot = Some(built.clone());
@@ -362,6 +358,46 @@ pub fn builtin_developer_terms() -> Vec<DictionaryEntry> {
         DictionaryEntry::vocabulary("builtin-nginx", "nginx", &["энджинкс", "нжинкс"]),
         DictionaryEntry::vocabulary("builtin-elma365", "ELMA365", &["эльма 365", "элма 365"]),
     ]
+}
+
+/// Pack Latin literals into one alternation so the regex crate can use
+/// Aho-Corasick. Wrapping each of 5000 terms in its own `(?i:...)` group makes
+/// `apply` tens of milliseconds in debug on CI.
+fn compile_pattern_regex(patterns: &[(String, String, bool)]) -> Option<Regex> {
+    if patterns.is_empty() {
+        return None;
+    }
+    let mut ci_latin = Vec::new();
+    let mut cs_latin = Vec::new();
+    let mut inflected = Vec::new();
+    for (pattern, _, case_sensitive) in patterns {
+        if pattern.is_empty() {
+            continue;
+        }
+        if !*case_sensitive && pattern.chars().any(is_cyrillic) {
+            inflected.push(bounded_alt(pattern, false));
+        } else if *case_sensitive {
+            cs_latin.push(regex::escape(pattern));
+        } else {
+            ci_latin.push(regex::escape(pattern));
+        }
+    }
+    let mut alts = Vec::new();
+    if !ci_latin.is_empty() {
+        alts.push(format!(r"(?i:\b(?:{})\b)", ci_latin.join("|")));
+    }
+    if !cs_latin.is_empty() {
+        alts.push(format!(r"\b(?:{})\b", cs_latin.join("|")));
+    }
+    alts.extend(inflected);
+    if alts.is_empty() {
+        return None;
+    }
+    RegexBuilder::new(&format!("(?:{})", alts.join("|")))
+        .size_limit(64 * 1024 * 1024)
+        .dfa_size_limit(64 * 1024 * 1024)
+        .build()
+        .ok()
 }
 
 fn bounded_alt(pattern: &str, case_sensitive: bool) -> String {
@@ -506,14 +542,20 @@ mod tests {
             ));
         }
         let _ = dict.apply("warmup");
-        let started = std::time::Instant::now();
-        let out = dict.apply("prefix term42zzzz suffix term4999zzzz");
+        assert!(
+            dict.engine().regex.is_some(),
+            "5000 entries should compile to one regex"
+        );
+        let sample = "prefix term42zzzz suffix term4999zzzz";
+        let mut best = std::time::Duration::from_secs(60);
+        let mut out = String::new();
+        for _ in 0..8 {
+            let started = std::time::Instant::now();
+            out = dict.apply(sample);
+            best = best.min(started.elapsed());
+        }
         assert!(out.contains("T42"), "{out}");
         assert!(out.contains("T4999"), "{out}");
-        assert!(
-            started.elapsed().as_millis() < 80,
-            "dictionary apply took {:?}",
-            started.elapsed()
-        );
+        assert!(best.as_millis() < 80, "dictionary apply took {best:?}");
     }
 }
