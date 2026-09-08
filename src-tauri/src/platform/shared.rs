@@ -211,6 +211,7 @@ pub(crate) fn linux_autostart_desktop(exec: &str) -> String {
 
 /// Score a candidate HWND when several belong to the same PID.
 /// Foreground, visible, unowned, non-tool windows rank highest.
+#[cfg(any(windows, test))]
 pub(crate) fn activation_window_score(
     is_foreground: bool,
     visible: bool,
