@@ -13,29 +13,8 @@ CERT_PATH="${RUNNER_TEMP:-/tmp}/certificate.p12"
 KEYCHAIN="${RUNNER_TEMP:-/tmp}/app-signing.keychain-db"
 export CERT_PATH
 
-python3 - <<'PY'
-import base64, os, pathlib, re, sys
-
-raw = os.environ["APPLE_CERTIFICATE"].replace("\ufeff", "").strip().strip('"').strip("'")
-cleaned = re.sub(r"\s+", "", raw).replace("-", "+").replace("_", "/")
-cleaned += "=" * ((-len(cleaned)) % 4)
-try:
-    data = base64.b64decode(cleaned, validate=True)
-except Exception:
-    print(
-        "APPLE_CERTIFICATE is not valid base64 of a .p12.\n"
-        "On the Mac that has the Developer ID cert:\n"
-        "  openssl base64 -A -in your.p12 | pbcopy\n"
-        "Paste one line into the environment secret (no quotes, no line breaks).",
-        file=sys.stderr,
-    )
-    sys.exit(1)
-if len(data) < 64:
-    print(f"decoded payload is too small ({len(data)} bytes) to be a PKCS#12.", file=sys.stderr)
-    sys.exit(1)
-pathlib.Path(os.environ["CERT_PATH"]).write_bytes(data)
-print(f"decoded PKCS#12 ({len(data)} bytes)")
-PY
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+python3 "$SCRIPT_DIR/ci-macos-decode-p12.py"
 
 if ! openssl pkcs12 -in "$CERT_PATH" -passin env:APPLE_CERTIFICATE_PASSWORD -nokeys >/dev/null; then
   echo "Decoded bytes are not a PKCS#12, or APPLE_CERTIFICATE_PASSWORD is wrong." >&2
