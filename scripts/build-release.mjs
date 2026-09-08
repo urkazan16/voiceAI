@@ -65,6 +65,16 @@ if (!skipBuild) {
 
   run("cargo", ["build", "--manifest-path", "src-tauri/Cargo.toml", "--locked", "--release"]);
 
+  if (ciMacos) {
+    // Tauri CLI 2.2.x shells out to macOS `base64 --decode`, which rejects
+    // wrapped GitHub secrets. CI imports the .p12 into a keychain first.
+    if (process.env.KEYCHAIN_PATH) {
+      delete process.env.APPLE_CERTIFICATE;
+      delete process.env.APPLE_CERTIFICATE_PASSWORD;
+      unlockCiSigningKeychain();
+    }
+  }
+
   const bundles = host === "darwin" ? "app,dmg" : host === "win32" ? "nsis" : "deb,appimage";
   run("npx", ["tauri", "build", "--bundles", bundles]);
 }
@@ -133,13 +143,7 @@ function stableInstallerName(fileName, arch) {
 
 /** GitHub-hosted macOS installers must be Developer ID signed and notarized. */
 function requireAppleNotarizationEnv() {
-  const required = [
-    "APPLE_CERTIFICATE",
-    "APPLE_CERTIFICATE_PASSWORD",
-    "APPLE_ID",
-    "APPLE_PASSWORD",
-    "APPLE_TEAM_ID",
-  ];
+  const required = ["APPLE_SIGNING_IDENTITY", "APPLE_ID", "APPLE_PASSWORD", "APPLE_TEAM_ID"];
   const missing = required.filter((key) => !process.env[key]?.trim());
   if (missing.length === 0) {
     return;
@@ -148,6 +152,23 @@ function requireAppleNotarizationEnv() {
   console.error(`Missing GitHub Actions secrets: ${missing.join(", ")}`);
   console.error("See README.md Download section.");
   process.exit(1);
+}
+
+function unlockCiSigningKeychain() {
+  const keychain = process.env.KEYCHAIN_PATH?.trim();
+  const password = process.env.KEYCHAIN_PASSWORD;
+  if (!keychain || !password) {
+    return;
+  }
+  const result = spawnSync("security", ["unlock-keychain", "-p", password, keychain], {
+    stdio: "inherit",
+    cwd: root,
+    env: process.env,
+  });
+  if (result.status !== 0) {
+    console.error("security unlock-keychain failed for the CI signing keychain");
+    process.exit(result.status ?? 1);
+  }
 }
 
 function assertDmgNotarized(dir) {

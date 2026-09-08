@@ -97,7 +97,7 @@ Notarization uses the GitHub **environment** named `APPLE_CERTIFICATE` (Settings
 openssl base64 -A -in "$HOME/Downloads/Сертификаты.p12" | pbcopy
 ```
 
-That copies `APPLE_CERTIFICATE` to the clipboard. Paste it into the GitHub secret. After the next green `package` job on `main`, download a new `.dmg`.
+That copies `APPLE_CERTIFICATE` to the clipboard. Paste **one line** into the environment secret: no quotes, no `-----BEGIN`, not a `.cer`. It must be a **Developer ID Application** `.p12`. CI imports it into a keychain; Tauri CLI cannot decode wrapped or quoted base64 (`failed to decode certificate`). After the next green `package` job on `main`, download a new `.dmg`.
 
 После успешного `package` на `main` скачайте новый `.dmg`.
 
