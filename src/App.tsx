@@ -183,7 +183,7 @@ export function App() {
   const [historyRange, setHistoryRange] = useState<"all" | "today" | "7d">("all");
   const [diskUsage, setDiskUsage] = useState<DiskUsage | null>(null);
   const [lastUtteranceReady, setLastUtteranceReady] = useState(false);
-  const autoSttDownload = useRef(false);
+  const autoDownloadStarted = useRef<Record<string, boolean>>({});
 
   async function refresh() {
     try {
@@ -340,24 +340,32 @@ export function App() {
   }, [view]);
 
   useEffect(() => {
-    if (!isTauriRuntime() || autoSttDownload.current || modelStatus.length === 0) {
+    if (!isTauriRuntime() || modelStatus.length === 0) {
       return;
     }
-    const id = settings.active_stt_model;
-    if (!id) {
-      return;
+    const ids = [settings.active_stt_model, settings.active_llm_model].filter((id): id is string =>
+      Boolean(id),
+    );
+    for (const id of ids) {
+      if (autoDownloadStarted.current[id]) {
+        continue;
+      }
+      const status = modelStatus.find((item) => item.model_id === id);
+      if (status?.verified || status?.installed || status?.state === "downloading") {
+        autoDownloadStarted.current[id] = true;
+        continue;
+      }
+      autoDownloadStarted.current[id] = true;
+      void api.downloadModel(id).catch((error) => {
+        const message = error instanceof Error ? error.message : String(error);
+        if (message.includes("already downloading")) {
+          return;
+        }
+        autoDownloadStarted.current[id] = false;
+        setModelMessage(message);
+      });
     }
-    const status = modelStatus.find((item) => item.model_id === id);
-    if (status?.verified || status?.installed || status?.state === "downloading") {
-      autoSttDownload.current = true;
-      return;
-    }
-    autoSttDownload.current = true;
-    void api.downloadModel(id).catch((error) => {
-      autoSttDownload.current = false;
-      setModelMessage(error instanceof Error ? error.message : String(error));
-    });
-  }, [settings.active_stt_model, modelStatus]);
+  }, [settings.active_stt_model, settings.active_llm_model, modelStatus]);
 
   useEffect(() => {
     if ((view !== "settings" && view !== "onboarding") || !isTauriRuntime()) {
@@ -1386,7 +1394,10 @@ export function App() {
                   progress?.phase === "downloading" ||
                   progress?.phase === "verifying" ||
                   progress?.phase === "installing";
-                const bytes = Math.max(status?.bytes_on_disk ?? 0, progress?.bytes_downloaded ?? 0);
+                const bytes =
+                  busy && progress
+                    ? progress.bytes_downloaded
+                    : Math.max(status?.bytes_on_disk ?? 0, progress?.bytes_downloaded ?? 0);
                 const total = status?.expected_bytes || model.size || progress?.total_bytes || 0;
                 const percent = total > 0 ? Math.min(100, Math.round((bytes / total) * 100)) : 0;
                 const roleLabel = isSpeechActive
@@ -1436,7 +1447,11 @@ export function App() {
                       {model.format} {model.quantization} · {formatBytes(model.size)}
                       {model.model_id === "whisper-medium" ? " · recommended default" : ""}
                     </p>
-                    {(state === "downloading" || state === "incomplete") && (
+                    {(state === "downloading" ||
+                      state === "incomplete" ||
+                      progress?.phase === "downloading" ||
+                      progress?.phase === "verifying" ||
+                      progress?.phase === "installing") && (
                       <div className="mt-3">
                         <div className="h-2 overflow-hidden rounded-full bg-paper/10">
                           <div className="h-full bg-copper" style={{ width: `${percent}%` }} />
@@ -1486,9 +1501,23 @@ export function App() {
                         className="rounded-full bg-moss px-4 py-1 text-ink disabled:opacity-40"
                         disabled={busy || !model.download_url}
                         onClick={async () => {
-                          setModelMessage(`Network download started for ${model.display_name}`);
+                          const redownload = ready;
+                          setDownloadProgress((current) => ({
+                            ...current,
+                            [model.model_id]: {
+                              model_id: model.model_id,
+                              phase: "downloading",
+                              bytes_downloaded: 0,
+                              total_bytes: model.size,
+                            },
+                          }));
+                          setModelMessage(
+                            redownload
+                              ? `Re-downloading ${model.display_name}…`
+                              : `Network download started for ${model.display_name}`,
+                          );
                           try {
-                            const path = await api.downloadModel(model.model_id);
+                            const path = await api.downloadModel(model.model_id, redownload);
                             setModelMessage(`Installed and verified at ${path}`);
                             await refresh();
                           } catch (error) {

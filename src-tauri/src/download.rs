@@ -133,6 +133,7 @@ pub(crate) fn digest_matches_catalog(actual: &str, expected: &str) -> bool {
 pub async fn download_and_install(
     record: &ModelRecord,
     dest: &Path,
+    force: bool,
     mut on_progress: impl FnMut(ModelDownloadProgress),
 ) -> LfResult<()> {
     if record.download_url.trim().is_empty() {
@@ -141,7 +142,10 @@ pub async fn download_and_install(
             record.model_id
         )));
     }
-    if dest.exists() && (sidecar_matches(dest, record) || looks_installed(dest, record)) {
+    // Auto-install may skip a size+magic match. "Re-download & verify" must
+    // hit the network; otherwise the button reports the old path and never
+    // fetches. Keep the previous dest until the new partial verifies.
+    if !force && dest.exists() && (sidecar_matches(dest, record) || looks_installed(dest, record)) {
         on_progress(ModelDownloadProgress {
             model_id: record.model_id.clone(),
             phase: "complete".into(),
@@ -149,6 +153,9 @@ pub async fn download_and_install(
             total_bytes: record.size,
         });
         return Ok(());
+    }
+    if force {
+        let _ = tokio::fs::remove_file(partial_path(dest)).await;
     }
 
     if let Some(parent) = dest.parent() {
@@ -453,7 +460,9 @@ mod tests {
         let record = record_for(body, url, "model.gguf");
         let dir = tempdir().unwrap();
         let dest = dir.path().join("model.gguf");
-        download_and_install(&record, &dest, |_| {}).await.unwrap();
+        download_and_install(&record, &dest, false, |_| {})
+            .await
+            .unwrap();
         assert_eq!(std::fs::read(&dest).unwrap(), body);
         activate_model(&dest, &record).unwrap();
         let status = inspect_install(&record, &dest);
@@ -486,7 +495,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let dest = dir.path().join("model.gguf");
         std::fs::write(&dest, previous).unwrap();
-        let err = download_and_install(&record, &dest, |_| {})
+        let err = download_and_install(&record, &dest, false, |_| {})
             .await
             .unwrap_err();
         assert_eq!(err.code(), "MODEL_CHECKSUM_MISMATCH");
@@ -499,7 +508,7 @@ mod tests {
         record.download_url.clear();
         let dir = tempdir().unwrap();
         let dest = dir.path().join("model.gguf");
-        let err = download_and_install(&record, &dest, |_| {})
+        let err = download_and_install(&record, &dest, false, |_| {})
             .await
             .unwrap_err();
         assert_eq!(err.code(), "NETWORK_OPERATION_REQUIRED");
@@ -554,7 +563,9 @@ mod tests {
         let dest = dir.path().join("model.gguf");
         let partial = partial_path(&dest);
         std::fs::write(&partial, body).unwrap();
-        download_and_install(&record, &dest, |_| {}).await.unwrap();
+        download_and_install(&record, &dest, false, |_| {})
+            .await
+            .unwrap();
         assert_eq!(std::fs::read(&dest).unwrap(), body);
         assert!(digest_matches_catalog(
             &sha256_file(&dest).unwrap(),
@@ -575,10 +586,39 @@ mod tests {
         let dir = tempdir().unwrap();
         let dest = dir.path().join("model.gguf");
         std::fs::write(partial_path(&dest), poisoned).unwrap();
-        let err = download_and_install(&record, &dest, |_| {})
+        let err = download_and_install(&record, &dest, false, |_| {})
             .await
             .unwrap_err();
         assert_eq!(err.code(), "MODEL_CHECKSUM_MISMATCH");
         assert!(!dest.exists());
+    }
+
+    #[tokio::test]
+    async fn installed_file_skips_network_unless_forced() {
+        let old: &'static [u8] = b"GGUFoldvalue";
+        let new: &'static [u8] = b"GGUFnewvalue";
+        assert_eq!(old.len(), new.len());
+        let mut record = record_for(
+            new,
+            "http://127.0.0.1:1/must-not-be-hit".into(),
+            "model.gguf",
+        );
+        let dir = tempdir().unwrap();
+        let dest = dir.path().join("model.gguf");
+        std::fs::write(&dest, old).unwrap();
+        download_and_install(&record, &dest, false, |_| {})
+            .await
+            .unwrap();
+        assert_eq!(
+            std::fs::read(&dest).unwrap(),
+            old,
+            "auto-install must not replace a size-matched file"
+        );
+
+        record.download_url = serve_bytes(new);
+        download_and_install(&record, &dest, true, |_| {})
+            .await
+            .unwrap();
+        assert_eq!(std::fs::read(&dest).unwrap(), new);
     }
 }

@@ -302,7 +302,7 @@ fn download_required(opts: Opts) -> Result<i32, String> {
         .build()
         .map_err(|e| e.to_string())?;
     rt.block_on(async move {
-        crate::download::download_and_install(&rec, &dest_for_dl, |p| {
+        crate::download::download_and_install(&rec, &dest_for_dl, false, |p| {
             if p.total_bytes > 0 {
                 let pct = (p.bytes_downloaded.saturating_mul(100)) / p.total_bytes.max(1);
                 eprint!("\r{:<12} {pct:3}%", p.phase);

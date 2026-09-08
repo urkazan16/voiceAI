@@ -204,7 +204,7 @@ pub fn run() {
 
             macos_activity::prevent_app_nap();
             dictation::start_worker(app.handle().clone(), shared.clone(), capture.clone());
-            commands::spawn_required_stt_download(app.handle().clone(), shared.clone());
+            commands::spawn_required_model_downloads(app.handle().clone(), shared.clone());
 
             app.handle().plugin(
                 tauri_plugin_global_shortcut::Builder::new()

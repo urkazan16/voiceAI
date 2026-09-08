@@ -147,14 +147,7 @@ impl Platform for MacOs {
     }
 
     fn activate_pid(&self, pid: u32) -> bool {
-        let script = format!(
-            "tell application \"System Events\" to set frontmost of first process whose unix id is {pid} to true"
-        );
-        Command::new("osascript")
-            .args(["-e", &script])
-            .status()
-            .map(|s| s.success())
-            .unwrap_or(false)
+        activate_pid(pid as i32)
     }
 
     fn talk_combo_held(&self, hotkey: &str) -> bool {
@@ -225,7 +218,7 @@ impl Platform for MacOs {
     }
 
     fn accessibility_trusted(&self) -> bool {
-        unsafe { AXIsProcessTrusted() }
+        process_is_trusted()
     }
 
     fn open_privacy_pane(&self, kind: &str) -> LfResult<()> {
@@ -373,32 +366,28 @@ fn pbcopy(text: &str) -> LfResult<()> {
 }
 
 fn frontmost_target_blocking() -> (Option<i32>, Option<String>) {
-    let output = Command::new("osascript")
-        .args([
-            "-e",
-            "tell application \"System Events\" to tell first application process whose frontmost is true to get name & tab & unix id",
-        ])
-        .output();
-    let Ok(output) = output else {
+    on_main(frontmost_target_on_main)
+}
+
+fn frontmost_target_on_main() -> (Option<i32>, Option<String>) {
+    use objc2_app_kit::NSWorkspace;
+    let Some(app) = NSWorkspace::sharedWorkspace().frontmostApplication() else {
         return (None, None);
     };
-    if !output.status.success() {
-        return (None, None);
+    let pid = app.processIdentifier();
+    let name = app
+        .localizedName()
+        .map(|s| s.to_string())
+        .filter(|n| !n.is_empty());
+    if pid <= 0 {
+        (None, name)
+    } else {
+        (Some(pid), name)
     }
-    let text = String::from_utf8(output.stdout).unwrap_or_default();
-    let text = text.trim();
-    if text.is_empty() {
-        return (None, None);
-    }
-    match text.rsplit_once('\t') {
-        Some((name, id)) => (
-            id.trim().parse().ok(),
-            Some(name.trim())
-                .filter(|n| !n.is_empty())
-                .map(str::to_string),
-        ),
-        None => (text.parse().ok(), None),
-    }
+}
+
+fn process_is_trusted() -> bool {
+    on_main(|| unsafe { AXIsProcessTrusted() })
 }
 
 fn prepare_keyboard() {
@@ -569,9 +558,6 @@ fn focus_target(pid: Option<i32>, app: Option<&str>) {
     if let Some(name) = app.map(str::trim).filter(|n| !n.is_empty()) {
         let _ = activate_named_app(name);
     }
-    if let Some(pid) = pid {
-        system_events_frontmost(pid);
-    }
     std::thread::sleep(Duration::from_millis(80));
 }
 
@@ -607,18 +593,6 @@ fn activate_named_app(name: &str) -> bool {
         .unwrap_or(false)
 }
 
-fn system_events_frontmost(pid: i32) {
-    let script = format!(
-        "tell application \"System Events\" to set frontmost of first application process whose unix id is {pid} to true"
-    );
-    let (tx, rx) = std::sync::mpsc::channel();
-    std::thread::spawn(move || {
-        let _ = Command::new("osascript").args(["-e", &script]).status();
-        let _ = tx.send(());
-    });
-    let _ = rx.recv_timeout(Duration::from_millis(250));
-}
-
 fn modifier_down() -> bool {
     unsafe {
         CGEventSourceKeyState(COMBINED_SESSION_STATE, VK_CONTROL)
@@ -645,37 +619,21 @@ fn wait_for_modifiers_up(timeout: Duration) {
 
 fn post_paste(target_pid: Option<i32>) -> LfResult<()> {
     // CGEventPost returns void and is dropped when the process is not in
-    // Accessibility. A freshly installed .app is a new TCC identity.
-    let trusted = prompt_accessibility();
+    // Accessibility. Do not open System Settings or poke System Events
+    // here: both open Universal Access on every insert even when the
+    // LocalFlow toggle is already on (TCC attributes osascript, not us).
+    let trusted = process_is_trusted();
     let posted = post_command_v(target_pid);
     std::thread::sleep(Duration::from_millis(40));
-    match fallback_osascript_paste() {
-        Ok(()) => Ok(()),
-        Err(err) => {
-            if posted && trusted {
-                Ok(())
-            } else {
-                if !trusted {
-                    let _ = MacOs.open_privacy_pane("accessibility");
-                }
-                Err(err)
-            }
-        }
+    if posted && trusted {
+        return Ok(());
     }
-}
-
-fn prompt_accessibility() -> bool {
-    if unsafe { AXIsProcessTrusted() } {
-        return true;
+    if !trusted {
+        return Err(LfError::PermissionDenied(
+            "Accessibility permission required for insertion".into(),
+        ));
     }
-    let _ = MacOs.open_privacy_pane("accessibility");
-    let _ = Command::new("osascript")
-        .args([
-            "-e",
-            "tell application \"System Events\" to get unix id of first process",
-        ])
-        .status();
-    unsafe { AXIsProcessTrusted() }
+    Err(LfError::InjectionFailed("could not post Command+V".into()))
 }
 
 fn post_command_v(target_pid: Option<i32>) -> bool {
@@ -707,23 +665,6 @@ fn post_key(source: *mut c_void, vk: u16, down: bool, flags: u64, target_pid: Op
         }
         CFRelease(event);
         true
-    }
-}
-
-fn fallback_osascript_paste() -> LfResult<()> {
-    let status = Command::new("osascript")
-        .args([
-            "-e",
-            "tell application \"System Events\" to key code 9 using command down",
-        ])
-        .status()
-        .map_err(|e| LfError::InjectionFailed(e.to_string()))?;
-    if status.success() {
-        Ok(())
-    } else {
-        Err(LfError::PermissionDenied(
-            "Accessibility permission required for insertion".into(),
-        ))
     }
 }
 
@@ -773,8 +714,16 @@ mod tests {
             "packaged LocalFlow is frontmost; empty() activation does not steal focus on macOS 14+"
         );
         assert!(
-            prod.contains("system_events_frontmost"),
-            "always ask System Events to front the target, do not return early on activate()"
+            prod.contains("NSWorkspace"),
+            "read the frontmost app via AppKit; osascript System Events opens Universal Access"
+        );
+        assert!(
+            !prod.contains("tell application \"System Events\""),
+            "osascript System Events opens Universal Access on every use even when LocalFlow is already trusted"
+        );
+        assert!(
+            !prod.contains("prompt_accessibility"),
+            "do not open System Settings from the paste path"
         );
         assert!(
             prod.contains("CGEventPostToPid"),

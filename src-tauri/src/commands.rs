@@ -500,8 +500,15 @@ pub async fn download_model(
     app: AppHandle,
     engine: tauri::State<'_, SharedEngine>,
     model_id: String,
+    force: Option<bool>,
 ) -> Result<String, CommandError> {
-    download_model_guarded(app, engine.inner().clone(), model_id).await
+    download_model_guarded(
+        app,
+        engine.inner().clone(),
+        model_id,
+        force.unwrap_or(false),
+    )
+    .await
 }
 
 pub fn skip_auto_model_download() -> bool {
@@ -514,14 +521,21 @@ pub fn skip_auto_model_download() -> bool {
     )
 }
 
-pub fn spawn_required_stt_download(app: AppHandle, engine: SharedEngine) {
+pub fn spawn_required_model_downloads(app: AppHandle, engine: SharedEngine) {
+    spawn_required_kind_download(app.clone(), engine.clone(), "stt");
+    spawn_required_kind_download(app, engine, "llm");
+}
+
+fn spawn_required_kind_download(app: AppHandle, engine: SharedEngine, kind: &'static str) {
     tauri::async_runtime::spawn(async move {
         let ready = engine
             .lock()
             .ok()
-            .and_then(|eng| eng.ready_model_path("stt"));
+            .and_then(|eng| eng.ready_model_path(kind));
         if let Some(path) = ready {
-            crate::whisper_stt::preload(path);
+            if kind != "llm" {
+                crate::whisper_stt::preload(path);
+            }
             return;
         }
         if skip_auto_model_download() {
@@ -531,13 +545,22 @@ pub fn spawn_required_stt_download(app: AppHandle, engine: SharedEngine) {
             let Ok(eng) = engine.lock() else {
                 return;
             };
-            eng.settings
-                .active_stt_model
-                .clone()
-                .unwrap_or_else(|| DEFAULT_STT_MODEL.into())
+            match kind {
+                "llm" => match eng.settings.active_llm_model.clone() {
+                    Some(id) if !id.is_empty() => id,
+                    _ => return,
+                },
+                _ => eng
+                    .settings
+                    .active_stt_model
+                    .clone()
+                    .unwrap_or_else(|| DEFAULT_STT_MODEL.into()),
+            }
         };
         crate::journal::log("model_download", &format!("auto {id}"));
-        let _ = download_model_guarded(app, engine, id).await;
+        if let Err(err) = download_model_guarded(app, engine, id.clone(), false).await {
+            crate::journal::log("model_download", &format!("auto {id} failed: {err}"));
+        }
     });
 }
 
@@ -545,6 +568,7 @@ async fn download_model_guarded(
     app: AppHandle,
     engine: SharedEngine,
     model_id: String,
+    force: bool,
 ) -> Result<String, CommandError> {
     {
         let mut inflight = inflight_downloads().lock().map_err(|_| CommandError {
@@ -552,11 +576,14 @@ async fn download_model_guarded(
             message: "download lock poisoned".into(),
         })?;
         if !inflight.insert(model_id.clone()) {
-            return Ok(format!("{model_id} already downloading"));
+            return Err(CommandError {
+                code: "ERROR".into(),
+                message: format!("{model_id} is already downloading"),
+            });
         }
     }
 
-    let result = download_model_inner(app, engine, model_id.clone()).await;
+    let result = download_model_inner(app, engine, model_id.clone(), force).await;
 
     if let Ok(mut inflight) = inflight_downloads().lock() {
         inflight.remove(&model_id);
@@ -568,6 +595,7 @@ async fn download_model_inner(
     app: AppHandle,
     engine: SharedEngine,
     model_id: String,
+    force: bool,
 ) -> Result<String, CommandError> {
     let (record, dest) = {
         let eng = lock(&engine)?;
@@ -578,9 +606,14 @@ async fn download_model_inner(
 
     let app_for_progress = app.clone();
     let progress_id = record.model_id.clone();
-    download::download_and_install(&record, &dest, move |progress: ModelDownloadProgress| {
-        let _ = app_for_progress.emit("model-download-progress", &progress);
-    })
+    download::download_and_install(
+        &record,
+        &dest,
+        force,
+        move |progress: ModelDownloadProgress| {
+            let _ = app_for_progress.emit("model-download-progress", &progress);
+        },
+    )
     .await
     .map_err(|err| {
         let _ = app.emit(

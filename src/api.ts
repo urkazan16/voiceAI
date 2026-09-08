@@ -356,7 +356,8 @@ export const api = {
   privacySummary: () => call<PrivacySummary>("privacy_summary"),
   diskUsage: () => call<DiskUsage>("disk_usage"),
   verifyModel: (modelId: string) => call<string>("verify_model", { modelId }),
-  downloadModel: (modelId: string) => call<string>("download_model", { modelId }),
+  downloadModel: (modelId: string, force = false) =>
+    call<string>("download_model", { modelId, force }),
   listModelStatus: () => call<ModelInstallStatus[]>("list_model_status"),
   setActiveModel: (modelId: string) => call<string>("set_active_model", { modelId }),
   removeModel: (modelId: string) =>
