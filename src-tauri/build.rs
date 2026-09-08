@@ -42,6 +42,27 @@ fn main() {
     }
 
     tauri_build::try_build(tauri_build::Attributes::new()).expect("tauri build");
+    embed_comctl32_v6_for_windows_tests();
+}
+
+/// Tauri embeds Common-Controls v6 only in the app binary. `cargo test --lib`
+/// builds a separate harness that still imports `TaskDialogIndirect` via
+/// tao/muda/tray. Without the v6 manifest Windows binds comctl32 v5 and the
+/// process dies at load with STATUS_ENTRYPOINT_NOT_FOUND (0xc0000139).
+///
+/// `rustc-link-arg` (not `-tests`) is required: the lib unit-test harness is
+/// not an `[[test]]` target. The extra dependency is merged into the shipped
+/// exe, which already declares v6.
+fn embed_comctl32_v6_for_windows_tests() {
+    let windows = std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows");
+    if !windows {
+        return;
+    }
+    println!(
+        "cargo:rustc-link-arg=/MANIFESTDEPENDENCY:type='win32' \
+         name='Microsoft.Windows.Common-Controls' version='6.0.0.0' \
+         processorArchitecture='*' publicKeyToken='6595b64144ccf1df' language='*'"
+    );
 }
 
 /// UTC build date without shelling out to `date`, which does not take

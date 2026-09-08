@@ -445,4 +445,17 @@ mod tests {
         assert!(shortcut_matches(&event, "Command+Control+C"));
         assert_eq!(event.to_string(), "control+super+KeyC");
     }
+
+    #[test]
+    fn windows_test_harness_embeds_comctl32_v6() {
+        let src = include_str!("../build.rs");
+        assert!(
+            src.contains("Microsoft.Windows.Common-Controls"),
+            "cargo test --lib on Windows dies with STATUS_ENTRYPOINT_NOT_FOUND without this"
+        );
+        assert!(
+            src.contains("cargo:rustc-link-arg=/MANIFESTDEPENDENCY"),
+            "the lib harness is not an [[test]] target; rustc-link-arg-tests would miss it"
+        );
+    }
 }
