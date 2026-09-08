@@ -814,7 +814,14 @@ mod tests {
             prod.contains("LinuxSession::Wayland"),
             "native Wayland must not treat XTEST success as a focused-client paste"
         );
-        let wayland_arm = prod
+        let post_paste = prod
+            .split("fn post_paste()")
+            .nth(1)
+            .unwrap_or("")
+            .split("fn screen_locked")
+            .next()
+            .unwrap_or("");
+        let wayland_arm = post_paste
             .split("LinuxSession::Wayland")
             .nth(1)
             .unwrap_or("")
