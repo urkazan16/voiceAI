@@ -604,16 +604,19 @@ impl Platform for Linux {
     }
 
     fn frontmost_target(&self) -> (Option<i32>, Option<String>) {
+        let as_target = |(pid, name)| (Some(pid), name);
         if current_session() == LinuxSession::Wayland {
             if let Some(hit) = compositor_frontmost() {
-                return hit;
+                return as_target(hit);
             }
         }
         let x11 = with_x11(|d| d.frontmost(), (None, None));
         if x11.0.is_some() {
             return x11;
         }
-        compositor_frontmost().unwrap_or((None, None))
+        compositor_frontmost()
+            .map(as_target)
+            .unwrap_or((None, None))
     }
 
     fn activate_pid(&self, pid: u32) -> bool {
