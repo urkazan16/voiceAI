@@ -47,6 +47,25 @@ fn lock(
     })
 }
 
+fn commit_settings(
+    eng: &mut crate::engine::AppEngine,
+    settings: crate::config::AppSettings,
+) -> Result<(), CommandError> {
+    let previous_autostart = eng.settings.autostart;
+    let next_autostart = settings.autostart;
+    if previous_autostart != next_autostart {
+        crate::autostart::apply(next_autostart)?;
+    }
+    eng.settings = settings;
+    if let Err(err) = eng.persist() {
+        if previous_autostart != next_autostart {
+            let _ = crate::autostart::apply(previous_autostart);
+        }
+        return Err(err.into());
+    }
+    Ok(())
+}
+
 #[tauri::command]
 pub fn get_build_info() -> BuildInfo {
     build_info::current()
@@ -58,10 +77,16 @@ pub fn get_snapshot(engine: tauri::State<SharedEngine>) -> Result<PipelineSnapsh
 }
 
 #[tauri::command]
-pub fn get_settings(engine: tauri::State<SharedEngine>) -> Result<AppSettings, CommandError> {
-    let mut eng = lock(&engine)?;
-    eng.reload_settings_file();
-    Ok(eng.settings.clone())
+pub fn get_settings(
+    app: tauri::AppHandle,
+    engine: tauri::State<SharedEngine>,
+) -> Result<AppSettings, CommandError> {
+    {
+        let mut eng = lock(&engine)?;
+        eng.reload_settings_file();
+    }
+    crate::apply_shortcuts(&app, &engine);
+    Ok(lock(&engine)?.settings.clone())
 }
 
 #[tauri::command]
@@ -72,20 +97,15 @@ pub fn save_settings(
 ) -> Result<(), CommandError> {
     settings.validate()?;
     settings.normalize();
-    let autostart_changed;
-    let autostart;
     let compute_changed;
     let compute;
     let preload_path;
     {
         let mut eng = lock(&engine)?;
         crate::journal::set_max_bytes(settings.log_max_bytes);
-        autostart_changed = eng.settings.autostart != settings.autostart;
-        autostart = settings.autostart;
         compute_changed = eng.settings.compute_device != settings.compute_device;
         compute = settings.compute_device.clone();
-        eng.settings = settings;
-        eng.persist()?;
+        commit_settings(&mut eng, settings)?;
         preload_path = eng.ready_model_path("stt");
     }
     crate::whisper_stt::set_use_gpu(crate::whisper_stt::use_gpu_from_setting(&compute));
@@ -93,9 +113,6 @@ pub fn save_settings(
         if let Some(path) = preload_path {
             crate::whisper_stt::preload(path);
         }
-    }
-    if autostart_changed {
-        crate::autostart::apply(autostart)?;
     }
     crate::apply_shortcuts(&app, &engine);
     Ok(())
@@ -334,10 +351,27 @@ pub fn export_configuration(engine: tauri::State<SharedEngine>) -> Result<String
 
 #[tauri::command]
 pub fn import_configuration(
+    app: tauri::AppHandle,
     engine: tauri::State<SharedEngine>,
     json: String,
 ) -> Result<(), CommandError> {
-    lock(&engine)?.import_json(&json)?;
+    {
+        let mut eng = lock(&engine)?;
+        let cfg = crate::config::import_config(&json, &eng.catalog)?;
+        let previous_autostart = eng.settings.autostart;
+        let next_autostart = cfg.settings.autostart;
+        if previous_autostart != next_autostart {
+            crate::autostart::apply(next_autostart)?;
+        }
+        eng.apply_imported(cfg);
+        if let Err(err) = eng.persist() {
+            if previous_autostart != next_autostart {
+                let _ = crate::autostart::apply(previous_autostart);
+            }
+            return Err(err.into());
+        }
+    }
+    crate::apply_shortcuts(&app, &engine);
     Ok(())
 }
 
@@ -892,11 +926,7 @@ pub fn reset_settings(
             ..AppSettings::default()
         };
         next.apply_shipped_stt_default();
-        eng.settings = next;
-        let autostart = eng.settings.autostart;
-        eng.persist()?;
-        drop(eng);
-        crate::autostart::apply(autostart)?;
+        commit_settings(&mut eng, next)?;
     }
     crate::apply_shortcuts(&app, &engine);
     Ok(lock(&engine)?.settings.clone())
@@ -963,6 +993,14 @@ pub fn permission_status() -> crate::permissions::PermissionStatus {
 }
 
 #[tauri::command]
+pub fn read_journal(
+    engine: tauri::State<SharedEngine>,
+) -> Result<crate::journal::JournalView, CommandError> {
+    let paths = lock(&engine)?.paths.clone();
+    Ok(crate::journal::read_recent_default(&paths))
+}
+
+#[tauri::command]
 pub fn open_privacy_pane(kind: String) -> Result<(), CommandError> {
     Ok(crate::permissions::open_pane(&kind)?)
 }
@@ -1000,5 +1038,45 @@ mod dictate_macro_tests {
     fn rejects_hosts_without_osascript() {
         let err = install_dictate_macro().unwrap_err();
         assert_eq!(err.code, "RUNTIME_UNSUPPORTED");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn save_settings_applies_autostart_before_the_file() {
+        let save = include_str!("commands.rs")
+            .split("pub fn save_settings")
+            .nth(1)
+            .unwrap()
+            .split("pub fn list_models")
+            .next()
+            .unwrap();
+        let commit = save
+            .find("commit_settings")
+            .expect("OS autostart before persist");
+        assert!(
+            !save[..commit].contains("persist()"),
+            "writing settings.json first leaves autostart true after a registry/desktop failure"
+        );
+    }
+
+    #[test]
+    fn import_configuration_rebinds_live_hotkeys() {
+        let arm = include_str!("commands.rs")
+            .split("pub fn import_configuration")
+            .nth(1)
+            .unwrap()
+            .split("pub fn list_history")
+            .next()
+            .unwrap();
+        assert!(
+            arm.contains("apply_shortcuts"),
+            "imported copy/paste/talk chords must replace the previous OS bindings"
+        );
+        assert!(
+            arm.contains("autostart::apply"),
+            "imported autostart must hit the OS before the file is the only source of truth"
+        );
     }
 }

@@ -16,6 +16,7 @@ describe("ui helpers", () => {
         "Profiles",
         "Personalization",
         "History",
+        "Logs",
         "Diagnostics",
         "Privacy",
       ]),

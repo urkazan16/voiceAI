@@ -70,6 +70,10 @@ impl Chord {
         required
     }
 
+    pub fn has_keys(self) -> bool {
+        self.control || self.shift || self.super_key || self.alt || self.space
+    }
+
     pub fn modifiers_held(self, control: bool, shift: bool, super_key: bool, alt: bool) -> bool {
         let mut any = false;
         if self.control {
@@ -182,18 +186,17 @@ pub(crate) fn linux_session(
     x11_display: bool,
 ) -> LinuxSession {
     let session = xdg_session_type.unwrap_or("").to_ascii_lowercase();
-    if session == "x11" || (x11_display && session != "wayland") {
-        return LinuxSession::X11;
-    }
-    if x11_display {
-        // XWayland: prefer XTEST for X11 clients; native Wayland windows still
-        // need the clipboard fallback below if the fake key is ignored.
-        return LinuxSession::X11;
-    }
     if session == "wayland" || wayland_display {
         return LinuxSession::Wayland;
     }
+    if session == "x11" || x11_display {
+        return LinuxSession::X11;
+    }
     LinuxSession::Unknown
+}
+
+pub(crate) fn clipboard_restore_delay() -> Duration {
+    Duration::from_millis(800)
 }
 
 pub(crate) fn wayland_paste_hint() -> &'static str {
@@ -204,6 +207,69 @@ pub(crate) fn linux_autostart_desktop(exec: &str) -> String {
     format!(
         "[Desktop Entry]\nType=Application\nVersion=1.0\nName=LocalFlow\nComment=Local voice-to-text pipeline\nExec={exec}\nTerminal=false\nX-GNOME-Autostart-enabled=true\n"
     )
+}
+
+/// Score a candidate HWND when several belong to the same PID.
+/// Foreground, visible, unowned, non-tool windows rank highest.
+pub(crate) fn activation_window_score(
+    is_foreground: bool,
+    visible: bool,
+    iconic: bool,
+    has_owner: bool,
+    tool_window: bool,
+) -> i32 {
+    if !visible || iconic {
+        return -1;
+    }
+    let mut score = 0;
+    if is_foreground {
+        score += 8;
+    }
+    if !has_owner {
+        score += 4;
+    }
+    if !tool_window {
+        score += 2;
+    }
+    score
+}
+
+pub(crate) fn pid_and_name_from_window_json(text: &str) -> Option<(i32, Option<String>)> {
+    pid_and_name_from_json_value(&serde_json::from_str(text).ok()?)
+}
+
+fn pid_and_name_from_json_value(v: &serde_json::Value) -> Option<(i32, Option<String>)> {
+    let pid = v.get("pid").and_then(|p| p.as_i64()).filter(|&p| p > 0)? as i32;
+    let name = ["class", "app_id", "name", "title"].iter().find_map(|k| {
+        v.get(*k)
+            .and_then(|x| x.as_str())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+    });
+    Some((pid, name))
+}
+
+pub(crate) fn focused_from_sway_tree(text: &str) -> Option<(i32, Option<String>)> {
+    walk_sway_focused(&serde_json::from_str(text).ok()?)
+}
+
+fn walk_sway_focused(v: &serde_json::Value) -> Option<(i32, Option<String>)> {
+    if v.get("focused").and_then(|x| x.as_bool()) == Some(true) {
+        if let Some(hit) = pid_and_name_from_json_value(v) {
+            return Some(hit);
+        }
+    }
+    for key in ["nodes", "floating_nodes"] {
+        if let Some(children) = v.get(key).and_then(|x| x.as_array()) {
+            for child in children {
+                if let Some(hit) = walk_sway_focused(child) {
+                    return Some(hit);
+                }
+            }
+        }
+    }
+    None
 }
 
 pub(crate) fn linux_autostart_path(
@@ -256,21 +322,23 @@ mod tests {
     #[test]
     fn empty_hotkey_is_never_held() {
         let chord = Chord::parse("");
+        assert!(!chord.has_keys());
         assert!(!chord.combo_held(true, true, true, true, true));
         assert!(!chord.modifiers_held(true, true, true, true));
     }
 
     #[test]
-    fn xwayland_is_treated_as_x11_for_injection() {
+    fn wayland_session_stays_wayland_even_with_xwayland_display() {
         assert_eq!(
             linux_session(Some("wayland"), true, true),
-            LinuxSession::X11
+            LinuxSession::Wayland
         );
         assert_eq!(
             linux_session(Some("wayland"), true, false),
             LinuxSession::Wayland
         );
         assert_eq!(linux_session(Some("x11"), false, true), LinuxSession::X11);
+        assert_eq!(linux_session(None, false, true), LinuxSession::X11);
     }
 
     #[test]
@@ -296,5 +364,50 @@ mod tests {
         assert_eq!(insert_pause(40, Some("Notepad")).as_millis(), 80);
         assert_eq!(insert_pause(40, Some("Slack")).as_millis(), 40);
         assert_eq!(insert_pause(10, None).as_millis(), 40);
+    }
+
+    #[test]
+    fn activation_prefers_the_foreground_unowned_window() {
+        assert!(
+            activation_window_score(true, true, false, false, false)
+                > activation_window_score(false, true, false, false, false)
+        );
+        assert!(
+            activation_window_score(false, true, false, false, false)
+                > activation_window_score(false, true, false, true, false)
+        );
+        assert_eq!(
+            activation_window_score(true, false, false, false, false),
+            -1
+        );
+        assert_eq!(activation_window_score(true, true, true, false, false), -1);
+    }
+
+    #[test]
+    fn compositor_json_reads_pid_and_class() {
+        let (pid, name) = pid_and_name_from_window_json(
+            r#"{"pid": 4321, "class": "google-chrome", "title": "Inbox"}"#,
+        )
+        .unwrap();
+        assert_eq!(pid, 4321);
+        assert_eq!(name.as_deref(), Some("google-chrome"));
+        assert!(pid_and_name_from_window_json(r#"{"pid": 0}"#).is_none());
+    }
+
+    #[test]
+    fn sway_tree_finds_the_focused_leaf() {
+        let tree = r#"{
+            "nodes": [
+                {"pid": 1, "focused": false, "app_id": "foot"},
+                {
+                    "floating_nodes": [
+                        {"pid": 99, "focused": true, "app_id": "firefox"}
+                    ]
+                }
+            ]
+        }"#;
+        let (pid, name) = focused_from_sway_tree(tree).unwrap();
+        assert_eq!(pid, 99);
+        assert_eq!(name.as_deref(), Some("firefox"));
     }
 }

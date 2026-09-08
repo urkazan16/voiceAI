@@ -364,6 +364,14 @@ pub fn hide_bar_later(app: &AppHandle) {
         if CANCEL.load(Ordering::Relaxed) {
             return;
         }
+        if BUSY.load(Ordering::Relaxed) {
+            return;
+        }
+        if let Some(capture) = app.try_state::<SharedCapture>() {
+            if capture.is_recording() {
+                return;
+            }
+        }
         hide_bar(&app);
     });
 }
@@ -506,7 +514,6 @@ pub fn cancel(app: &AppHandle, engine: &SharedEngine, capture: &SharedCapture) {
         *slot = None;
     }
     let _ = capture.stop();
-    BUSY.store(false, Ordering::Relaxed);
     if let Ok(mut eng) = engine.lock() {
         eng.snapshot.reset();
     }
@@ -579,6 +586,11 @@ fn spawn_level_meter(app: &AppHandle, capture: &SharedCapture) {
         };
         let rms = crate::vad::rms(window);
         if let Some(err) = crate::audio::take_stream_error() {
+            CANCEL.store(true, Ordering::Relaxed);
+            if let Ok(mut slot) = PRESS_AT.lock() {
+                *slot = None;
+            }
+            let _ = capture.stop();
             emit_state(
                 &app,
                 DictationState {
@@ -592,7 +604,8 @@ fn spawn_level_meter(app: &AppHandle, capture: &SharedCapture) {
                     wpm: None,
                 },
             );
-            continue;
+            hide_bar(&app);
+            break;
         }
         let held = PRESS_AT
             .lock()
@@ -826,7 +839,8 @@ fn finish_recording(app: &AppHandle, engine: &SharedEngine, capture: &SharedCapt
                     "Post-processing timed out. Raise the timeout in Settings.",
                     duration_ms,
                 );
-                CANCEL.store(false, Ordering::Relaxed);
+                // Leave CANCEL set so the orphan pipeline skips insert.
+                // The next talk press clears it in on_hotkey_pressed.
                 return;
             }
         };
@@ -863,13 +877,15 @@ fn finish_recording(app: &AppHandle, engine: &SharedEngine, capture: &SharedCapt
                 let empty = output.final_text.is_empty();
                 let words = crate::uttlog::word_count(&output.final_text);
                 let wpm = crate::uttlog::wpm(words, duration_ms);
-                let access_hint = if !inserted
-                    && !empty
-                    && !crate::permissions::accessibility_trusted()
-                {
+                let extra = if inserted || empty {
+                    String::new()
+                } else if let Some(err) = output.insert_error.clone().filter(|s| !s.is_empty()) {
+                    format!(" {err}")
+                } else if !crate::permissions::accessibility_trusted() {
                     " Enable Accessibility for LocalFlow in Privacy & Security, then Paste last."
+                        .into()
                 } else {
-                    ""
+                    String::new()
                 };
                 emit_state(
                     &app,
@@ -885,7 +901,7 @@ fn finish_recording(app: &AppHandle, engine: &SharedEngine, capture: &SharedCapt
                             format!("Inserted: {}", output.final_text)
                         } else {
                             format!(
-                                "Text ready but insert failed.{access_hint} Copy last / Paste last: {}",
+                                "Text ready but insert failed.{extra} Copy last / Paste last: {}",
                                 output.final_text
                             )
                         },
@@ -1132,5 +1148,77 @@ mod tests {
             !press[..frontmost].contains("std::thread::spawn"),
             "frontmost must be read on this thread before the overlay appears"
         );
+    }
+
+    #[test]
+    fn postprocess_timeout_keeps_cancel_so_orphan_insert_is_skipped() {
+        let arm = include_str!("dictation.rs")
+            .split("rx.recv_timeout")
+            .nth(1)
+            .unwrap()
+            .split("if CANCEL.load")
+            .next()
+            .unwrap();
+        assert!(
+            arm.contains("CANCEL.store(true"),
+            "timeout must cancel the pipeline thread"
+        );
+        assert!(
+            !arm.contains("CANCEL.store(false"),
+            "clearing CANCEL on timeout lets the orphan thread paste into the wrong field"
+        );
+    }
+
+    #[test]
+    fn cancel_leaves_busy_until_the_pipeline_guard_drops() {
+        let src = include_str!("dictation.rs")
+            .split("pub fn cancel(")
+            .nth(1)
+            .unwrap()
+            .split("fn spawn_ptt_release_watch")
+            .next()
+            .unwrap();
+        assert!(src.contains("CANCEL.store(true"));
+        assert!(
+            !src.contains("BUSY.store(false"),
+            "clearing BUSY in cancel lets a new hold start while insert still runs"
+        );
+    }
+
+    #[test]
+    fn insert_failure_message_includes_platform_guidance() {
+        let src = include_str!("dictation.rs");
+        assert!(src.contains("insert_error"));
+        assert!(src.contains("wayland") || src.contains("user_guidance") || src.contains("extra"));
+    }
+
+    #[test]
+    fn hide_bar_later_keeps_the_bar_if_the_next_phrase_started() {
+        let src = include_str!("dictation.rs")
+            .split("pub fn hide_bar_later")
+            .nth(1)
+            .unwrap()
+            .split("pub fn on_hotkey_pressed")
+            .next()
+            .unwrap();
+        assert!(src.contains("is_recording()"), "do not hide mid-hold");
+        assert!(
+            src.contains("BUSY.load"),
+            "do not hide while insert still runs"
+        );
+    }
+
+    #[test]
+    fn a_dead_mic_stream_stops_the_recording() {
+        let src = include_str!("dictation.rs")
+            .split("take_stream_error")
+            .nth(1)
+            .unwrap()
+            .split("let held = PRESS_AT")
+            .next()
+            .unwrap();
+        assert!(src.contains("capture.stop()"));
+        assert!(src.contains("break"), "keep polling a dead CPAL stream");
+        assert!(!src.contains("continue;"));
     }
 }

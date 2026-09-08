@@ -66,16 +66,6 @@ pub fn run() {
     let engine = engine::AppEngine::open(paths).expect("open LocalFlow data directory");
     let shared: SharedEngine = Arc::new(Mutex::new(engine));
     let capture = audio::CaptureHub::spawn();
-    let watcher = shared.clone();
-    std::thread::Builder::new()
-        .name("localflow-settings".into())
-        .spawn(move || loop {
-            std::thread::sleep(std::time::Duration::from_secs(2));
-            if let Ok(mut eng) = watcher.lock() {
-                eng.reload_settings_file();
-            }
-        })
-        .ok();
 
     tauri::Builder::default()
         .plugin(tauri_plugin_clipboard_manager::init())
@@ -142,7 +132,8 @@ pub fn run() {
             commands::export_stats_csv,
             commands::is_screen_locked,
             commands::open_privacy_pane,
-            commands::permission_status
+            commands::permission_status,
+            commands::read_journal
         ])
         .setup(move |app| {
             let show = MenuItem::with_id(app, "show", "Open LocalFlow", true, None::<&str>)?;
@@ -202,6 +193,7 @@ pub fn run() {
             }
 
             macos_activity::prevent_app_nap();
+            crate::platform::current().prompt_accessibility();
             dictation::start_worker(app.handle().clone(), shared.clone(), capture.clone());
             commands::spawn_required_model_downloads(app.handle().clone(), shared.clone());
 
@@ -240,6 +232,18 @@ pub fn run() {
                     .build(),
             )?;
             apply_shortcuts(app.handle(), &shared);
+            let watcher = shared.clone();
+            let handle = app.handle().clone();
+            std::thread::Builder::new()
+                .name("localflow-settings".into())
+                .spawn(move || loop {
+                    std::thread::sleep(std::time::Duration::from_secs(2));
+                    if let Ok(mut eng) = watcher.lock() {
+                        eng.reload_settings_file();
+                    }
+                    apply_shortcuts(&handle, &watcher);
+                })
+                .ok();
             if let Some(window) = app.get_webview_window("main") {
                 let _ = window.show();
                 let _ = window.set_focus();
@@ -295,16 +299,28 @@ pub(crate) fn show_flow_bar(bar: &WebviewWindow, target_pid: Option<i32>) {
     #[cfg(target_os = "macos")]
     {
         show_macos_overlay_without_activating(bar);
-        if let Some(pid) = target_pid {
-            if pid > 0 && pid != crate::injection::own_process_id() {
-                let _ = crate::platform::current().activate_pid(pid as u32);
-            }
-        }
+        restore_overlay_target(target_pid);
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(windows)]
     {
         let _ = bar.show();
-        let _ = target_pid;
+        if let Ok(hwnd) = bar.hwnd() {
+            crate::platform::restack_windows_overlay(hwnd.0 as isize);
+        }
+        restore_overlay_target(target_pid);
+    }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        let _ = bar.show();
+        restore_overlay_target(target_pid);
+    }
+}
+
+fn restore_overlay_target(target_pid: Option<i32>) {
+    if let Some(pid) = target_pid {
+        if pid > 0 && pid != crate::injection::own_process_id() {
+            let _ = crate::platform::current().activate_pid(pid as u32);
+        }
     }
 }
 
@@ -359,7 +375,8 @@ fn shortcut_matches(event: &Shortcut, configured: &str) -> bool {
 }
 
 pub fn apply_shortcuts(app: &AppHandle, engine: &SharedEngine) -> Option<String> {
-    let (talk, copy, paste, edit, previous, hands_free, vad, mic) = match engine.lock() {
+    let (talk, copy, paste, edit, previous, hands_free, vad, mic, pending_err) = match engine.lock()
+    {
         Ok(eng) => (
             eng.settings.hotkey.clone(),
             eng.settings.copy_last_hotkey.clone(),
@@ -369,6 +386,7 @@ pub fn apply_shortcuts(app: &AppHandle, engine: &SharedEngine) -> Option<String>
             eng.settings.hands_free,
             eng.settings.vad_threshold,
             eng.settings.microphone_name.clone(),
+            eng.hotkey_error.clone(),
         ),
         Err(_) => return Some("engine lock poisoned".into()),
     };
@@ -378,6 +396,7 @@ pub fn apply_shortcuts(app: &AppHandle, engine: &SharedEngine) -> Option<String>
     let already = dictation::bound_hotkeys();
     if previous.as_deref() == Some(talk.as_str())
         && already == (talk.clone(), copy.clone(), paste.clone(), edit.clone())
+        && pending_err.is_none()
     {
         return None;
     }
@@ -387,6 +406,7 @@ pub fn apply_shortcuts(app: &AppHandle, engine: &SharedEngine) -> Option<String>
         Some(copy.as_str()),
         Some(paste.as_str()),
         Some(edit.as_str()),
+        Some("Escape"),
     ]
     .into_iter()
     .flatten()
@@ -411,10 +431,18 @@ pub fn apply_shortcuts(app: &AppHandle, engine: &SharedEngine) -> Option<String>
             }
         }
     }
-    let _ = app.global_shortcut().register(copy.as_str());
-    let _ = app.global_shortcut().register(paste.as_str());
-    let _ = app.global_shortcut().register(edit.as_str());
-    let _ = app.global_shortcut().register("Escape");
+    let mut extra = Vec::new();
+    register_named_shortcut(app, "Copy last", copy.as_str(), &mut extra);
+    register_named_shortcut(app, "Paste last", paste.as_str(), &mut extra);
+    register_named_shortcut(app, "Edit", edit.as_str(), &mut extra);
+    register_named_shortcut(app, "Escape", "Escape", &mut extra);
+    if !extra.is_empty() {
+        let overlay = extra.join("; ");
+        last_err = Some(match last_err {
+            Some(talk_err) => format!("{talk_err}; {overlay}"),
+            None => overlay,
+        });
+    }
     let talk_active = registered.clone().unwrap_or(talk);
     dictation::remember_hotkeys(talk_active.clone(), copy, paste, edit);
     if let Ok(mut eng) = engine.lock() {
@@ -425,6 +453,17 @@ pub fn apply_shortcuts(app: &AppHandle, engine: &SharedEngine) -> Option<String>
         eng.hotkey_error = last_err.clone();
     }
     last_err
+}
+
+fn register_named_shortcut(app: &AppHandle, name: &str, shortcut: &str, errors: &mut Vec<String>) {
+    if shortcut.is_empty() {
+        return;
+    }
+    if let Err(err) = app.global_shortcut().register(shortcut) {
+        errors.push(format!(
+            "{name} ({shortcut}) is already used by the OS or another app ({err})"
+        ));
+    }
 }
 
 #[cfg(test)]
@@ -444,6 +483,39 @@ mod tests {
         let event: Shortcut = "Command+Control+C".parse().unwrap();
         assert!(shortcut_matches(&event, "Command+Control+C"));
         assert_eq!(event.to_string(), "control+super+KeyC");
+    }
+
+    #[test]
+    fn overlay_show_restores_the_remembered_app() {
+        let src = include_str!("lib.rs").split("#[cfg(test)]").next().unwrap();
+        assert!(
+            src.contains("restore_overlay_target"),
+            "Win/Linux show() steals focus unless the remembered pid is activated again"
+        );
+        assert!(
+            !src.contains("let _ = target_pid;"),
+            "do not discard the insert target when showing the flow bar"
+        );
+    }
+
+    #[test]
+    fn overlay_shortcuts_surface_register_errors() {
+        let src = include_str!("lib.rs")
+            .split("fn register_named_shortcut")
+            .next()
+            .unwrap();
+        assert!(
+            src.contains("register_named_shortcut"),
+            "Copy/Paste/Edit/Escape failures must reach hotkey_error"
+        );
+        assert!(
+            !src.contains("let _ = app.global_shortcut().register(copy"),
+            "do not swallow overlay shortcut errors"
+        );
+        assert!(
+            src.contains("apply_shortcuts(&handle, &watcher)"),
+            "a settings.json rewrite must rebind live hotkeys"
+        );
     }
 
     #[test]

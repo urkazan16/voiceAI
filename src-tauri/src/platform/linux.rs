@@ -20,9 +20,13 @@ pub struct Linux;
 
 const CLIP_UTF8: &str = "text/plain;charset=utf-8";
 const XK_CONTROL_L: u32 = 0xffe3;
+const XK_CONTROL_R: u32 = 0xffe4;
 const XK_SHIFT_L: u32 = 0xffe1;
+const XK_SHIFT_R: u32 = 0xffe2;
 const XK_ALT_L: u32 = 0xffe9;
+const XK_ALT_R: u32 = 0xffea;
 const XK_SUPER_L: u32 = 0xffeb;
+const XK_SUPER_R: u32 = 0xffec;
 const XK_SPACE: u32 = 0x0020;
 const XK_V: u32 = 0x0076;
 const KEY_PRESS: u8 = 2;
@@ -232,7 +236,16 @@ mod x11 {
         }
 
         pub fn release_modifiers(&self) {
-            for keysym in [XK_CONTROL_L, XK_SHIFT_L, XK_ALT_L, XK_SUPER_L] {
+            for keysym in [
+                XK_CONTROL_L,
+                XK_CONTROL_R,
+                XK_SHIFT_L,
+                XK_SHIFT_R,
+                XK_ALT_L,
+                XK_ALT_R,
+                XK_SUPER_L,
+                XK_SUPER_R,
+            ] {
                 if self.key_down(keysym) {
                     let _ = self.fake_key(keysym, false);
                 }
@@ -358,15 +371,26 @@ fn with_x11<T>(f: impl FnOnce(&x11::Display) -> T, fallback: T) -> T {
     }
 }
 
+fn control_down(d: &x11::Display) -> bool {
+    d.key_down(XK_CONTROL_L) || d.key_down(XK_CONTROL_R)
+}
+
+fn shift_down(d: &x11::Display) -> bool {
+    d.key_down(XK_SHIFT_L) || d.key_down(XK_SHIFT_R)
+}
+
+fn alt_down(d: &x11::Display) -> bool {
+    d.key_down(XK_ALT_L) || d.key_down(XK_ALT_R)
+}
+
+fn super_down(d: &x11::Display) -> bool {
+    d.key_down(XK_SUPER_L) || d.key_down(XK_SUPER_R)
+}
+
 fn wait_for_modifiers_up(timeout: Duration) {
     let start = Instant::now();
     while with_x11(
-        |d| {
-            d.key_down(XK_CONTROL_L)
-                || d.key_down(XK_SHIFT_L)
-                || d.key_down(XK_ALT_L)
-                || d.key_down(XK_SUPER_L)
-        },
+        |d| control_down(d) || shift_down(d) || alt_down(d) || super_down(d),
         false,
     ) && start.elapsed() < timeout
     {
@@ -396,6 +420,17 @@ fn tool_paste(program: &str, args: &[&str]) -> bool {
 }
 
 fn post_paste() -> LfResult<()> {
+    // Native Wayland ignores XTEST. wtype/ydotool must win; otherwise leave
+    // the transcript on the clipboard and tell the user to press Ctrl+V.
+    if current_session() == LinuxSession::Wayland {
+        if tool_paste("wtype", &["-M", "ctrl", "v", "-m", "ctrl"]) {
+            return Ok(());
+        }
+        if tool_paste("ydotool", &["key", "29:1", "47:1", "47:0", "29:0"]) {
+            return Ok(());
+        }
+        return Err(LfError::InjectionFailed(wayland_paste_hint().into()));
+    }
     if with_x11(|d| d.post_paste().is_ok(), false) {
         return Ok(());
     }
@@ -440,6 +475,68 @@ fn screen_locked_via_screensaver() -> bool {
     };
     let text = String::from_utf8_lossy(&output.stdout);
     text.contains("true") || text.contains("true,")
+}
+
+fn privacy_command_opened(program: &str, args: &[&str]) -> bool {
+    let Ok(mut child) = Command::new(program)
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+    else {
+        return false;
+    };
+    std::thread::sleep(Duration::from_millis(80));
+    match child.try_wait() {
+        Ok(None) => true,
+        Ok(Some(status)) => status.success(),
+        Err(_) => false,
+    }
+}
+
+fn compositor_frontmost() -> Option<(i32, Option<String>)> {
+    if let Some(bytes) = spawn_stdout("hyprctl", &["activewindow", "-j"]) {
+        if let Some(hit) = std::str::from_utf8(&bytes)
+            .ok()
+            .and_then(shared::pid_and_name_from_window_json)
+        {
+            return Some(hit);
+        }
+    }
+    if let Some(bytes) = spawn_stdout("niri", &["msg", "-j", "focused-window"]) {
+        if let Some(hit) = std::str::from_utf8(&bytes)
+            .ok()
+            .and_then(shared::pid_and_name_from_window_json)
+        {
+            return Some(hit);
+        }
+    }
+    if let Some(bytes) = spawn_stdout("swaymsg", &["-t", "get_tree"]) {
+        if let Some(hit) = std::str::from_utf8(&bytes)
+            .ok()
+            .and_then(shared::focused_from_sway_tree)
+        {
+            return Some(hit);
+        }
+    }
+    for spec in [
+        ["kdotool", "getactivewindow", "getwindowpid"],
+        ["xdotool", "getactivewindow", "getwindowpid"],
+    ] {
+        if let Some(bytes) = spawn_stdout(spec[0], &spec[1..]) {
+            if let Ok(pid) = std::str::from_utf8(&bytes)
+                .unwrap_or("")
+                .trim()
+                .parse::<i32>()
+            {
+                if pid > 0 {
+                    return Some((pid, None));
+                }
+            }
+        }
+    }
+    None
 }
 
 impl Platform for Linux {
@@ -491,11 +588,13 @@ impl Platform for Linux {
         );
 
         if let Some(prev) = previous {
-            std::thread::spawn(move || {
-                std::thread::sleep(Duration::from_millis(80));
-                let _ = restore_clipboard(&prev);
-                injection::clear_clipboard_backups();
-            });
+            if paste_result.is_ok() {
+                std::thread::spawn(move || {
+                    std::thread::sleep(shared::clipboard_restore_delay());
+                    let _ = restore_clipboard(&prev);
+                    injection::clear_clipboard_backups();
+                });
+            }
         }
         paste_result
     }
@@ -505,7 +604,16 @@ impl Platform for Linux {
     }
 
     fn frontmost_target(&self) -> (Option<i32>, Option<String>) {
-        with_x11(|d| d.frontmost(), (None, None))
+        if current_session() == LinuxSession::Wayland {
+            if let Some(hit) = compositor_frontmost() {
+                return hit;
+            }
+        }
+        let x11 = with_x11(|d| d.frontmost(), (None, None));
+        if x11.0.is_some() {
+            return x11;
+        }
+        compositor_frontmost().unwrap_or((None, None))
     }
 
     fn activate_pid(&self, pid: u32) -> bool {
@@ -513,31 +621,32 @@ impl Platform for Linux {
     }
 
     fn talk_combo_held(&self, hotkey: &str) -> bool {
+        let chord = Chord::parse(hotkey);
+        if !chord.has_keys() {
+            return false;
+        }
         with_x11(
             |d| {
-                Chord::parse(hotkey).combo_held(
-                    d.key_down(XK_CONTROL_L),
-                    d.key_down(XK_SHIFT_L),
-                    d.key_down(XK_SUPER_L),
-                    d.key_down(XK_ALT_L),
+                chord.combo_held(
+                    control_down(d),
+                    shift_down(d),
+                    super_down(d),
+                    alt_down(d),
                     d.key_down(XK_SPACE),
                 )
             },
-            false,
+            true,
         )
     }
 
     fn talk_modifiers_held(&self, hotkey: &str) -> bool {
+        let chord = Chord::parse(hotkey);
+        if !chord.has_keys() {
+            return false;
+        }
         with_x11(
-            |d| {
-                Chord::parse(hotkey).modifiers_held(
-                    d.key_down(XK_CONTROL_L),
-                    d.key_down(XK_SHIFT_L),
-                    d.key_down(XK_SUPER_L),
-                    d.key_down(XK_ALT_L),
-                )
-            },
-            false,
+            |d| chord.modifiers_held(control_down(d), shift_down(d), super_down(d), alt_down(d)),
+            true,
         )
     }
 
@@ -570,14 +679,7 @@ impl Platform for Linux {
         };
         for spec in commands {
             let (program, args) = spec.split_first().unwrap();
-            if Command::new(program)
-                .args(args)
-                .stdin(Stdio::null())
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .spawn()
-                .is_ok()
-            {
+            if privacy_command_opened(program, args) {
                 return Ok(());
             }
         }
@@ -705,5 +807,49 @@ mod tests {
         );
         assert!(prod.contains("wait_for_modifiers_up(Duration::from_millis(250))"));
         assert!(prod.contains("wayland_paste_hint"));
+        assert!(
+            prod.contains("LinuxSession::Wayland"),
+            "native Wayland must not treat XTEST success as a focused-client paste"
+        );
+        let wayland_arm = prod
+            .split("LinuxSession::Wayland")
+            .nth(1)
+            .unwrap_or("")
+            .split("if with_x11(|d| d.post_paste()")
+            .next()
+            .unwrap_or("");
+        assert!(
+            wayland_arm.contains("wtype"),
+            "wtype must be the Wayland paste path"
+        );
+        assert!(
+            !wayland_arm.contains("with_x11(|d| d.post_paste()"),
+            "XTEST must not count as success on a Wayland session"
+        );
+        assert!(
+            prod.contains("clipboard_restore_delay()"),
+            "do not restore the previous clipboard until Ctrl+V has been consumed"
+        );
+        assert!(
+            prod.contains("paste_result.is_ok()"),
+            "failed paste must leave the transcript on the clipboard"
+        );
+        let hold = prod.split("fn talk_combo_held").nth(1).unwrap_or("");
+        assert!(
+            hold.contains("has_keys()"),
+            "empty chords must not look held when X11 is missing"
+        );
+        assert!(
+            hold.contains("true,"),
+            "missing X11 key state must not look like the talk chord was released"
+        );
+        assert!(
+            prod.contains("compositor_frontmost"),
+            "native Wayland must remember the focused client without X11"
+        );
+        assert!(
+            prod.contains("XK_CONTROL_R"),
+            "right-side modifiers must count as held"
+        );
     }
 }

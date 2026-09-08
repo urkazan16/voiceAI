@@ -21,11 +21,13 @@ import {
   type PrivacySummary,
   type PermissionStatus,
   type DiskUsage,
+  type JournalView,
   type ViewId,
 } from "./api";
 import {
   copy,
   formatBytes,
+  formatJournalLine,
   navItems,
   canDeleteDownloadedModel,
   hostKindFrom,
@@ -151,7 +153,9 @@ export function App() {
   const [history, setHistory] = useState<HistoryItem[]>([]);
   const [build, setBuild] = useState<BuildInfo | null>(null);
   const [privacy, setPrivacy] = useState<PrivacySummary | null>(null);
-  const [status, setStatus] = useState("Hold Control+Shift+Space, speak, release.");
+  const [status, setStatus] = useState(
+    () => copy(fallbackSettings().ui_language, hostKindFromUa()).holdHint,
+  );
   const [draft, setDraft] = useState("");
   const [pipelineOut, setPipelineOut] = useState<PipelineOutput | null>(null);
   const [term, setTerm] = useState("");
@@ -184,6 +188,9 @@ export function App() {
   const [historyRange, setHistoryRange] = useState<"all" | "today" | "7d">("all");
   const [diskUsage, setDiskUsage] = useState<DiskUsage | null>(null);
   const [lastUtteranceReady, setLastUtteranceReady] = useState(false);
+  const [journal, setJournal] = useState<JournalView | null>(null);
+  const [logFilter, setLogFilter] = useState("");
+  const logPaneRef = useRef<HTMLPreElement | null>(null);
   const autoDownloadStarted = useRef<Record<string, boolean>>({});
 
   async function refresh() {
@@ -339,6 +346,43 @@ export function App() {
       window.clearInterval(timer);
     };
   }, [view]);
+
+  useEffect(() => {
+    if (view !== "logs" || !isTauriRuntime()) {
+      return;
+    }
+    let cancelled = false;
+    async function pullJournal() {
+      try {
+        const next = await api.readJournal();
+        if (!cancelled) {
+          setJournal(next);
+        }
+      } catch {
+        /* journal poll is best-effort */
+      }
+    }
+    void pullJournal();
+    const timer = window.setInterval(() => void pullJournal(), 1000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [view]);
+
+  useEffect(() => {
+    if (view !== "logs") {
+      return;
+    }
+    const pane = logPaneRef.current;
+    if (!pane) {
+      return;
+    }
+    const distance = pane.scrollHeight - pane.scrollTop - pane.clientHeight;
+    if (distance < 96) {
+      pane.scrollTop = pane.scrollHeight;
+    }
+  }, [journal?.text, view]);
 
   useEffect(() => {
     if (!isTauriRuntime() || modelStatus.length === 0) {
@@ -597,10 +641,17 @@ export function App() {
               onClick={async () => {
                 try {
                   await api.completeOnboarding();
-                } catch {
-                  /* preview */
+                  setSettings((current) => ({ ...current, onboarding_complete: true }));
+                  setView("home");
+                  await refresh();
+                } catch (error) {
+                  if (!isTauriRuntime()) {
+                    setSettings((current) => ({ ...current, onboarding_complete: true }));
+                    setView("home");
+                    return;
+                  }
+                  setStatus(error instanceof Error ? error.message : String(error));
                 }
-                setView("home");
               }}
             >
               {t.continue}
@@ -2183,6 +2234,90 @@ export function App() {
           </section>
         )}
 
+        {view === "logs" && (
+          <section className="flex min-h-0 flex-col">
+            <h1 className="text-4xl">{t.logsTitle}</h1>
+            <p className="mt-2 max-w-2xl text-paper/70">{t.logsHelp}</p>
+            {journal?.path && (
+              <p className="mt-2 font-mono text-xs text-paper/50">{journal.path}</p>
+            )}
+            {journal?.truncated && <p className="mt-2 text-xs text-copper">{t.logsTruncated}</p>}
+            <div className="mt-4 flex flex-wrap items-center gap-3">
+              <input
+                className="min-w-[12rem] flex-1 rounded-lg bg-paper/10 p-2 text-sm"
+                placeholder={t.logsFilter}
+                value={logFilter}
+                onChange={(e) => setLogFilter(e.target.value)}
+              />
+              <button
+                className="rounded-full border border-paper/30 px-4 py-2"
+                onClick={async () => {
+                  try {
+                    setJournal(await api.readJournal());
+                  } catch (error) {
+                    setStatus(error instanceof Error ? error.message : String(error));
+                  }
+                }}
+              >
+                {t.logsRefresh}
+              </button>
+              <button
+                className="rounded-full border border-paper/30 px-4 py-2"
+                onClick={async () => {
+                  const text = journal?.text ?? "";
+                  if (!text.trim()) {
+                    return;
+                  }
+                  try {
+                    await api.copyText(text);
+                    setStatus(t.logsCopied);
+                  } catch {
+                    await navigator.clipboard.writeText(text).catch(() => undefined);
+                    setStatus(t.logsCopied);
+                  }
+                }}
+              >
+                {t.logsCopy}
+              </button>
+            </div>
+            <pre
+              ref={logPaneRef}
+              className="mt-4 max-h-[calc(100vh-16rem)] overflow-auto rounded-lg bg-paper/5 p-4 font-mono text-xs leading-relaxed"
+            >
+              {(() => {
+                const lines = (journal?.text ?? "")
+                  .split("\n")
+                  .filter((line) => line.length > 0)
+                  .filter((line) => {
+                    const q = logFilter.trim().toLowerCase();
+                    if (!q) {
+                      return true;
+                    }
+                    return (
+                      line.toLowerCase().includes(q) ||
+                      formatJournalLine(line).toLowerCase().includes(q)
+                    );
+                  });
+                if (lines.length === 0) {
+                  return t.logsEmpty;
+                }
+                return lines.map((line, index) => {
+                  const failed =
+                    /insert_failed|PERMISSION_DENIED|INJECTION_FAILED|timed out|error/i.test(line);
+                  return (
+                    <div
+                      key={`${index}-${line.slice(0, 24)}`}
+                      className={failed ? "text-copper" : "text-paper/80"}
+                    >
+                      {formatJournalLine(line)}
+                    </div>
+                  );
+                });
+              })()}
+            </pre>
+          </section>
+        )}
+
         {view === "diagnostics" && build && (
           <section className="space-y-2 font-mono text-sm">
             <h1 className="font-serif text-4xl">{t.diagnosticsTitle}</h1>
@@ -2198,8 +2333,8 @@ export function App() {
             <p>Native runtime: {build.native_runtime}</p>
             {permissions && (
               <p>
-                Permissions: mic devices={permissions.microphone_device_count}, accessibility=
-                {String(permissions.accessibility_trusted)}
+                Permissions: mic devices={permissions.microphone_device_count}
+                {macOnly ? `, accessibility=${String(permissions.accessibility_trusted)}` : ""}
               </p>
             )}
             {stats && (

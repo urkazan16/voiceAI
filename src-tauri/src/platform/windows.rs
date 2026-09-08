@@ -6,7 +6,7 @@ use crate::error::{LfError, LfResult};
 use crate::injection;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
-use windows_sys::Win32::Foundation::{HANDLE, HWND, LPARAM};
+use windows_sys::Win32::Foundation::{ERROR_FILE_NOT_FOUND, HANDLE, HWND, LPARAM};
 use windows_sys::Win32::System::DataExchange::{
     CloseClipboard, EmptyClipboard, GetClipboardData, OpenClipboard, SetClipboardData,
 };
@@ -28,8 +28,10 @@ use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
 };
 use windows_sys::Win32::UI::Shell::ShellExecuteW;
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    GetForegroundWindow, GetWindowTextW, GetWindowThreadProcessId, IsWindow, MessageBoxW,
-    SetForegroundWindow, MB_ICONINFORMATION, MB_OK, SW_SHOWNORMAL,
+    GetForegroundWindow, GetWindow, GetWindowLongW, GetWindowTextW, GetWindowThreadProcessId,
+    IsIconic, IsWindow, IsWindowVisible, MessageBoxW, SetForegroundWindow, SetWindowPos,
+    GWL_EXSTYLE, GW_OWNER, HWND_TOPMOST, MB_ICONINFORMATION, MB_OK, SWP_NOACTIVATE, SWP_NOMOVE,
+    SWP_NOSIZE, SWP_SHOWWINDOW, SW_SHOWNORMAL, WS_EX_TOOLWINDOW,
 };
 
 const SND_ASYNC: u32 = 0x0001;
@@ -84,13 +86,13 @@ fn win_down() -> bool {
     key_down(VK_LWIN) || key_down(VK_RWIN)
 }
 
-fn send_vk(vk: VIRTUAL_KEY, up: bool) {
+fn send_vk(vk: VIRTUAL_KEY, up: bool) -> bool {
     let mut input = unsafe { std::mem::zeroed::<INPUT>() };
     input.r#type = INPUT_KEYBOARD;
     unsafe {
         input.Anonymous.ki.wVk = vk;
         input.Anonymous.ki.dwFlags = if up { KEYEVENTF_KEYUP } else { 0 };
-        SendInput(1, &input, std::mem::size_of::<INPUT>() as i32);
+        SendInput(1, &input, std::mem::size_of::<INPUT>() as i32) == 1
     }
 }
 
@@ -109,7 +111,7 @@ fn release_stuck_modifiers() {
         VK_RWIN,
     ] {
         if key_down(vk) {
-            send_vk(vk, true);
+            let _ = send_vk(vk, true);
         }
     }
 }
@@ -135,11 +137,31 @@ fn prepare_keyboard() {
 }
 
 fn post_paste() -> LfResult<()> {
-    send_vk(VK_CONTROL, false);
-    send_vk(VK_V, false);
-    send_vk(VK_V, true);
-    send_vk(VK_CONTROL, true);
-    Ok(())
+    if send_vk(VK_CONTROL, false)
+        && send_vk(VK_V, false)
+        && send_vk(VK_V, true)
+        && send_vk(VK_CONTROL, true)
+    {
+        Ok(())
+    } else {
+        Err(LfError::InjectionFailed(
+            "SendInput could not post Ctrl+V. Copy last / Paste last, or press Ctrl+V.".into(),
+        ))
+    }
+}
+
+pub(crate) fn restack_overlay_without_activating(hwnd: isize) {
+    unsafe {
+        SetWindowPos(
+            hwnd as HWND,
+            HWND_TOPMOST,
+            0,
+            0,
+            0,
+            0,
+            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW,
+        );
+    }
 }
 
 fn open_clipboard() -> LfResult<()> {
@@ -243,21 +265,37 @@ fn snapshot_plain_text(items: &[ClipboardItem]) -> Option<String> {
 fn hwnd_for_pid(pid: u32) -> Option<HWND> {
     struct State {
         pid: u32,
-        hwnd: HWND,
+        fg: HWND,
+        best: HWND,
+        best_score: i32,
     }
     unsafe extern "system" fn enum_proc(hwnd: HWND, lparam: LPARAM) -> i32 {
         let state = &mut *(lparam as *mut State);
         let mut window_pid = 0u32;
         GetWindowThreadProcessId(hwnd, &mut window_pid);
-        if window_pid == state.pid && IsWindow(hwnd) != 0 {
-            state.hwnd = hwnd;
-            return 0;
+        if window_pid != state.pid || IsWindow(hwnd) == 0 {
+            return 1;
+        }
+        let visible = IsWindowVisible(hwnd) != 0;
+        let iconic = IsIconic(hwnd) != 0;
+        let owner = GetWindow(hwnd, GW_OWNER);
+        let has_owner = !owner.is_null();
+        let ex = GetWindowLongW(hwnd, GWL_EXSTYLE) as u32;
+        let tool = ex & WS_EX_TOOLWINDOW != 0;
+        let score =
+            shared::activation_window_score(hwnd == state.fg, visible, iconic, has_owner, tool);
+        if score > state.best_score {
+            state.best_score = score;
+            state.best = hwnd;
         }
         1
     }
+    let fg = unsafe { GetForegroundWindow() };
     let mut state = State {
         pid,
-        hwnd: 0 as HWND,
+        fg,
+        best: 0 as HWND,
+        best_score: i32::MIN,
     };
     unsafe {
         windows_sys::Win32::UI::WindowsAndMessaging::EnumWindows(
@@ -265,10 +303,10 @@ fn hwnd_for_pid(pid: u32) -> Option<HWND> {
             &mut state as *mut State as LPARAM,
         );
     }
-    if state.hwnd.is_null() {
+    if state.best.is_null() {
         None
     } else {
-        Some(state.hwnd)
+        Some(state.best)
     }
 }
 
@@ -386,11 +424,13 @@ impl Platform for Windows {
         release_stuck_modifiers();
 
         if let Some(prev) = previous {
-            std::thread::spawn(move || {
-                std::thread::sleep(Duration::from_millis(80));
-                let _ = restore_unicode(&prev);
-                injection::clear_clipboard_backups();
-            });
+            if paste_result.is_ok() {
+                std::thread::spawn(move || {
+                    std::thread::sleep(shared::clipboard_restore_delay());
+                    let _ = restore_unicode(&prev);
+                    injection::clear_clipboard_backups();
+                });
+            }
         }
         paste_result
     }
@@ -498,8 +538,12 @@ impl Platform for Windows {
                     Ok(())
                 }
             } else {
-                let _ = unsafe { RegDeleteValueW(key, name.as_ptr()) };
-                Ok(())
+                let status = unsafe { RegDeleteValueW(key, name.as_ptr()) };
+                if status != 0 && status != ERROR_FILE_NOT_FOUND {
+                    Err(LfError::Other(format!("registry delete error {status}")))
+                } else {
+                    Ok(())
+                }
             }
         })
     }
@@ -583,5 +627,29 @@ mod tests {
             "Select-All would wipe the field and break mid-text insert"
         );
         assert!(prod.contains("wait_for_modifiers_up(Duration::from_millis(250))"));
+        assert!(
+            prod.contains("SendInput") && prod.contains("== 1"),
+            "SendInput must be checked; a dropped Ctrl+V is not a successful insert"
+        );
+        assert!(
+            prod.contains("clipboard_restore_delay()"),
+            "do not restore the previous clipboard until Ctrl+V has been consumed"
+        );
+        assert!(
+            prod.contains("paste_result.is_ok()"),
+            "failed paste must leave the transcript on the clipboard"
+        );
+        assert!(
+            prod.contains("SWP_NOACTIVATE"),
+            "the flow bar must not steal the caret on Windows"
+        );
+        assert!(
+            prod.contains("ERROR_FILE_NOT_FOUND"),
+            "a missing Run value is success; other RegDeleteValueW errors are not"
+        );
+        assert!(
+            prod.contains("activation_window_score"),
+            "Chrome/VS Code have many HWNDs; pick the foreground/unowned one"
+        );
     }
 }

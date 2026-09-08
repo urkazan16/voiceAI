@@ -103,6 +103,8 @@ pub struct PipelineOutput {
     #[serde(default)]
     pub insert_ok: bool,
     #[serde(default)]
+    pub insert_error: Option<String>,
+    #[serde(default)]
     pub cues: Vec<TranscriptCue>,
 }
 

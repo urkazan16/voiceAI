@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   copy,
   formatBytes,
+  formatJournalLine,
   NAV,
   navItems,
   canDeleteDownloadedModel,
@@ -13,6 +14,21 @@ import { formatInvokeError } from "./api";
 describe("formatBytes", () => {
   it("uses MB for whisper-sized artifacts", () => {
     expect(formatBytes(147951465)).toContain("MB");
+  });
+});
+
+describe("formatJournalLine", () => {
+  it("turns unix seconds into a UTC stamp and keeps the event", () => {
+    const formatted = formatJournalLine(
+      "1788881474 insert_failed PERMISSION_DENIED: Accessibility permission required for insertion",
+    );
+    expect(formatted).toContain("UTC");
+    expect(formatted).toContain("insert_failed");
+    expect(formatted).not.toMatch(/^1788881474 /);
+  });
+
+  it("leaves non-journal lines unchanged", () => {
+    expect(formatJournalLine("not a log")).toBe("not a log");
   });
 });
 
@@ -37,6 +53,8 @@ describe("navItems", () => {
     expect(navItems("ru").map((item) => item.id)).toEqual(NAV.map((item) => item.id));
     expect(navItems("ru").find((item) => item.id === "history")?.label).toBe("История");
     expect(navItems("en").find((item) => item.id === "history")?.label).toBe("History");
+    expect(navItems("en").find((item) => item.id === "logs")?.label).toBe("Logs");
+    expect(navItems("ru").find((item) => item.id === "logs")?.label).toBe("Логи");
   });
 });
 
@@ -46,6 +64,9 @@ describe("copy", () => {
     expect(copy("ru").hotkeyListening).toMatch(/клавишу или сочетание/);
     expect(copy("en").hotkeyHelp).toMatch(/Fn/);
     expect(copy("en").computeGpu).toMatch(/Metal/);
+    expect(copy("en", "windows").computeGpu).toBe("GPU");
+    expect(copy("en", "linux").computeGpu).toBe("GPU");
+    expect(copy("ru").barPasteHint).toMatch(/Вставить последнее/);
     expect(copy("ru").hotkeyHelp).toMatch(/Spotlight|раскладка/);
     expect(copy("ru").speechLangHelp).not.toBe(copy("en").speechLangHelp);
     expect(copy("ru").settingsTitle).toBe("Настройки");
@@ -135,5 +156,14 @@ describe("formatBytes edges", () => {
   it("uses B and KB for small artifacts", () => {
     expect(formatBytes(512)).toBe("512 B");
     expect(formatBytes(2048)).toContain("KB");
+  });
+});
+
+describe("onboarding continue", () => {
+  it("marks setup complete in client state so Setup leaves the nav", async () => {
+    const src = (await import("./App.tsx?raw")).default;
+    const click = src.split("completeOnboarding()")[1] ?? "";
+    expect(click).toContain("onboarding_complete: true");
+    expect(click).toContain('setView("home")');
   });
 });

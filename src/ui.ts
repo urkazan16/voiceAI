@@ -9,6 +9,7 @@ const NAV_EN: { id: string; label: string }[] = [
   { id: "profiles", label: "Profiles" },
   { id: "personalization", label: "Personalization" },
   { id: "history", label: "History" },
+  { id: "logs", label: "Logs" },
   { id: "diagnostics", label: "Diagnostics" },
   { id: "privacy", label: "Privacy" },
 ];
@@ -22,6 +23,7 @@ const NAV_RU: { id: string; label: string }[] = [
   { id: "profiles", label: "Профили" },
   { id: "personalization", label: "Персонализация" },
   { id: "history", label: "История" },
+  { id: "logs", label: "Логи" },
   { id: "diagnostics", label: "Диагностика" },
   { id: "privacy", label: "Приватность" },
 ];
@@ -62,6 +64,27 @@ export function formatBytes(size: number): string {
   if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`;
   if (size < 1024 * 1024 * 1024) return `${(size / 1024 / 1024).toFixed(1)} MB`;
   return `${(size / 1024 / 1024 / 1024).toFixed(1)} GB`;
+}
+
+/** Pretty-print a `localflow.log` line (`unix_secs event detail`). */
+export function formatJournalLine(line: string): string {
+  const match = /^(\d{10,13})\s+(.*)$/.exec(line);
+  const secs = match?.[1];
+  const rest = match?.[2];
+  if (!secs || rest === undefined) {
+    return line;
+  }
+  const raw = Number(secs);
+  const ms = secs.length > 10 ? raw : raw * 1000;
+  const date = new Date(ms);
+  if (Number.isNaN(date.getTime())) {
+    return line;
+  }
+  const stamp = date
+    .toISOString()
+    .replace("T", " ")
+    .replace(/\.\d+Z$/, " UTC");
+  return `${stamp}  ${rest}`;
 }
 
 const EN = {
@@ -202,6 +225,15 @@ const EN = {
   personalizationHelp:
     "First correction is a candidate. Repeat it to get a suggestion. Accept writes a dictionary replacement rule.",
   historyTitle: "History",
+  logsTitle: "Logs",
+  logsHelp:
+    "Live journal from this session. Tokens are redacted. The panel refreshes while this tab is open.",
+  logsEmpty: "No journal entries yet. Dictate or change a setting, then this list fills in.",
+  logsTruncated: "Showing the newest part of the file.",
+  logsCopy: "Copy",
+  logsCopied: "Log copied.",
+  logsRefresh: "Refresh",
+  logsFilter: "Filter lines",
   diagnosticsTitle: "Diagnostics",
   privacyTitle: "Privacy",
   privacyIntro: "Core pipeline is local. Cloud accounts are not required.",
@@ -209,6 +241,14 @@ const EN = {
   privacyLogs:
     "Audio cache uses a private 0700 folder. Logs rotate by size and never store tokens.",
   holdHint: "Hold Control+Shift+Space, speak, release.",
+  barListening: "Listening",
+  barNotPasted: "Not pasted",
+  barFailed: "Failed",
+  barAccessHint: "Enable Accessibility for LocalFlow, then Paste last.",
+  barPasteHint: "Click the field, then Paste last.",
+  barDismiss: "Dismiss",
+  barCancel: "Cancel",
+  barStop: "Stop",
   recording: "Recording… keep holding, then release to process.",
   processing: "Processing recording…",
   devicesRefreshed: "Microphone list refreshed.",
@@ -357,6 +397,14 @@ const RU: typeof EN = {
   personalizationHelp:
     "Первое исправление — кандидат. Повтор даёт предложение. Принятие пишет правило в словарь.",
   historyTitle: "История",
+  logsTitle: "Логи",
+  logsHelp: "Журнал этой сессии. Токены маскируются. Список обновляется, пока вкладка открыта.",
+  logsEmpty: "Пока пусто. Продиктуйте или смените настройку — строки появятся здесь.",
+  logsTruncated: "Показана только свежая часть файла.",
+  logsCopy: "Копировать",
+  logsCopied: "Лог скопирован.",
+  logsRefresh: "Обновить",
+  logsFilter: "Фильтр строк",
   diagnosticsTitle: "Диагностика",
   privacyTitle: "Приватность",
   privacyIntro: "Основной конвейер локальный. Облачный аккаунт не нужен.",
@@ -364,6 +412,14 @@ const RU: typeof EN = {
   privacyLogs:
     "Кэш аудио лежит в закрытой папке 0700. Логи ротируются по размеру и не хранят токены.",
   holdHint: "Удерживайте Control+Shift+Space, говорите, отпустите.",
+  barListening: "Слушаю",
+  barNotPasted: "Не вставлено",
+  barFailed: "Сбой",
+  barAccessHint: "Включите Универсальный доступ для LocalFlow, затем «Вставить последнее».",
+  barPasteHint: "Кликните поле, затем «Вставить последнее».",
+  barDismiss: "Скрыть",
+  barCancel: "Отмена",
+  barStop: "Стоп",
   recording: "Запись… удерживайте, затем отпустите для обработки.",
   processing: "Обработка записи…",
   devicesRefreshed: "Список микрофонов обновлён.",
@@ -426,6 +482,9 @@ const WINDOWS_EN: Partial<UiCopy> = {
     "Keeps the previous clipboard after Ctrl+V. If the app crashes mid-paste, the same snapshot is restored from disk. Password fields may block paste — use Copy last after leaving the field.",
   modelReady: "Ready on this PC.",
   privacyLogs: "Audio cache uses a private folder. Logs rotate by size and never store tokens.",
+  computeGpu: "GPU",
+  accelerationHelp:
+    "Auto uses a GPU when this build includes one. Windows stays on CPU unless a GPU backend is compiled in.",
   uninstallHelp:
     "Removes Whisper and Qwen files, settings, history, logs, autostart, and the LocalFlow install folder after the app quits.",
 };
@@ -444,6 +503,9 @@ const WINDOWS_RU: Partial<UiCopy> = {
     "Возвращает прежний буфер после Ctrl+V. Если приложение упадёт во время вставки, снимок восстановится с диска. Поля пароля могут блокировать вставку — используйте «Копировать последнее» после выхода из поля.",
   modelReady: "Готова на этом ПК.",
   privacyLogs: "Кэш аудио лежит в закрытой папке. Логи ротируются по размеру и не хранят токены.",
+  computeGpu: "GPU",
+  accelerationHelp:
+    "Авто использует GPU, если он собран в этот билд. Windows остаётся на CPU, пока нет GPU-бэкенда.",
   uninstallHelp:
     "Удаляет файлы Whisper и Qwen, настройки, историю, логи, автозапуск и папку установки LocalFlow после выхода.",
 };
@@ -462,6 +524,9 @@ const LINUX_EN: Partial<UiCopy> = {
   clipboardHelp:
     "Keeps the previous clipboard after Ctrl+V. On Wayland, some apps cannot receive a synthetic paste — press Ctrl+V if the text stays on the clipboard. If the app crashes mid-paste, the snapshot is restored from disk.",
   modelReady: "Ready on this computer.",
+  computeGpu: "GPU",
+  accelerationHelp:
+    "Auto uses a GPU when this build includes one. Linux stays on CPU unless a GPU backend is compiled in.",
   uninstallHelp:
     "Removes Whisper and Qwen files, settings, history, logs, and autostart. Remove the .deb or AppImage separately if you installed one.",
 };
@@ -480,6 +545,9 @@ const LINUX_RU: Partial<UiCopy> = {
   clipboardHelp:
     "Возвращает прежний буфер после Ctrl+V. В Wayland некоторые приложения не принимают синтетическую вставку — нажмите Ctrl+V, если текст остался в буфере. Если приложение упадёт во время вставки, снимок восстановится с диска.",
   modelReady: "Готова на этом компьютере.",
+  computeGpu: "GPU",
+  accelerationHelp:
+    "Авто использует GPU, если он собран в этот билд. Linux остаётся на CPU, пока нет GPU-бэкенда.",
   uninstallHelp:
     "Удаляет файлы Whisper и Qwen, настройки, историю, логи и автозапуск. Пакет .deb или AppImage удалите отдельно, если ставили его.",
 };

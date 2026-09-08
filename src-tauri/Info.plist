@@ -4,6 +4,8 @@
 <dict>
           <key>NSMicrophoneUsageDescription</key>
           <string>LocalFlow records audio locally so speech can be transcribed on this Mac. Audio is not uploaded.</string>
+          <key>NSAccessibilityUsageDescription</key>
+          <string>LocalFlow pastes dictated text into the frontmost app with Command-V. Enable LocalFlow in Privacy &amp; Security → Accessibility.</string>
           <key>NSAppleEventsUsageDescription</key>
   <string>LocalFlow uses Accessibility and Apple Events only to paste recognized text into the frontmost app.</string>
 </dict>

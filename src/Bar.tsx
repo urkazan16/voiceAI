@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { api, isTauriRuntime, type DictationState } from "./api";
 import { listen } from "@tauri-apps/api/event";
+import { copy, hostKindFromUa, showMacOnlyControls } from "./ui";
 
 export function Bar() {
   const [state, setState] = useState<DictationState>({
@@ -12,8 +13,11 @@ export function Bar() {
     rms: 0,
     wpm: null,
   });
+  const [lang, setLang] = useState("en");
 
   const [needsAccess, setNeedsAccess] = useState(false);
+  const host = hostKindFromUa();
+  const t = copy(lang, host);
   const preview = state.transcript ?? state.message;
   const recording = state.phase === "recording" || state.phase === "pressed";
   const busy = recording || state.phase === "processing";
@@ -24,6 +28,10 @@ export function Bar() {
     if (!isTauriRuntime()) {
       return;
     }
+    void api
+      .getSettings()
+      .then((settings) => setLang(settings.ui_language))
+      .catch(() => undefined);
     let unlisten: (() => void) | undefined;
     void listen<DictationState>("dictation-state", (event) => {
       setState(event.payload);
@@ -42,7 +50,7 @@ export function Bar() {
       .permissionStatus()
       .then((status) => {
         if (!cancelled) {
-          setNeedsAccess(!status.accessibility_trusted);
+          setNeedsAccess(showMacOnlyControls(host) && !status.accessibility_trusted);
         }
       })
       .catch(() => {
@@ -53,7 +61,7 @@ export function Bar() {
     return () => {
       cancelled = true;
     };
-  }, [failed]);
+  }, [failed, host]);
 
   return (
     <div
@@ -63,11 +71,11 @@ export function Bar() {
       <div className="flex items-center justify-between gap-3">
         <p className="text-xs uppercase tracking-[0.2em] text-copper">
           {recording
-            ? "Listening"
+            ? t.barListening
             : failed
-              ? "Not pasted"
+              ? t.barNotPasted
               : state.phase === "error"
-                ? "Failed"
+                ? t.barFailed
                 : state.phase}
         </p>
         <span className="flex items-center gap-2">
@@ -96,9 +104,7 @@ export function Bar() {
       <p className="line-clamp-3 text-sm text-paper/85">{preview}</p>
       {failed && (
         <p className="text-[11px] text-paper/60">
-          {needsAccess
-            ? "Enable Accessibility for LocalFlow, then Paste last."
-            : "Click the field, then Paste last."}
+          {needsAccess ? t.barAccessHint : t.barPasteHint}
         </p>
       )}
       <div className="flex justify-end gap-2">
@@ -109,20 +115,20 @@ export function Bar() {
                 className="rounded-full border border-paper/30 px-3 py-1 text-xs"
                 onClick={() => void api.openPrivacyPane("accessibility")}
               >
-                Accessibility
+                {t.accessPermission}
               </button>
             )}
             <button
               className="rounded-full border border-paper/30 px-3 py-1 text-xs"
               onClick={() => void api.copyLastTranscript()}
             >
-              Copy
+              {t.copyLast}
             </button>
             <button
               className="rounded-full border border-paper/30 px-3 py-1 text-xs"
               onClick={() => void api.pasteLastTranscript()}
             >
-              Paste last
+              {t.pasteLast}
             </button>
             <button
               className="rounded-full border border-paper/30 px-3 py-1 text-xs"
@@ -131,7 +137,7 @@ export function Bar() {
                 void api.dictationCancel();
               }}
             >
-              Dismiss
+              {t.barDismiss}
             </button>
           </>
         )}
@@ -139,14 +145,14 @@ export function Bar() {
           className="rounded-full border border-paper/30 px-3 py-1 text-xs"
           onClick={() => void api.dictationCancel()}
         >
-          Cancel
+          {t.barCancel}
         </button>
         <button
           className="rounded-full bg-copper px-3 py-1 text-xs text-ink disabled:opacity-40"
           disabled={!busy}
           onClick={() => void api.dictationStop()}
         >
-          Stop
+          {t.barStop}
         </button>
       </div>
     </div>

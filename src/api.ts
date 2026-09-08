@@ -11,6 +11,7 @@ export type ViewId =
   | "profiles"
   | "personalization"
   | "history"
+  | "logs"
   | "diagnostics"
   | "privacy";
 
@@ -157,6 +158,7 @@ export interface PipelineOutput {
   final_text: string;
   mode: AppSettings["mode"];
   insert_ok: boolean;
+  insert_error?: string | null;
   cues?: { start_ms: number; end_ms: number; text: string }[];
 }
 
@@ -230,6 +232,13 @@ export interface DictationState {
 export interface PermissionStatus {
   microphone_device_count: number;
   accessibility_trusted: boolean;
+}
+
+export interface JournalView {
+  path: string;
+  text: string;
+  truncated: boolean;
+  bytes: number;
 }
 
 export interface AudioDevice {
@@ -379,6 +388,7 @@ export const api = {
     }),
   installDictateMacro: () => call<string>("install_dictate_macro"),
   permissionStatus: () => call<PermissionStatus>("permission_status"),
+  readJournal: () => call<JournalView>("read_journal"),
   openPrivacyPane: (kind: "microphone" | "accessibility" | "speech") =>
     call<void>("open_privacy_pane", { kind }),
 };

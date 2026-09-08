@@ -18,6 +18,11 @@ mod shared;
 #[cfg(windows)]
 mod windows;
 
+#[cfg(windows)]
+pub(crate) fn restack_windows_overlay(hwnd: isize) {
+    windows::restack_overlay_without_activating(hwnd);
+}
+
 pub use shared::{
     default_copy_hotkey, default_edit_hotkey, default_paste_hotkey, talk_hotkey_fallbacks,
 };
@@ -76,6 +81,10 @@ pub trait Platform: Send + Sync {
     fn space_key_down(&self) -> bool;
 
     fn accessibility_trusted(&self) -> bool;
+
+    /// Ask macOS to show the Accessibility prompt if the process is not yet
+    /// trusted. No-op on other hosts. Must not be called from insert/paste.
+    fn prompt_accessibility(&self) {}
 
     fn open_privacy_pane(&self, kind: &str) -> LfResult<()>;
 
@@ -156,6 +165,14 @@ mod tests {
         assert!(
             !linux.to_ascii_lowercase().contains("ctrl+a"),
             "Linux paste must not send Select-All"
+        );
+        assert!(
+            linux.contains("compositor_frontmost"),
+            "Wayland must capture the focused client without X11"
+        );
+        assert!(
+            linux.contains("privacy_command_opened") && linux.contains("try_wait"),
+            "opening settings must not succeed just because spawn() did not immediately fail"
         );
     }
 }

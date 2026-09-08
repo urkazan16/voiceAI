@@ -47,6 +47,7 @@ pub struct AppEngine {
 impl AppEngine {
     pub fn open(paths: DataPaths) -> LfResult<Self> {
         paths.ensure()?;
+        crate::journal::bind_root(paths.root.clone());
         let store = Store::open(&paths)?;
         let catalog = ModelCatalog::embedded()?;
         let mut engine = Self {
@@ -393,9 +394,7 @@ impl AppEngine {
         let cues = crate::whisper_stt::last_cues();
         let timeout =
             std::time::Duration::from_millis(self.settings.postprocess_timeout_ms.max(1_000));
-        if crate::dictation::is_cancelled() {
-            return Err(LfError::Other("cancelled".into()));
-        }
+        stop_if_cancelled()?;
         if started.elapsed() > timeout {
             return Err(LfError::Other("postprocess timeout".into()));
         }
@@ -455,8 +454,12 @@ impl AppEngine {
             formatted_text.clone()
         };
         self.snapshot.transition(PipelineState::Llm)?;
+        stop_if_cancelled()?;
         let timed_out = started.elapsed() > timeout;
-        let llm_text = if skip_llm || timed_out || personalized_text.split_whitespace().count() < 10
+        let llm_text = if skip_llm
+            || timed_out
+            || crate::dictation::is_cancelled()
+            || personalized_text.split_whitespace().count() < 10
         {
             personalized_text.clone()
         } else {
@@ -483,6 +486,7 @@ impl AppEngine {
             debug_assert!(crate::llm::assert_non_execution_policy());
         }
         self.snapshot.transition(PipelineState::Injecting)?;
+        stop_if_cancelled()?;
         let mut insert_ok = true;
         let mut insert_err = None;
         let insert_method = if self.inject_enabled {
@@ -490,13 +494,13 @@ impl AppEngine {
         } else {
             "none"
         };
-        crate::journal::log("insert", insert_method);
         let inject_text = if glue_next {
             final_text.clone()
         } else {
             crate::format::space_between_utterances(&self.session_text, &final_text)
         };
         if self.inject_enabled && !inject_text.is_empty() && !crate::dictation::is_cancelled() {
+            crate::journal::log("insert", insert_method);
             crate::dictation::conceal_overlay();
             if let Err(err) = injector.insert_text(&inject_text, self.settings.restore_clipboard) {
                 insert_ok = false;
@@ -516,10 +520,11 @@ impl AppEngine {
             final_text: final_text.clone(),
             mode,
             insert_ok,
+            insert_error: insert_err.as_ref().map(crate::error::user_guidance),
             cues: cues.clone(),
         };
         self.last_output = Some(output.clone());
-        if !final_text.is_empty() {
+        if !final_text.is_empty() && insert_ok {
             self.session_text.push_str(&inject_text);
         }
         let _ = self.store.put_kv(
@@ -679,6 +684,14 @@ impl AppEngine {
     pub fn clear_last_transcript(&mut self) -> LfResult<()> {
         self.last_output = None;
         self.store.put_kv("last_transcript", "")?;
+        Ok(())
+    }
+}
+
+fn stop_if_cancelled() -> LfResult<()> {
+    if crate::dictation::is_cancelled() {
+        Err(LfError::Other("cancelled".into()))
+    } else {
         Ok(())
     }
 }
@@ -954,7 +967,33 @@ mod tests {
             .unwrap();
         assert_eq!(out.final_text, "Привет.");
         assert!(!out.insert_ok);
+        assert!(
+            eng.session_text.is_empty(),
+            "failed insert must not glue the next utterance: {}",
+            eng.session_text
+        );
         assert_eq!(eng.snapshot.state, PipelineState::Idle);
+    }
+
+    #[test]
+    fn insert_journal_runs_only_when_paste_is_attempted() {
+        let body = include_str!("engine.rs")
+            .split("self.snapshot.transition(PipelineState::Injecting)")
+            .nth(1)
+            .unwrap()
+            .split("pub fn run_scripted")
+            .next()
+            .unwrap();
+        let guard = body
+            .find("is_cancelled()")
+            .expect("do not paste after timeout/cancel");
+        let logged = body
+            .find("journal::log(\"insert\"")
+            .expect("log a real paste");
+        assert!(
+            guard < logged,
+            "journal insert before the cancel check looks like a successful paste after timeout"
+        );
     }
 
     #[test]

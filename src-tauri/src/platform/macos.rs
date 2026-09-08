@@ -58,6 +58,7 @@ extern "C" {
 
 extern "C" {
     fn lf_screen_is_locked() -> i32;
+    fn lf_prompt_accessibility() -> i32;
     fn getuid() -> u32;
 }
 
@@ -223,6 +224,10 @@ impl Platform for MacOs {
 
     fn accessibility_trusted(&self) -> bool {
         process_is_trusted()
+    }
+
+    fn prompt_accessibility(&self) {
+        prompt_accessibility_if_needed();
     }
 
     fn open_privacy_pane(&self, kind: &str) -> LfResult<()> {
@@ -392,6 +397,18 @@ fn frontmost_target_on_main() -> (Option<i32>, Option<String>) {
 
 fn process_is_trusted() -> bool {
     on_main(|| unsafe { AXIsProcessTrusted() })
+}
+
+fn prompt_accessibility_if_needed() {
+    if cfg!(test) {
+        return;
+    }
+    if process_is_trusted() {
+        return;
+    }
+    on_main(|| unsafe {
+        let _ = lf_prompt_accessibility();
+    });
 }
 
 fn prepare_keyboard() {
@@ -749,9 +766,31 @@ mod tests {
             !prod.contains("tell application \"System Events\""),
             "osascript System Events opens Universal Access on every use even when LocalFlow is already trusted"
         );
+        let insert = prod
+            .split("fn insert_text")
+            .nth(1)
+            .unwrap()
+            .split("fn prepare_keyboard")
+            .next()
+            .unwrap();
         assert!(
-            !prod.contains("prompt_accessibility"),
-            "do not open System Settings from the paste path"
+            !insert.contains("prompt_accessibility") && !insert.contains("lf_prompt_accessibility"),
+            "do not prompt Accessibility from the paste path"
+        );
+        let posted = prod
+            .split("fn post_paste")
+            .nth(1)
+            .unwrap()
+            .split("fn post_command_v")
+            .next()
+            .unwrap();
+        assert!(
+            !posted.contains("lf_prompt_accessibility"),
+            "do not prompt Accessibility from post_paste"
+        );
+        assert!(
+            prod.contains("lf_prompt_accessibility"),
+            "installed .app must request Accessibility at launch so TCC lists LocalFlow"
         );
         assert!(
             prod.contains("CGEventPostToPid"),
