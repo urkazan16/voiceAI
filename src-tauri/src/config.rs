@@ -167,6 +167,14 @@ impl AppSettings {
                 "Hotkeys cannot be empty. Use Tauri syntax such as Control+Shift+Space.".into(),
             ));
         }
+        if let Some(reason) = hotkey_conflict_reason(
+            &self.hotkey,
+            &self.copy_last_hotkey,
+            &self.paste_last_hotkey,
+            &self.edit_hotkey,
+        ) {
+            return Err(LfError::ConfigInvalid(reason));
+        }
         if self.postprocess_timeout_ms < 1_000 {
             return Err(LfError::ConfigInvalid(
                 "Post-process timeout must be at least 1000 ms.".into(),
@@ -189,6 +197,99 @@ impl AppSettings {
             _ => {}
         }
     }
+}
+
+fn canon_hotkey(chord: &str) -> String {
+    let mut mods = Vec::new();
+    let mut key = String::new();
+    for part in chord.split('+') {
+        match part.trim().to_ascii_lowercase().as_str() {
+            "" => {}
+            "control" | "ctrl" => mods.push("control"),
+            "alt" | "option" => mods.push("alt"),
+            "shift" => mods.push("shift"),
+            "command" | "cmd" | "super" | "meta" | "win" => mods.push("super"),
+            other => key = other.to_string(),
+        }
+    }
+    mods.sort_unstable();
+    mods.dedup();
+    if key.is_empty() {
+        mods.join("+")
+    } else if mods.is_empty() {
+        key
+    } else {
+        format!("{}+{key}", mods.join("+"))
+    }
+}
+
+pub(crate) fn hotkey_conflict_reason(
+    talk: &str,
+    copy: &str,
+    paste: &str,
+    edit: &str,
+) -> Option<String> {
+    let reserved = [
+        "escape",
+        "tab",
+        "control+c",
+        "control+v",
+        "control+x",
+        "control+a",
+        "control+z",
+        "super+c",
+        "super+v",
+        "super+x",
+        "super+a",
+        "super+z",
+        "super+q",
+        "super+w",
+        "super+tab",
+        "super+space",
+        "control+space",
+        "alt+space",
+        "alt+tab",
+        "control+alt+delete",
+    ];
+    for (label, chord) in [
+        ("Talk", talk),
+        ("Copy last", copy),
+        ("Paste last", paste),
+        ("Edit", edit),
+    ] {
+        let id = canon_hotkey(chord);
+        if id == "escape" {
+            return Some(format!(
+                "{label} cannot be Escape — Escape already cancels dictation."
+            ));
+        }
+        if reserved.contains(&id.as_str()) {
+            return Some(format!(
+                "{label} shortcut {chord} is reserved by the OS or by copy/paste. Pick another combination."
+            ));
+        }
+        if !id.contains('+') && id.len() == 1 && id.chars().all(|c| c.is_ascii_alphanumeric()) {
+            return Some(format!(
+                "{label} cannot be {chord} alone — it would fire while typing. Add Control/Shift or use F13 / Space."
+            ));
+        }
+    }
+    let named = [
+        ("Talk", canon_hotkey(talk)),
+        ("Copy last", canon_hotkey(copy)),
+        ("Paste last", canon_hotkey(paste)),
+        ("Edit", canon_hotkey(edit)),
+    ];
+    for (i, (left, a)) in named.iter().enumerate() {
+        for (right, b) in named.iter().skip(i + 1) {
+            if !a.is_empty() && a == b {
+                return Some(format!(
+                    "{left} and {right} use the same shortcut. Each action needs its own combination."
+                ));
+            }
+        }
+    }
+    None
 }
 
 impl Default for AppSettings {
@@ -362,6 +463,17 @@ mod tests {
         settings.hotkey.clear();
         let err = settings.validate().unwrap_err();
         assert_eq!(err.code(), "CONFIG_INVALID");
+        settings = AppSettings::default();
+        settings.hotkey = "Control+C".into();
+        let err = settings.validate().unwrap_err();
+        assert!(
+            err.to_string().to_ascii_lowercase().contains("reserved"),
+            "{err}"
+        );
+        settings = AppSettings::default();
+        settings.hotkey = settings.copy_last_hotkey.clone();
+        let err = settings.validate().unwrap_err();
+        assert!(err.to_string().contains("same shortcut"), "{err}");
     }
 
     #[test]

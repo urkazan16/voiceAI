@@ -19,9 +19,9 @@ int lf_screen_is_locked(void) {
 /// Shows the system Accessibility prompt once when LocalFlow is not yet in
 /// Privacy & Security. Must not run from the paste path: a prompt on every
 /// Cmd+V would open Universal Access during dictation.
-int lf_prompt_accessibility(void) {
+static int lf_accessibility_check(bool prompt) {
     const void *keys[] = {kAXTrustedCheckOptionPrompt};
-    const void *vals[] = {kCFBooleanTrue};
+    const void *vals[] = {prompt ? kCFBooleanTrue : kCFBooleanFalse};
     CFDictionaryRef opts = CFDictionaryCreate(
         kCFAllocatorDefault,
         keys,
@@ -34,4 +34,12 @@ int lf_prompt_accessibility(void) {
         CFRelease(opts);
     }
     return trusted ? 1 : 0;
+}
+
+int lf_accessibility_trusted(void) {
+    return lf_accessibility_check(false);
+}
+
+int lf_prompt_accessibility(void) {
+    return lf_accessibility_check(true);
 }

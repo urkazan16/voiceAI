@@ -118,6 +118,14 @@ export function Bar() {
                 {t.accessPermission}
               </button>
             )}
+            {needsAccess && (
+              <button
+                className="rounded-full border border-paper/30 px-3 py-1 text-xs"
+                onClick={() => void api.relaunchApp()}
+              >
+                {t.quitRelaunchAccess}
+              </button>
+            )}
             <button
               className="rounded-full border border-paper/30 px-3 py-1 text-xs"
               onClick={() => void api.copyLastTranscript()}

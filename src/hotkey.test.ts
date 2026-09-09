@@ -1,5 +1,13 @@
 import { describe, expect, it } from "vitest";
-import { chordFromKeyboardEvent, isFnKey, keyFromCode, metaModifierName } from "./hotkey";
+import {
+  chordFromKeyboardEvent,
+  collidingHotkeyReason,
+  isFnKey,
+  keyFromCode,
+  metaModifierName,
+  reservedHotkeyReason,
+  validateTalkHotkey,
+} from "./hotkey";
 
 describe("chordFromKeyboardEvent", () => {
   it("builds Control+Shift+Space", () => {
@@ -154,5 +162,33 @@ describe("chordFromKeyboardEvent", () => {
         metaKey: false,
       }),
     ).toBe("F13");
+  });
+});
+
+describe("hotkey validation", () => {
+  it("rejects Control+C and Command+Space as talk keys", () => {
+    expect(reservedHotkeyReason("Control+C")).toMatch(/reserved/i);
+    expect(reservedHotkeyReason("Command+Space")).toMatch(/reserved/i);
+    expect(reservedHotkeyReason("A")).toMatch(/typing/);
+    expect(reservedHotkeyReason("Control+Shift+Space")).toBeNull();
+  });
+
+  it("rejects two LocalFlow actions on the same chord", () => {
+    expect(
+      collidingHotkeyReason(
+        "Control+Shift+Space",
+        "Control+Shift+Space",
+        "Control+Alt+V",
+        "Control+Alt+E",
+      ),
+    ).toMatch(/same shortcut/);
+    expect(
+      validateTalkHotkey(
+        "Control+Shift+Space",
+        "Command+Control+C",
+        "Command+Control+V",
+        "Command+Control+E",
+      ),
+    ).toBeNull();
   });
 });

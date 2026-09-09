@@ -16,6 +16,7 @@ use std::collections::HashSet;
 use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 use tauri::{AppHandle, Emitter};
+use tauri_plugin_global_shortcut::Shortcut;
 
 #[derive(Debug, Serialize)]
 pub struct CommandError {
@@ -66,6 +67,18 @@ fn commit_settings(
     Ok(())
 }
 
+fn ensure_shortcut_parseable(name: &str, chord: &str) -> Result<(), CommandError> {
+    if chord.parse::<Shortcut>().is_err() {
+        return Err(CommandError {
+            code: "CONFIG_INVALID".into(),
+            message: format!(
+                "{name} '{chord}' cannot be registered on this OS. Use F13 or Control+Shift+Space."
+            ),
+        });
+    }
+    Ok(())
+}
+
 #[tauri::command]
 pub fn get_build_info() -> BuildInfo {
     build_info::current()
@@ -97,6 +110,10 @@ pub fn save_settings(
 ) -> Result<(), CommandError> {
     settings.validate()?;
     settings.normalize();
+    ensure_shortcut_parseable("Talk", &settings.hotkey)?;
+    ensure_shortcut_parseable("Copy last", &settings.copy_last_hotkey)?;
+    ensure_shortcut_parseable("Paste last", &settings.paste_last_hotkey)?;
+    ensure_shortcut_parseable("Edit", &settings.edit_hotkey)?;
     let compute_changed;
     let compute;
     let preload_path;
@@ -990,6 +1007,22 @@ pub fn uninstall_localflow(
 #[tauri::command]
 pub fn permission_status() -> crate::permissions::PermissionStatus {
     crate::permissions::status()
+}
+
+#[tauri::command]
+pub fn relaunch_app(app: AppHandle) {
+    crate::platform::current().schedule_relaunch();
+    app.exit(0);
+}
+
+#[tauri::command]
+pub fn pause_shortcut_capture(app: AppHandle, engine: tauri::State<SharedEngine>) {
+    crate::pause_shortcuts(&app, &engine);
+}
+
+#[tauri::command]
+pub fn resume_shortcut_capture(app: AppHandle, engine: tauri::State<SharedEngine>) {
+    crate::resume_shortcuts(&app, &engine);
 }
 
 #[tauri::command]

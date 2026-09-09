@@ -85,7 +85,9 @@ describe("copy", () => {
 
   it("keeps macOS wording when host is omitted", () => {
     expect(copy("en").clipboardHelp).toMatch(/Cmd\+V/);
-    expect(copy("en").onboarding1).toMatch(/Accessibility/);
+    expect(copy("en").barAccessHint).toMatch(/Quit from the menu bar/);
+    expect(copy("ru").barAccessHint).toMatch(/строку меню/);
+    expect(copy("en").quitRelaunchAccess).toMatch(/relaunch/i);
   });
 
   it("uses Windows wording without macOS Accessibility copy", () => {

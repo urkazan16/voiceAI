@@ -58,6 +58,7 @@ extern "C" {
 
 extern "C" {
     fn lf_screen_is_locked() -> i32;
+    fn lf_accessibility_trusted() -> i32;
     fn lf_prompt_accessibility() -> i32;
     fn getuid() -> u32;
 }
@@ -230,6 +231,10 @@ impl Platform for MacOs {
         prompt_accessibility_if_needed();
     }
 
+    fn schedule_relaunch(&self) {
+        schedule_relaunch();
+    }
+
     fn open_privacy_pane(&self, kind: &str) -> LfResult<()> {
         let urls: &[&str] = match kind {
             "microphone" => &[
@@ -396,7 +401,10 @@ fn frontmost_target_on_main() -> (Option<i32>, Option<String>) {
 }
 
 fn process_is_trusted() -> bool {
-    on_main(|| unsafe { AXIsProcessTrusted() })
+    // Any thread. Hopping to main via dispatch_sync can deadlock the paste
+    // path and has returned a stale false on Sequoia while Settings still
+    // shows a checkmark for an older LocalFlow binary.
+    unsafe { lf_accessibility_trusted() != 0 || AXIsProcessTrusted() }
 }
 
 fn prompt_accessibility_if_needed() {
@@ -409,6 +417,69 @@ fn prompt_accessibility_if_needed() {
     on_main(|| unsafe {
         let _ = lf_prompt_accessibility();
     });
+    if process_is_trusted() {
+        return;
+    }
+    // Settings can keep a checked LocalFlow row for a previous CDHash.
+    // Reset our bundle once per binary so the next prompt lists this copy.
+    repair_stale_accessibility_grant();
+    on_main(|| unsafe {
+        let _ = lf_prompt_accessibility();
+    });
+}
+
+fn repair_stale_accessibility_grant() {
+    let stamp = MacOs.data_root().join("accessibility-repair.stamp");
+    let token = std::env::current_exe()
+        .ok()
+        .and_then(|p| {
+            p.metadata()
+                .ok()
+                .and_then(|m| m.modified().ok())
+                .map(|modified| format!("{modified:?}"))
+        })
+        .unwrap_or_else(|| "unknown".into());
+    if fs::read_to_string(&stamp).ok().as_deref() == Some(token.as_str()) {
+        return;
+    }
+    let _ = Command::new("tccutil")
+        .args(["reset", "Accessibility", "app.localflow.desktop"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
+    if let Some(parent) = stamp.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+    let _ = fs::write(stamp, token);
+}
+
+fn relaunch_open_target() -> PathBuf {
+    let Ok(exe) = std::env::current_exe() else {
+        return PathBuf::from("/Applications/LocalFlow.app");
+    };
+    for ancestor in exe.ancestors() {
+        if ancestor.extension().and_then(|e| e.to_str()) == Some("app") {
+            return ancestor.to_path_buf();
+        }
+    }
+    exe
+}
+
+fn schedule_relaunch() {
+    let target = relaunch_open_target();
+    let quoted = target.display().to_string().replace('\'', "'\\''");
+    let script = if target.extension().and_then(|e| e.to_str()) == Some("app") {
+        format!("sleep 1; open '{quoted}'")
+    } else {
+        format!("sleep 1; '{quoted}'")
+    };
+    let _ = Command::new("/bin/sh")
+        .args(["-c", &script])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn();
 }
 
 fn prepare_keyboard() {
@@ -787,6 +858,18 @@ mod tests {
         assert!(
             !posted.contains("lf_prompt_accessibility"),
             "do not prompt Accessibility from post_paste"
+        );
+        assert!(
+            !posted.contains("tccutil"),
+            "do not reset TCC from the paste path"
+        );
+        assert!(
+            prod.contains("tccutil") && prod.contains("repair_stale_accessibility_grant"),
+            "a stale Accessibility checkmark after a rebuild must be repaired at launch"
+        );
+        assert!(
+            prod.contains("lf_accessibility_trusted"),
+            "trust must be read without a main-thread hop on the paste path"
         );
         assert!(
             prod.contains("lf_prompt_accessibility"),

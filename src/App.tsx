@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   api,
   bundledCatalog,
@@ -23,6 +23,7 @@ import {
   type DiskUsage,
   type JournalView,
   type ViewId,
+  type HotkeyStatus,
 } from "./api";
 import {
   copy,
@@ -36,6 +37,7 @@ import {
   type HostKind,
 } from "./ui";
 import { HotkeyField } from "./HotkeyField";
+import { talkHotkeyPresets, validateTalkHotkey } from "./hotkey";
 import { listen } from "@tauri-apps/api/event";
 
 const fallbackCopyHotkey = () =>
@@ -183,6 +185,7 @@ export function App() {
   const [microphones, setMicrophones] = useState<AudioDevice[]>([]);
   const [stats, setStats] = useState<StatsSnapshot | null>(null);
   const [permissions, setPermissions] = useState<PermissionStatus | null>(null);
+  const [hotkeyStatus, setHotkeyStatus] = useState<HotkeyStatus | null>(null);
   const [historyQuery, setHistoryQuery] = useState("");
   const [historyApp, setHistoryApp] = useState("");
   const [historyRange, setHistoryRange] = useState<"all" | "today" | "7d">("all");
@@ -233,6 +236,7 @@ export function App() {
       setSuggestions(nextSuggestions);
       setBuild(nextBuild);
       setPrivacy(nextPrivacy);
+      setHotkeyStatus(hotkey);
       try {
         setMicrophones(await api.listMicrophones());
         setStats(await api.getStats());
@@ -465,10 +469,31 @@ export function App() {
   }, [view]);
 
   async function save(next: AppSettings) {
+    const problem = validateTalkHotkey(
+      next.hotkey,
+      next.copy_last_hotkey,
+      next.paste_last_hotkey,
+      next.edit_hotkey ?? fallbackEditHotkey(),
+    );
+    if (problem) {
+      setStatus(problem);
+      return;
+    }
     const previous = settings;
     setSettings(next);
     try {
       await api.saveSettings(next);
+      if (isTauriRuntime()) {
+        const bound = await api.getHotkeyStatus();
+        setHotkeyStatus(bound);
+        if (bound.error) {
+          setStatus(`Hotkey not registered: ${bound.error}`);
+        } else if (bound.registered) {
+          setStatus(
+            `Hold ${bound.registered.replace("Control", "Ctrl").replace("Command", "⌘")}, speak, release.`,
+          );
+        }
+      }
     } catch (err) {
       setSettings(previous);
       setStatus(err instanceof Error ? err.message : String(err));
@@ -478,6 +503,14 @@ export function App() {
   const host = hostKindFrom(build?.platform);
   const macOnly = showMacOnlyControls(host);
   const t = copy(settings.ui_language, host);
+  const captureHotkey = useCallback((listening: boolean) => {
+    if (!isTauriRuntime()) {
+      return;
+    }
+    void (listening ? api.pauseShortcutCapture() : api.resumeShortcutCapture()).catch(
+      () => undefined,
+    );
+  }, []);
   async function wipeLocalFlow() {
     if (!window.confirm(t.uninstallConfirm)) {
       return;
@@ -563,6 +596,14 @@ export function App() {
                   onClick={() => void api.openPrivacyPane("accessibility")}
                 >
                   {t.openAccessSettings}
+                </button>
+              )}
+              {macOnly && permissions && !permissions.accessibility_trusted && (
+                <button
+                  className="rounded-full border border-paper/30 px-4 py-2"
+                  onClick={() => void api.relaunchApp()}
+                >
+                  {t.quitRelaunchAccess}
                 </button>
               )}
             </div>
@@ -817,6 +858,14 @@ export function App() {
               label={t.hotkeyLabel}
               value={settings.hotkey}
               listeningLabel={t.hotkeyListening}
+              presets={talkHotkeyPresets(host)}
+              error={hotkeyStatus?.error}
+              hint={
+                hotkeyStatus?.registered && hotkeyStatus.registered !== settings.hotkey
+                  ? `${t.hotkeyActiveOther} ${hotkeyStatus.registered}`
+                  : undefined
+              }
+              onListeningChange={captureHotkey}
               onChange={(hotkey) => void save({ ...settings, hotkey })}
             />
             <p className="text-xs text-paper/60">{t.hotkeyHelp}</p>
@@ -1048,6 +1097,14 @@ export function App() {
                   onClick={() => void api.openPrivacyPane("accessibility")}
                 >
                   {t.accessPermission}
+                </button>
+              )}
+              {macOnly && permissions && !permissions.accessibility_trusted && (
+                <button
+                  className="rounded-full border border-paper/30 px-4 py-2 text-sm"
+                  onClick={() => void api.relaunchApp()}
+                >
+                  {t.quitRelaunchAccess}
                 </button>
               )}
             </div>
@@ -1304,18 +1361,21 @@ export function App() {
               label={t.copyLastHotkey}
               value={settings.copy_last_hotkey}
               listeningLabel={t.hotkeyListening}
+              onListeningChange={captureHotkey}
               onChange={(copy_last_hotkey) => void save({ ...settings, copy_last_hotkey })}
             />
             <HotkeyField
               label={t.pasteLastHotkey}
               value={settings.paste_last_hotkey}
               listeningLabel={t.hotkeyListening}
+              onListeningChange={captureHotkey}
               onChange={(paste_last_hotkey) => void save({ ...settings, paste_last_hotkey })}
             />
             <HotkeyField
               label={t.editHotkey}
               value={settings.edit_hotkey ?? fallbackEditHotkey()}
               listeningLabel={t.hotkeyListening}
+              onListeningChange={captureHotkey}
               onChange={(edit_hotkey) => void save({ ...settings, edit_hotkey })}
             />
             <div className="flex gap-3">

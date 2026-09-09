@@ -389,6 +389,9 @@ export const api = {
   installDictateMacro: () => call<string>("install_dictate_macro"),
   permissionStatus: () => call<PermissionStatus>("permission_status"),
   readJournal: () => call<JournalView>("read_journal"),
+  relaunchApp: () => call<void>("relaunch_app"),
+  pauseShortcutCapture: () => call<void>("pause_shortcut_capture"),
+  resumeShortcutCapture: () => call<void>("resume_shortcut_capture"),
   openPrivacyPane: (kind: "microphone" | "accessibility" | "speech") =>
     call<void>("open_privacy_pane", { kind }),
 };

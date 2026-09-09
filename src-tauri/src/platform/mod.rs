@@ -86,6 +86,11 @@ pub trait Platform: Send + Sync {
     /// trusted. No-op on other hosts. Must not be called from insert/paste.
     fn prompt_accessibility(&self) {}
 
+    /// Spawn a delayed reopen of this app, then the caller should `exit`.
+    /// Closing the main window only hides it, so Accessibility grants never
+    /// attach to a new process unless we actually quit.
+    fn schedule_relaunch(&self) {}
+
     fn open_privacy_pane(&self, kind: &str) -> LfResult<()>;
 
     fn set_autostart(&self, enabled: bool) -> LfResult<()>;

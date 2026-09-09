@@ -1,5 +1,6 @@
 use crate::engine::SharedEngine;
 use crate::paths::DataPaths;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use tauri::{
     menu::{Menu, MenuItem},
@@ -7,6 +8,8 @@ use tauri::{
     AppHandle, Manager, PhysicalPosition, WebviewWindow,
 };
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut};
+
+static SHORTCUT_CAPTURE: AtomicBool = AtomicBool::new(false);
 
 pub mod audio;
 pub mod autostart;
@@ -133,6 +136,9 @@ pub fn run() {
             commands::is_screen_locked,
             commands::open_privacy_pane,
             commands::permission_status,
+            commands::relaunch_app,
+            commands::pause_shortcut_capture,
+            commands::resume_shortcut_capture,
             commands::read_journal
         ])
         .setup(move |app| {
@@ -200,6 +206,9 @@ pub fn run() {
             app.handle().plugin(
                 tauri_plugin_global_shortcut::Builder::new()
                     .with_handler(move |_app, shortcut, event| {
+                        if SHORTCUT_CAPTURE.load(Ordering::Relaxed) {
+                            return;
+                        }
                         let pressed =
                             event.state == tauri_plugin_global_shortcut::ShortcutState::Pressed;
                         let released =
@@ -390,6 +399,10 @@ pub fn apply_shortcuts(app: &AppHandle, engine: &SharedEngine) -> Option<String>
         ),
         Err(_) => return Some("engine lock poisoned".into()),
     };
+    if SHORTCUT_CAPTURE.load(Ordering::Relaxed) {
+        unregister_known_shortcuts(app, previous.as_deref(), &talk, &copy, &paste, &edit);
+        return None;
+    }
     dictation::remember_microphone(mic);
     dictation::remember_hands_free(hands_free);
     dictation::remember_vad(vad);
@@ -400,19 +413,7 @@ pub fn apply_shortcuts(app: &AppHandle, engine: &SharedEngine) -> Option<String>
     {
         return None;
     }
-    for old in [
-        previous.as_deref(),
-        Some(talk.as_str()),
-        Some(copy.as_str()),
-        Some(paste.as_str()),
-        Some(edit.as_str()),
-        Some("Escape"),
-    ]
-    .into_iter()
-    .flatten()
-    {
-        let _ = app.global_shortcut().unregister(old);
-    }
+    unregister_known_shortcuts(app, previous.as_deref(), &talk, &copy, &paste, &edit);
     let fallbacks = crate::platform::talk_hotkey_fallbacks();
     let candidates = [talk.as_str(), fallbacks[0], fallbacks[1]];
     let mut registered = None;
@@ -421,7 +422,9 @@ pub fn apply_shortcuts(app: &AppHandle, engine: &SharedEngine) -> Option<String>
         match app.global_shortcut().register(shortcut) {
             Ok(()) => {
                 registered = Some(shortcut.to_string());
-                last_err = None;
+                if shortcut == talk.as_str() {
+                    last_err = None;
+                }
                 break;
             }
             Err(err) => {
@@ -443,16 +446,57 @@ pub fn apply_shortcuts(app: &AppHandle, engine: &SharedEngine) -> Option<String>
             None => overlay,
         });
     }
+    if registered.as_deref() != Some(talk.as_str()) {
+        if let Some(active) = &registered {
+            last_err = Some(match last_err {
+                Some(err) => format!("{err} Using {active} until you pick another."),
+                None => format!("Talk shortcut {talk} is unavailable. Using {active}."),
+            });
+        }
+    }
     let talk_active = registered.clone().unwrap_or(talk);
-    dictation::remember_hotkeys(talk_active.clone(), copy, paste, edit);
+    dictation::remember_hotkeys(talk_active, copy, paste, edit);
     if let Ok(mut eng) = engine.lock() {
         eng.hotkey_registered = registered.clone();
-        if let Some(active) = &registered {
-            eng.settings.hotkey = active.clone();
-        }
         eng.hotkey_error = last_err.clone();
     }
     last_err
+}
+
+fn unregister_known_shortcuts(
+    app: &AppHandle,
+    previous: Option<&str>,
+    talk: &str,
+    copy: &str,
+    paste: &str,
+    edit: &str,
+) {
+    for old in [
+        previous,
+        Some(talk),
+        Some(copy),
+        Some(paste),
+        Some(edit),
+        Some("Escape"),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        let _ = app.global_shortcut().unregister(old);
+    }
+}
+
+pub fn pause_shortcuts(app: &AppHandle, engine: &SharedEngine) {
+    SHORTCUT_CAPTURE.store(true, Ordering::Relaxed);
+    let _ = apply_shortcuts(app, engine);
+}
+
+pub fn resume_shortcuts(app: &AppHandle, engine: &SharedEngine) {
+    SHORTCUT_CAPTURE.store(false, Ordering::Relaxed);
+    if let Ok(mut eng) = engine.lock() {
+        eng.hotkey_registered = None;
+    }
+    let _ = apply_shortcuts(app, engine);
 }
 
 fn register_named_shortcut(app: &AppHandle, name: &str, shortcut: &str, errors: &mut Vec<String>) {
@@ -515,6 +559,14 @@ mod tests {
         assert!(
             src.contains("apply_shortcuts(&handle, &watcher)"),
             "a settings.json rewrite must rebind live hotkeys"
+        );
+        assert!(
+            !src.contains("eng.settings.hotkey = active"),
+            "a failed bind must not overwrite the user's chosen talk shortcut"
+        );
+        assert!(
+            src.contains("SHORTCUT_CAPTURE"),
+            "recording a new shortcut must unregister the live hotkey so the field can see the key"
         );
     }
 

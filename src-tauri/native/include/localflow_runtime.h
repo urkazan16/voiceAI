@@ -15,6 +15,7 @@ extern "C" {
 
 int lf_macos_transcribe(const char *wav_path, char *out, int out_len);
 int lf_screen_is_locked(void);
+int lf_accessibility_trusted(void);
 int lf_prompt_accessibility(void);
 
 #ifdef __cplusplus

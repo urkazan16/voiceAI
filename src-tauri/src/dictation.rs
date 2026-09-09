@@ -535,6 +535,10 @@ pub fn cancel(app: &AppHandle, engine: &SharedEngine, capture: &SharedCapture) {
 
 fn spawn_ptt_release_watch(capture: &SharedCapture) {
     let capture = capture.clone();
+    let (talk, _, _, _) = bound_hotkeys();
+    if !poll_physical_ptt_release(&talk) {
+        return;
+    }
     std::thread::spawn(move || {
         let mut saw_space = false;
         let began = std::time::Instant::now();
@@ -549,7 +553,6 @@ fn spawn_ptt_release_watch(capture: &SharedCapture) {
             if began.elapsed() < Duration::from_millis(80) {
                 continue;
             }
-            let (talk, _, _, _) = bound_hotkeys();
             if crate::injection::space_key_down() {
                 saw_space = true;
             }
@@ -565,6 +568,11 @@ fn spawn_ptt_release_watch(capture: &SharedCapture) {
             break;
         }
     });
+}
+
+fn poll_physical_ptt_release(hotkey: &str) -> bool {
+    let t = hotkey.trim().to_ascii_lowercase();
+    t.contains("space") || t == "fn" || t == "function" || t == "globe"
 }
 
 fn spawn_level_meter(app: &AppHandle, capture: &SharedCapture) {
@@ -882,7 +890,7 @@ fn finish_recording(app: &AppHandle, engine: &SharedEngine, capture: &SharedCapt
                 } else if let Some(err) = output.insert_error.clone().filter(|s| !s.is_empty()) {
                     format!(" {err}")
                 } else if !crate::permissions::accessibility_trusted() {
-                    " Enable Accessibility for LocalFlow in Privacy & Security, then Paste last."
+                    " Enable Accessibility for LocalFlow in Privacy & Security, then Quit from the menu bar and reopen, then Paste last."
                         .into()
                 } else {
                     String::new()
@@ -1062,6 +1070,10 @@ mod tests {
         assert!(!copy.is_empty());
         assert!(!paste.is_empty());
         assert!(!edit.is_empty());
+        assert!(poll_physical_ptt_release(&talk));
+        assert!(!poll_physical_ptt_release("F13"));
+        assert!(!poll_physical_ptt_release("Control+Shift+D"));
+        assert!(poll_physical_ptt_release("Fn"));
     }
 
     #[test]

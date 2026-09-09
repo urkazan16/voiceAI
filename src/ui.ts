@@ -105,7 +105,9 @@ const EN = {
   sttWillDownload:
     "Whisper will download automatically. You can continue and let it finish in the background.",
   accessibilityTrusted: " Accessibility: trusted.",
-  accessibilityNotTrusted: " Accessibility: not trusted yet.",
+  accessibilityNotTrusted:
+    " Accessibility: this process is not trusted yet. Closing the window does not quit — use Quit from the menu bar after toggling the switch.",
+  quitRelaunchAccess: "Quit and relaunch",
   browserHint:
     "This browser tab cannot talk to Rust. Keep npm run tauri dev running and use the LocalFlow window (it should open itself).",
   homeTitle: "Dictation pipeline",
@@ -130,8 +132,10 @@ const EN = {
   speechNeeds: "speech still needs",
   hotkeyLabel: "Talk shortcut",
   hotkeyHelp:
-    "Click the field, then press one key (Fn, Space, F13) or a combination (Control+Space, Control+Shift+Space). Escape cancels. Option+Space and Control+Space are often taken by macOS (Spotlight / input source).",
+    "Click the field, then press a combination. The current shortcut is released while you record so it cannot steal the key. Escape cancels. Control+C, Command+Space, Option+Space, and Fn (if the OS blocks it) are reserved — use F13 or Control+Shift+Space.",
   hotkeyListening: "Press a key or combination…",
+  hotkeyPresets: "Suggested",
+  hotkeyActiveOther: "OS could not bind this key. Dictation currently uses",
   speechLanguage: "Speech language",
   langRussian: "Russian",
   langEnglish: "English",
@@ -244,7 +248,8 @@ const EN = {
   barListening: "Listening",
   barNotPasted: "Not pasted",
   barFailed: "Failed",
-  barAccessHint: "Enable Accessibility for LocalFlow, then Paste last.",
+  barAccessHint:
+    "Turn LocalFlow off and on under Accessibility, then Quit from the menu bar (closing the window is not enough) and Paste last.",
   barPasteHint: "Click the field, then Paste last.",
   barDismiss: "Dismiss",
   barCancel: "Cancel",
@@ -278,7 +283,9 @@ const RU: typeof EN = {
   sttDownloading: "Загрузка с Hugging Face…",
   sttWillDownload: "Whisper скачается сам. Можно продолжить — загрузка пойдёт в фоне.",
   accessibilityTrusted: " Универсальный доступ: разрешён.",
-  accessibilityNotTrusted: " Универсальный доступ: ещё не разрешён.",
+  accessibilityNotTrusted:
+    " Универсальный доступ: этот процесс ещё не доверен. Закрытие окна не завершает приложение — после переключателя выйдите из LocalFlow через строку меню.",
+  quitRelaunchAccess: "Выйти и перезапустить",
   browserHint:
     "Эта вкладка браузера не связана с Rust. Оставьте npm run tauri dev и работайте в окне LocalFlow.",
   homeTitle: "Конвейер диктовки",
@@ -303,8 +310,10 @@ const RU: typeof EN = {
   speechNeeds: "для речи ещё нужно",
   hotkeyLabel: "Хоткей диктовки",
   hotkeyHelp:
-    "Нажмите поле, затем одну клавишу (Fn, Space, F13) или сочетание (Control+Space, Control+Shift+Space). Escape отменяет. Option+Space и Control+Space часто заняты macOS (Spotlight / раскладка).",
+    "Нажмите поле, затем сочетание. Пока идёт запись, текущий хоткей снимается и не перехватывает клавишу. Escape отменяет. Control+C, Command+Space и Option+Space запрещены (копирование, Spotlight, раскладка).",
   hotkeyListening: "Нажмите клавишу или сочетание…",
+  hotkeyPresets: "Варианты",
+  hotkeyActiveOther: "Система не взяла эту клавишу. Сейчас диктовка на",
   speechLanguage: "Язык речи",
   langRussian: "Русский",
   langEnglish: "Английский",
@@ -415,7 +424,8 @@ const RU: typeof EN = {
   barListening: "Слушаю",
   barNotPasted: "Не вставлено",
   barFailed: "Сбой",
-  barAccessHint: "Включите Универсальный доступ для LocalFlow, затем «Вставить последнее».",
+  barAccessHint:
+    "Выключите и включите LocalFlow в Универсальном доступе, затем полностью выйдите из приложения через строку меню (закрытия окна мало) и нажмите «Вставить последнее».",
   barPasteHint: "Кликните поле, затем «Вставить последнее».",
   barDismiss: "Скрыть",
   barCancel: "Отмена",
@@ -474,7 +484,7 @@ const WINDOWS_EN: Partial<UiCopy> = {
   homeHelp:
     "Type a sample and click Process locally, or hold the hotkey over a field. Whisper.cpp transcribes when the model is installed. Escape cancels. Ctrl+Alt+C/V copy or paste the last transcript.",
   hotkeyHelp:
-    "Click the field, then press one key or a combination (Ctrl+Space, Ctrl+Shift+Space). Escape cancels. Win+Space and some Ctrl+Shift chords are often taken by Windows.",
+    "Click the field, then press a combination (Ctrl+Shift+Space or F13). Escape cancels. Win+Space and Ctrl+C are reserved by Windows.",
   speechModelHelp:
     "Only Whisper files already on this PC are listed. Small/Base are faster; Medium is more accurate. Download others on the Models page.",
   deleteModel: "Delete from this PC",
@@ -495,7 +505,7 @@ const WINDOWS_RU: Partial<UiCopy> = {
   homeHelp:
     "Введите пример и нажмите «Обработать локально» или удерживайте хоткей над полем. Whisper.cpp распознаёт речь, когда модель установлена. Escape отменяет. Ctrl+Alt+C/V копируют или вставляют последний текст.",
   hotkeyHelp:
-    "Нажмите поле, затем одну клавишу или сочетание (Ctrl+Space, Ctrl+Shift+Space). Escape отменяет. Win+Space и некоторые сочетания Ctrl+Shift часто заняты Windows.",
+    "Нажмите поле, затем сочетание (Ctrl+Shift+Space или F13). Escape отменяет. Win+Space и Ctrl+C заняты Windows.",
   speechModelHelp:
     "В списке только Whisper, уже лежащие на этом ПК. Small/Base быстрее, Medium точнее. Остальные скачиваются в разделе «Модели».",
   deleteModel: "Удалить с этого ПК",
@@ -517,7 +527,7 @@ const LINUX_EN: Partial<UiCopy> = {
   homeHelp:
     "Type a sample and click Process locally, or hold the hotkey over a field. Whisper.cpp transcribes when the model is installed. Escape cancels. Ctrl+Alt+C/V copy or paste the last transcript.",
   hotkeyHelp:
-    "Click the field, then press one key or a combination (Ctrl+Space, Ctrl+Shift+Space). Escape cancels. Super+Space is often taken by the desktop input switcher.",
+    "Click the field, then press a combination (Ctrl+Shift+Space or F13). Escape cancels. Super+Space is often taken by the desktop input switcher.",
   speechModelHelp:
     "Only Whisper files already on this computer are listed. Small/Base are faster; Medium is more accurate. Download others on the Models page.",
   deleteModel: "Delete from this computer",
@@ -538,7 +548,7 @@ const LINUX_RU: Partial<UiCopy> = {
   homeHelp:
     "Введите пример и нажмите «Обработать локально» или удерживайте хоткей над полем. Whisper.cpp распознаёт речь, когда модель установлена. Escape отменяет. Ctrl+Alt+C/V копируют или вставляют последний текст.",
   hotkeyHelp:
-    "Нажмите поле, затем одну клавишу или сочетание (Ctrl+Space, Ctrl+Shift+Space). Escape отменяет. Super+Space часто занят переключателем раскладки.",
+    "Нажмите поле, затем сочетание (Ctrl+Shift+Space или F13). Escape отменяет. Super+Space часто занят переключателем раскладки.",
   speechModelHelp:
     "В списке только Whisper, уже лежащие на этом компьютере. Small/Base быстрее, Medium точнее. Остальные скачиваются в разделе «Модели».",
   deleteModel: "Удалить с этого компьютера",

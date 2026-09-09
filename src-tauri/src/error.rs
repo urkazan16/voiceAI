@@ -92,7 +92,7 @@ pub fn user_guidance(err: &LfError) -> String {
             "This looks like a password field. Dictation is ready — Copy last / Paste last after leaving the field.".into()
         }
         LfError::PermissionDenied(msg) if msg.to_lowercase().contains("accessib") => {
-            "macOS blocked paste. System Settings → Privacy & Security → Accessibility → enable LocalFlow, then Paste last.".into()
+            "macOS blocked paste for this LocalFlow process. A checked Accessibility switch can belong to an older copy, and closing the window does not quit. Turn LocalFlow off and on in System Settings → Privacy & Security → Accessibility, then Quit from the menu bar and reopen, then Paste last.".into()
         }
         LfError::PermissionDenied(msg) if msg.to_lowercase().contains("speech") => {
             "Whisper is not ready. Open Models and download the speech model, then try again.".into()
@@ -199,5 +199,10 @@ mod tests {
         assert!(gone.to_lowercase().contains("disconnected"), "{gone}");
         let invalid = user_guidance(&LfError::ConfigInvalid("Hotkeys cannot be empty.".into()));
         assert!(invalid.contains("Hotkeys"));
+        let access = user_guidance(&LfError::PermissionDenied(
+            "Accessibility permission required for insertion".into(),
+        ));
+        assert!(access.to_lowercase().contains("quit"), "{access}");
+        assert!(access.contains("Accessibility"), "{access}");
     }
 }
