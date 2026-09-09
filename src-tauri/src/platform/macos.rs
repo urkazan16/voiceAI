@@ -27,7 +27,6 @@ const VK_SPACE: u16 = 0x31;
 const VK_FUNCTION: u16 = 0x3F;
 const VK_ANSI_V: u16 = 0x09;
 const COMMAND_FLAG: u64 = 0x0010_0000;
-const HID_EVENT_TAP: u32 = 0;
 const SESSION_EVENT_TAP: u32 = 1;
 const HID_SYSTEM_STATE: i32 = 1;
 const COMBINED_SESSION_STATE: i32 = 0;
@@ -774,10 +773,13 @@ fn post_key(source: *mut c_void, vk: u16, down: bool, flags: u64, target_pid: Op
             return false;
         }
         CGEventSetFlags(event, flags);
-        CGEventPost(HID_EVENT_TAP, event);
-        CGEventPost(SESSION_EVENT_TAP, event);
+        // One destination only. HID + session + pid used to paste the same
+        // Command+V three times (Test. → Test.Test.Test.) and could stall
+        // the local event tap until the app looked frozen.
         if let Some(pid) = target_pid {
             CGEventPostToPid(pid, event);
+        } else {
+            CGEventPost(SESSION_EVENT_TAP, event);
         }
         CFRelease(event);
         true
@@ -878,6 +880,21 @@ mod tests {
         assert!(
             prod.contains("CGEventPostToPid"),
             "post Cmd+V to the remembered pid, not only the session tap"
+        );
+        let post_key_fn = prod
+            .split("fn post_key")
+            .nth(1)
+            .unwrap()
+            .split("fn release_stuck_modifiers")
+            .next()
+            .unwrap();
+        assert!(
+            !post_key_fn.contains("HID_EVENT_TAP"),
+            "HID + session + pid posts Command+V three times into the same field"
+        );
+        assert!(
+            post_key_fn.contains("CGEventPostToPid") && post_key_fn.contains("SESSION_EVENT_TAP"),
+            "pid when known, otherwise one session tap"
         );
         assert!(
             prod.contains("AXIsProcessTrusted"),

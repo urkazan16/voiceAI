@@ -161,6 +161,7 @@ pub struct ClipboardInjector {
 
 impl TextInjector for ClipboardInjector {
     fn insert_text(&self, text: &str, restore_clipboard: bool) -> LfResult<()> {
+        crate::dictation::conceal_overlay();
         platform::current().insert_text(&InsertRequest {
             text,
             restore_clipboard,

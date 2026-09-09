@@ -1,7 +1,7 @@
 use crate::audio::{self, SharedCapture};
 use crate::engine::SharedEngine;
 use crate::error::LfError;
-use crate::injection::ClipboardInjector;
+use crate::injection::{ClipboardInjector, MemoryInjector, TextInjector};
 use crate::llm::NativeLlm;
 use crate::pipeline::PipelineState;
 use crate::stt::NativeStt;
@@ -757,6 +757,7 @@ fn finish_recording(app: &AppHandle, engine: &SharedEngine, capture: &SharedCapt
             last_wav,
             keep_audio,
             decode_options,
+            restore_clipboard,
         ) = match engine.lock() {
             Ok(eng) => {
                 crate::whisper_stt::set_use_gpu(crate::whisper_stt::use_gpu_from_setting(
@@ -774,6 +775,7 @@ fn finish_recording(app: &AppHandle, engine: &SharedEngine, capture: &SharedCapt
                     eng.paths.last_utterance(),
                     eng.settings.keep_last_audio,
                     eng.decode_options(),
+                    eng.settings.restore_clipboard,
                 )
             }
             Err(_) => {
@@ -821,42 +823,58 @@ fn finish_recording(app: &AppHandle, engine: &SharedEngine, capture: &SharedCapt
         let engine_for_pipe = engine.clone();
         let (tx, rx) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
+            let mem = MemoryInjector::default();
             let result = match engine_for_pipe.lock() {
-                Ok(mut eng) => eng.run_text_pipeline(
-                    &raw,
-                    &NativeStt,
-                    &NativeLlm,
-                    &ClipboardInjector {
-                        target_pid: pid,
-                        target_app: app_name,
-                        insert_delay_ms: delay_ms,
-                    },
-                    &[],
-                ),
+                Ok(mut eng) => eng.run_text_pipeline(&raw, &NativeStt, &NativeLlm, &mem, &[]),
                 Err(_) => Err(LfError::Other("engine lock poisoned".into())),
             };
-            let _ = tx.send(result);
+            let paste = mem.last.lock().ok().and_then(|slot| slot.clone());
+            let _ = tx.send((result, paste));
         });
-        let result = match rx.recv_timeout(Duration::from_millis(timeout_ms.max(1_000))) {
-            Ok(r) => r,
-            Err(_) => {
-                CANCEL.store(true, Ordering::Relaxed);
-                fail(
-                    &app,
-                    &engine,
-                    "Post-processing timed out. Raise the timeout in Settings.",
-                    duration_ms,
-                );
-                // Leave CANCEL set so the orphan pipeline skips insert.
-                // The next talk press clears it in on_hotkey_pressed.
-                return;
-            }
-        };
+        let (mut result, paste) =
+            match rx.recv_timeout(Duration::from_millis(timeout_ms.max(1_000))) {
+                Ok(r) => r,
+                Err(_) => {
+                    CANCEL.store(true, Ordering::Relaxed);
+                    fail(
+                        &app,
+                        &engine,
+                        "Post-processing timed out. Raise the timeout in Settings.",
+                        duration_ms,
+                    );
+                    // Leave CANCEL set so the orphan pipeline skips insert.
+                    // The next talk press clears it in on_hotkey_pressed.
+                    return;
+                }
+            };
         if CANCEL.load(Ordering::Relaxed)
             || matches!(&result, Err(LfError::Other(m)) if m == "cancelled")
         {
             emit_cancelled(&app, &engine);
             return;
+        }
+        if let (Ok(output), Some(text)) = (result.as_mut(), paste.filter(|t| !t.is_empty())) {
+            if let Err(err) = (ClipboardInjector {
+                target_pid: pid,
+                target_app: app_name,
+                insert_delay_ms: delay_ms,
+            })
+            .insert_text(&text, restore_clipboard)
+            {
+                output.insert_ok = false;
+                output.insert_error = Some(crate::error::user_guidance(&err));
+                crate::journal::log("insert_failed", &err.to_string());
+                if let Ok(mut eng) = engine.lock() {
+                    if eng.session_text.ends_with(&text) {
+                        let keep = eng.session_text.len() - text.len();
+                        eng.session_text.truncate(keep);
+                    }
+                    if let Some(last) = eng.last_output.as_mut() {
+                        last.insert_ok = false;
+                        last.insert_error = output.insert_error.clone();
+                    }
+                }
+            }
         }
         match result {
             Ok(output) => {
@@ -1159,6 +1177,36 @@ mod tests {
         assert!(
             !press[..frontmost].contains("std::thread::spawn"),
             "frontmost must be read on this thread before the overlay appears"
+        );
+    }
+
+    #[test]
+    fn dictation_drops_the_engine_lock_before_command_v() {
+        let spawn = include_str!("dictation.rs")
+            .split("let engine_for_pipe = engine.clone();")
+            .nth(1)
+            .unwrap()
+            .split("rx.recv_timeout")
+            .next()
+            .unwrap();
+        assert!(
+            spawn.contains("MemoryInjector"),
+            "format under the engine lock without posting Command+V"
+        );
+        assert!(
+            !spawn.contains("ClipboardInjector"),
+            "Cmd+V while the engine mutex is held deadlocks the UI on macOS"
+        );
+        let after = include_str!("dictation.rs")
+            .split("rx.recv_timeout")
+            .nth(1)
+            .unwrap()
+            .split("match result")
+            .next()
+            .unwrap();
+        assert!(
+            after.contains("ClipboardInjector"),
+            "paste once the pipeline lock is dropped"
         );
     }
 

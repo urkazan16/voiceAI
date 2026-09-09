@@ -501,7 +501,6 @@ impl AppEngine {
         };
         if self.inject_enabled && !inject_text.is_empty() && !crate::dictation::is_cancelled() {
             crate::journal::log("insert", insert_method);
-            crate::dictation::conceal_overlay();
             if let Err(err) = injector.insert_text(&inject_text, self.settings.restore_clipboard) {
                 insert_ok = false;
                 insert_err = Some(err);
