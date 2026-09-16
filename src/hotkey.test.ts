@@ -163,6 +163,17 @@ describe("chordFromKeyboardEvent", () => {
       }),
     ).toBe("F13");
   });
+
+  it("rejects Fn and bare Space as unsafe global shortcuts", () => {
+    expect(reservedHotkeyReason("Fn")).toMatch(/Fn\/Globe/);
+    expect(reservedHotkeyReason("Space")).toMatch(/alone/);
+  });
+
+  it("rejects unsupported bare function keys", () => {
+    expect(reservedHotkeyReason("F12")).toMatch(/F13/);
+    expect(reservedHotkeyReason("F13")).toBeNull();
+    expect(reservedHotkeyReason("Control+F12")).toBeNull();
+  });
 });
 
 describe("hotkey validation", () => {

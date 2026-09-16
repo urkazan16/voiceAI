@@ -121,7 +121,7 @@ pub fn user_guidance(err: &LfError) -> String {
             }
         }
         LfError::RuntimeUnsupported(msg) if msg.to_lowercase().contains("timed out") => {
-            "Speech recognition timed out. On an Intel Mac pick Whisper Small or Base in Models."
+            "Speech recognition timed out. Pick Whisper Small or Base in Models for long files, especially on an Intel Mac."
                 .into()
         }
         LfError::InjectionFailed(msg) if msg.to_lowercase().contains("wayland") => msg.clone(),

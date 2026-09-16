@@ -84,6 +84,31 @@ pub fn append(paths: &DataPaths, mut line: UtteranceLine) -> std::io::Result<()>
     Ok(())
 }
 
+/// Keep the newest `keep` lines so the journal cannot grow without bound.
+pub fn prune_to_latest(paths: &DataPaths, keep: usize) -> std::io::Result<()> {
+    if keep == 0 {
+        return Ok(());
+    }
+    let path = paths.utterances();
+    let Ok(file) = fs::File::open(&path) else {
+        return Ok(());
+    };
+    let lines: Vec<String> = BufReader::new(file).lines().map_while(Result::ok).collect();
+    if lines.len() <= keep {
+        return Ok(());
+    }
+    let kept = &lines[lines.len() - keep..];
+    let tmp = path.with_extension("jsonl.tmp");
+    {
+        let mut out = fs::File::create(&tmp)?;
+        for line in kept {
+            writeln!(out, "{line}")?;
+        }
+    }
+    fs::rename(tmp, path)?;
+    Ok(())
+}
+
 pub fn read_since(paths: &DataPaths, epoch_rfc3339: Option<&str>) -> Vec<UtteranceLine> {
     let Ok(file) = fs::File::open(paths.utterances()) else {
         return Vec::new();
@@ -165,5 +190,44 @@ mod tests {
         assert_eq!(by_app.len(), 1);
         assert_eq!(by_app[0].application, "Mail");
         assert!((by_app[0].wpm_avg - 60.0).abs() < f64::EPSILON);
+    }
+
+    fn sample_line(id: &str, ts: &str) -> UtteranceLine {
+        UtteranceLine {
+            schema: 1,
+            id: id.into(),
+            ts: ts.into(),
+            timezone: "+0000".into(),
+            text: "hello".into(),
+            raw: "hello".into(),
+            application: "Mail".into(),
+            profile: "email".into(),
+            mode: "normal".into(),
+            model: "whisper-small".into(),
+            processing_time_ms: 10,
+            duration_ms: 2000,
+            word_count: 1,
+            wpm: 30.0,
+            insert_method: "clipboard".into(),
+            insert_ok: true,
+        }
+    }
+
+    #[test]
+    fn prune_keeps_only_the_newest_lines() {
+        let dir = tempdir().unwrap();
+        let paths = DataPaths::from_override(dir.path().to_path_buf());
+        for i in 0..5 {
+            append(
+                &paths,
+                sample_line(&i.to_string(), &format!("2026-09-05T10:0{i}:00+00:00")),
+            )
+            .unwrap();
+        }
+        prune_to_latest(&paths, 2).unwrap();
+        let rows = read_since(&paths, None);
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].id, "3");
+        assert_eq!(rows[1].id, "4");
     }
 }

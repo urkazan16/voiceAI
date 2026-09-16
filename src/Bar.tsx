@@ -1,6 +1,5 @@
 import { useEffect, useState } from "react";
-import { api, isTauriRuntime, type DictationState } from "./api";
-import { listen } from "@tauri-apps/api/event";
+import { api, isTauriRuntime, listenWhileMounted, type DictationState } from "./api";
 import { copy, hostKindFromUa, showMacOnlyControls } from "./ui";
 
 export function Bar() {
@@ -32,13 +31,10 @@ export function Bar() {
       .getSettings()
       .then((settings) => setLang(settings.ui_language))
       .catch(() => undefined);
-    let unlisten: (() => void) | undefined;
-    void listen<DictationState>("dictation-state", (event) => {
-      setState(event.payload);
-    }).then((fn) => {
-      unlisten = fn;
+    const stop = listenWhileMounted<DictationState>("dictation-state", (payload) => {
+      setState(payload);
     });
-    return () => unlisten?.();
+    return () => stop();
   }, []);
 
   useEffect(() => {

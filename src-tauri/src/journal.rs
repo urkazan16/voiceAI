@@ -3,7 +3,7 @@
 use crate::paths::DataPaths;
 use serde::Serialize;
 use std::fs::{self, OpenOptions};
-use std::io::Write;
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::Path;
 use std::sync::Mutex;
 use std::time::SystemTime;
@@ -113,22 +113,36 @@ pub fn read_recent_default(paths: &DataPaths) -> JournalView {
 }
 
 fn read_tail(path: &Path, max: usize) -> String {
-    let Ok(bytes) = fs::read(path) else {
+    let Ok(mut file) = fs::File::open(path) else {
         return String::new();
     };
+    let Ok(meta) = file.metadata() else {
+        return String::new();
+    };
+    let len = meta.len();
+    if len == 0 || max == 0 {
+        return String::new();
+    }
+    let start = len.saturating_sub(max as u64);
+    if start > 0 && file.seek(SeekFrom::Start(start)).is_err() {
+        return String::new();
+    }
+    let mut bytes = Vec::new();
+    if file.read_to_end(&mut bytes).is_err() {
+        return String::new();
+    }
     if bytes.is_empty() {
         return String::new();
     }
-    if bytes.len() <= max {
-        return String::from_utf8_lossy(&bytes).into_owned();
-    }
-    let start = bytes.len() - max;
-    let slice = &bytes[start..];
-    let slice = slice
-        .iter()
-        .position(|&b| b == b'\n')
-        .map(|i| &slice[i + 1..])
-        .unwrap_or(slice);
+    let slice = if start > 0 {
+        bytes
+            .iter()
+            .position(|&b| b == b'\n')
+            .map(|i| &bytes[i + 1..])
+            .unwrap_or(bytes.as_slice())
+    } else {
+        bytes.as_slice()
+    };
     String::from_utf8_lossy(slice).into_owned()
 }
 

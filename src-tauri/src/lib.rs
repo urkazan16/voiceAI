@@ -101,6 +101,11 @@ pub fn run() {
             commands::remove_unused_models,
             commands::last_utterance_ready,
             commands::repeat_last_utterance,
+            commands::begin_audio_upload,
+            commands::append_audio_upload,
+            commands::transcribe_staged_audio,
+            commands::transcribe_audio_file,
+            commands::get_transcribe_progress,
             commands::get_hotkey_status,
             commands::dictation_stop,
             commands::dictation_cancel,
@@ -489,6 +494,14 @@ fn unregister_known_shortcuts(
 pub fn pause_shortcuts(app: &AppHandle, engine: &SharedEngine) {
     SHORTCUT_CAPTURE.store(true, Ordering::Relaxed);
     let _ = apply_shortcuts(app, engine);
+    let app = app.clone();
+    let engine = engine.clone();
+    std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_secs(5));
+        if SHORTCUT_CAPTURE.load(Ordering::Relaxed) {
+            resume_shortcuts(&app, &engine);
+        }
+    });
 }
 
 pub fn resume_shortcuts(app: &AppHandle, engine: &SharedEngine) {

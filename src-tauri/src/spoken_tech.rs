@@ -75,8 +75,16 @@ fn apply_line(line: &str) -> String {
     }
     let tokens = expand_spelled_runs(tokens);
     let tokens = join_hex_runs(tokens);
+    let tokens = join_ipv4(tokens);
+    let tokens = join_ports(tokens);
     let tokens = join_versions(tokens);
+    let tokens = join_serials(tokens);
+    let tokens = join_tickets(tokens);
+    let tokens = join_cards(tokens);
+    let tokens = join_branches(tokens);
+    let tokens = join_math(tokens);
     let tokens = join_dotted_names(tokens);
+    let tokens = join_emails(tokens);
     tokens.join(" ")
 }
 
@@ -316,15 +324,34 @@ pub fn looks_technical(word: &str) -> bool {
     if has_digit && has_alpha && trimmed.contains('-') {
         return true;
     }
-    is_guid(trimmed) || is_hash_like(trimmed)
+    if has_digit
+        && has_alpha
+        && trimmed
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '²' | '³'))
+    {
+        return true;
+    }
+    if trimmed.chars().any(|c| matches!(c, '²' | '³' | '−')) {
+        return true;
+    }
+    is_ipv4(trimmed) || is_guid(trimmed) || is_hash_like(trimmed)
 }
 
 fn is_hash_like(word: &str) -> bool {
     let core = word.trim_end_matches(['.', ',']);
-    core.len() >= 7
+    core.len() >= 4
         && core.chars().all(|c| c.is_ascii_hexdigit())
         && core.chars().any(|c| c.is_ascii_alphabetic())
         && core.chars().any(|c| c.is_ascii_digit())
+}
+
+fn is_ipv4(word: &str) -> bool {
+    let parts: Vec<&str> = word.split('.').collect();
+    parts.len() == 4
+        && parts.iter().all(|p| {
+            p.parse::<u8>().is_ok() && !p.is_empty() && p.chars().all(|c| c.is_ascii_digit())
+        })
 }
 
 // ---------------------------------------------------------------- token affixes
@@ -566,9 +593,20 @@ fn stops_run(tokens: &[String], at: usize, mapper: impl Fn(&str) -> Option<char>
 // ---------------------------------------------------------------- hex runs
 
 const HEX_TRIGGERS: &[&[&str]] = &[
+    &["хеш", "начинается", "на"],
+    &["хэш", "начинается", "на"],
+    &["hash", "starts", "with"],
+    &["хеш", "заканчивается", "на"],
+    &["хэш", "заканчивается", "на"],
+    &["hash", "ends", "with"],
+    &["начинается", "на"],
+    &["заканчивается", "на"],
+    &["starts", "with"],
+    &["ends", "with"],
     &["коммит"],
     &["коммита"],
     &["коммите"],
+    &["коммитом"],
     &["commit"],
     &["хэш"],
     &["хеш"],
@@ -590,18 +628,21 @@ fn join_hex_runs(tokens: Vec<String>) -> Vec<String> {
     let mut out: Vec<String> = Vec::with_capacity(tokens.len());
     let mut i = 0;
     while i < tokens.len() {
-        let triggered = match_trigger(&tokens, i, HEX_TRIGGERS).is_some();
-        let start = if triggered { i + 1 } else { i };
-        let (run, trail, end) = collect_hex_run(&tokens, start);
-        let accepted = if triggered {
-            accept_hex(&run)
-        } else {
-            is_guid(&run)
-        };
-        if accepted && end > start {
-            if triggered {
-                out.push(tokens[i].clone());
+        if let Some(len) = match_trigger(&tokens, i, HEX_TRIGGERS) {
+            let start = i + len;
+            let (run, trail, end) = collect_hex_run(&tokens, start);
+            if accept_hex(&run) && end > start {
+                out.extend(tokens[i..i + len].iter().cloned());
+                out.push(format!("{}{trail}", reshape_guid(&run)));
+                i = end;
+                continue;
             }
+            out.push(tokens[i].clone());
+            i += 1;
+            continue;
+        }
+        let (run, trail, end) = collect_hex_run(&tokens, i);
+        if is_guid(&run) && end > i {
             out.push(format!("{}{trail}", reshape_guid(&run)));
             i = end;
             continue;
@@ -763,6 +804,609 @@ fn join_versions(tokens: Vec<String>) -> Vec<String> {
         if parts.len() >= 3 || (parts.len() == 2 && keyed) {
             out.push(format!("{}{trail}", parts.join(".")));
             i = j;
+            continue;
+        }
+        out.push(tokens[i].clone());
+        i += 1;
+    }
+    out
+}
+
+fn spoken_uint(word: &str) -> Option<u32> {
+    number_word(word).and_then(|s| s.parse().ok()).or_else(|| {
+        Some(match word {
+            "сто" | "hundred" => 100,
+            "двести" => 200,
+            "триста" => 300,
+            "четыреста" => 400,
+            "пятьсот" => 500,
+            "шестьсот" => 600,
+            "семьсот" => 700,
+            "восемьсот" => 800,
+            "девятьсот" => 900,
+            "тысяча" | "тысячи" | "тысяч" | "thousand" => 1000,
+            "девяносто" => 90,
+            "восемьдесят" => 80,
+            "семьдесят" => 70,
+            "шестьдесят" => 60,
+            "пятьдесят" => 50,
+            "сорок" => 40,
+            "тридцать" => 30,
+            _ => return None,
+        })
+    })
+}
+
+fn merge_uint(prev: u32, next: u32) -> Option<u32> {
+    if prev == 0 || next == 0 {
+        return None;
+    }
+    if matches!(next, 100 | 1000) && prev < next {
+        return Some(prev * next);
+    }
+    let scale = if prev % 1000 == 0 {
+        1000
+    } else if prev % 100 == 0 {
+        100
+    } else if prev % 10 == 0 && prev >= 20 {
+        10
+    } else {
+        return None;
+    };
+    (prev >= scale && next < scale).then_some(prev + next)
+}
+
+fn consume_uint(tokens: &[String], start: usize, max: u32) -> Option<(u32, usize)> {
+    let mut pending: Option<u32> = None;
+    let mut j = start;
+    while j < tokens.len() {
+        let w = core(&tokens[j]);
+        let Some(n) = spoken_uint(&w) else {
+            break;
+        };
+        pending = match pending {
+            None => Some(n),
+            Some(prev) => match merge_uint(prev, n) {
+                Some(merged) => Some(merged),
+                None => break,
+            },
+        };
+        if pending.is_some_and(|v| v > max) {
+            return None;
+        }
+        j += 1;
+    }
+    let value = pending?;
+    (value <= max).then_some((value, j))
+}
+
+fn is_dot_token(token: &str) -> bool {
+    let w = core(token);
+    dot_word(&w) || w == "." || token.trim() == "."
+}
+
+fn join_ipv4(tokens: Vec<String>) -> Vec<String> {
+    let mut out: Vec<String> = Vec::with_capacity(tokens.len());
+    let mut i = 0;
+    while i < tokens.len() {
+        if let Some((ip, end)) = take_ipv4(&tokens, i) {
+            out.push(ip);
+            i = end;
+            continue;
+        }
+        out.push(tokens[i].clone());
+        i += 1;
+    }
+    out
+}
+
+fn take_ipv4(tokens: &[String], start: usize) -> Option<(String, usize)> {
+    let mut octets = Vec::new();
+    let mut j = start;
+    loop {
+        let (value, next) = consume_uint(tokens, j, 255)?;
+        octets.push(value);
+        j = next;
+        if octets.len() == 4 {
+            return Some((
+                format!("{}.{}.{}.{}", octets[0], octets[1], octets[2], octets[3]),
+                j,
+            ));
+        }
+        if j >= tokens.len() || !is_dot_token(&tokens[j]) {
+            return None;
+        }
+        j += 1;
+    }
+}
+
+fn join_ports(tokens: Vec<String>) -> Vec<String> {
+    let mut out: Vec<String> = Vec::with_capacity(tokens.len());
+    let mut i = 0;
+    while i < tokens.len() {
+        out.push(tokens[i].clone());
+        let keyed = matches!(
+            core(&tokens[i]).as_str(),
+            "порт" | "порта" | "порту" | "port"
+        );
+        if keyed {
+            if let Some((value, end)) = consume_uint(&tokens, i + 1, 65_535) {
+                if end > i + 1 {
+                    out.push(value.to_string());
+                    i = end;
+                    continue;
+                }
+            }
+        }
+        i += 1;
+    }
+    out
+}
+
+const SERIAL_TRIGGERS: &[&[&str]] = &[
+    &["серийный", "номер"],
+    &["серийного", "номера"],
+    &["serial", "number"],
+    &["serial"],
+    &["эс", "эн"],
+];
+
+const SERIAL_FILLERS: &[&str] = &["устройства", "устройство", "прибора", "device", "of", "the"];
+
+fn join_serials(tokens: Vec<String>) -> Vec<String> {
+    let mut out: Vec<String> = Vec::with_capacity(tokens.len());
+    let mut i = 0;
+    while i < tokens.len() {
+        if let Some(len) = match_trigger(&tokens, i, SERIAL_TRIGGERS) {
+            out.extend(tokens[i..i + len].iter().cloned());
+            let mut j = i + len;
+            while tokens
+                .get(j)
+                .is_some_and(|t| SERIAL_FILLERS.contains(&core(t).as_str()))
+            {
+                out.push(tokens[j].clone());
+                j += 1;
+            }
+            if let Some((literal, end)) = take_serial(&tokens, j) {
+                out.push(literal);
+                i = end;
+                continue;
+            }
+            i = j;
+            continue;
+        }
+        out.push(tokens[i].clone());
+        i += 1;
+    }
+    out
+}
+
+fn take_serial(tokens: &[String], start: usize) -> Option<(String, usize)> {
+    let mut j = start;
+    if tokens
+        .get(j)
+        .is_some_and(|t| looks_like_serial_token(t) && t.contains('-'))
+    {
+        return Some((tokens[j].clone(), j + 1));
+    }
+    let mut body = String::new();
+    let begin = j;
+    while j < tokens.len() {
+        let token = &tokens[j];
+        let w = core(token);
+        if spoken_separator(&w) == Some('-') || token.trim() == "-" {
+            body.push('-');
+            j += 1;
+            continue;
+        }
+        if let Some(n) = consume_uint(tokens, j, u32::MAX) {
+            if n.1 > j {
+                body.push_str(&n.0.to_string());
+                j = n.1;
+                continue;
+            }
+        }
+        if let Some(ch) = spelled_char(token).filter(|c| c.is_ascii_alphanumeric()) {
+            body.push(ch.to_ascii_uppercase());
+            j += 1;
+            continue;
+        }
+        if looks_like_serial_token(token) {
+            body.push_str(&token.to_ascii_uppercase());
+            j += 1;
+            continue;
+        }
+        break;
+    }
+    if j == begin || body.chars().filter(|c| c.is_ascii_digit()).count() < 2 {
+        return None;
+    }
+    Some((body, j))
+}
+
+fn looks_like_serial_token(token: &str) -> bool {
+    let core = token.trim_matches(|c: char| matches!(c, ',' | '.' | ';' | ':' | '!' | '?'));
+    let has_digit = core.chars().any(|c| c.is_ascii_digit());
+    let has_alpha = core.chars().any(|c| c.is_ascii_alphabetic());
+    has_digit
+        && (has_alpha || core.contains('-'))
+        && core.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
+}
+
+const TICKET_TRIGGERS: &[&[&str]] = &[
+    &["тикет"],
+    &["тикета"],
+    &["тикете"],
+    &["ticket"],
+    &["джира"],
+    &["jira"],
+    &["issue"],
+];
+
+fn join_tickets(tokens: Vec<String>) -> Vec<String> {
+    join_after_trigger(&tokens, TICKET_TRIGGERS, take_ticket)
+}
+
+fn take_ticket(tokens: &[String], start: usize) -> Option<(String, usize)> {
+    if tokens.get(start).is_some_and(|t| is_ticket_token(t)) {
+        return Some((tokens[start].to_uppercase(), start + 1));
+    }
+    let mut prefix = String::new();
+    let mut j = start;
+    while j < tokens.len() {
+        let w = core(&tokens[j]);
+        if spoken_separator(&w) == Some('-') || tokens[j].trim() == "-" {
+            break;
+        }
+        if let Some(ch) = math_letter(&w).or_else(|| spoken_letters(&w).first().copied()) {
+            prefix.push(ch.to_ascii_uppercase());
+            j += 1;
+            continue;
+        }
+        if w.chars().all(char::is_alphabetic) && w.chars().count() >= 2 {
+            prefix.push_str(&ticket_prefix(&transliterate(&w)));
+            j += 1;
+            continue;
+        }
+        break;
+    }
+    if prefix.len() < 2 || j >= tokens.len() {
+        return None;
+    }
+    if spoken_separator(&core(&tokens[j])) != Some('-') && tokens[j].trim() != "-" {
+        return None;
+    }
+    j += 1;
+    let (number, end) = consume_uint(tokens, j, 999_999)?;
+    Some((format!("{prefix}-{number}"), end))
+}
+
+fn is_ticket_token(token: &str) -> bool {
+    let parts: Vec<&str> = token.split('-').collect();
+    parts.len() == 2
+        && parts[0].len() >= 2
+        && parts[0].chars().all(|c| c.is_ascii_alphabetic())
+        && !parts[1].is_empty()
+        && parts[1].chars().all(|c| c.is_ascii_digit())
+}
+
+fn ticket_prefix(raw: &str) -> String {
+    match raw.to_ascii_lowercase().as_str() {
+        "vois" | "voice" | "войс" => "VOICE".into(),
+        other => other.to_ascii_uppercase(),
+    }
+}
+
+const CARD_TRIGGERS: &[&[&str]] = &[&["карта"], &["карте"], &["карту"], &["карточки"], &["card"]];
+
+fn join_cards(tokens: Vec<String>) -> Vec<String> {
+    join_after_trigger(&tokens, CARD_TRIGGERS, take_card)
+}
+
+fn take_card(tokens: &[String], start: usize) -> Option<(String, usize)> {
+    if tokens.get(start..start.saturating_add(4)).is_some_and(|g| {
+        g.iter()
+            .all(|t| t.len() == 4 && t.chars().all(|c| c.is_ascii_digit()))
+    }) {
+        return Some((
+            format!(
+                "{} {} {} {}",
+                tokens[start],
+                tokens[start + 1],
+                tokens[start + 2],
+                tokens[start + 3]
+            ),
+            start + 4,
+        ));
+    }
+    let mut digits = String::new();
+    let mut j = start;
+    while j < tokens.len() && digits.len() < 16 {
+        let w = core(&tokens[j]);
+        if let Some(d) = spoken_digit(&w) {
+            digits.push(d);
+            j += 1;
+            continue;
+        }
+        if !w.is_empty() && w.chars().all(|c| c.is_ascii_digit()) {
+            digits.push_str(&w);
+            j += 1;
+            continue;
+        }
+        break;
+    }
+    if digits.len() != 16 {
+        return None;
+    }
+    Some((
+        format!(
+            "{} {} {} {}",
+            &digits[0..4],
+            &digits[4..8],
+            &digits[8..12],
+            &digits[12..16]
+        ),
+        j,
+    ))
+}
+
+const BRANCH_TRIGGERS: &[&[&str]] = &[&["ветке"], &["ветка"], &["ветки"], &["ветку"], &["branch"]];
+
+fn join_branches(tokens: Vec<String>) -> Vec<String> {
+    join_after_trigger(&tokens, BRANCH_TRIGGERS, take_branch)
+}
+
+fn take_branch(tokens: &[String], start: usize) -> Option<(String, usize)> {
+    if tokens
+        .get(start)
+        .is_some_and(|t| t.contains('/') && is_branch_token(t))
+    {
+        return Some((tokens[start].to_lowercase(), start + 1));
+    }
+    let (left, mid) = take_branch_ident(tokens, start)?;
+    if mid >= tokens.len() {
+        return None;
+    }
+    let sep = core(&tokens[mid]);
+    if spoken_separator(&sep) != Some('/') && tokens[mid].trim() != "/" {
+        return None;
+    }
+    let (right, end) = take_branch_ident(tokens, mid + 1)?;
+    Some((format!("{left}/{right}"), end))
+}
+
+fn take_branch_ident(tokens: &[String], start: usize) -> Option<(String, usize)> {
+    let mut ident = String::new();
+    let mut j = start;
+    while j < tokens.len() {
+        let w = core(&tokens[j]);
+        if spoken_separator(&w) == Some('/') {
+            break;
+        }
+        if let Some(ch) = spelled_char(&tokens[j]).filter(|c| c.is_ascii_alphanumeric()) {
+            ident.push(ch.to_ascii_lowercase());
+            j += 1;
+            continue;
+        }
+        if w.chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+            && !w.is_empty()
+        {
+            ident.push_str(&w.to_lowercase());
+            j += 1;
+            continue;
+        }
+        if has_cyrillic(&w) && w.chars().all(char::is_alphabetic) {
+            ident.push_str(&branch_word(&w));
+            j += 1;
+            continue;
+        }
+        break;
+    }
+    (!ident.is_empty()).then_some((ident, j))
+}
+
+fn is_branch_token(token: &str) -> bool {
+    token
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '/' | '-' | '_' | '.'))
+}
+
+fn branch_word(word: &str) -> String {
+    match transliterate(word).as_str() {
+        "fiks" | "fix" => "fix".into(),
+        other => other.to_string(),
+    }
+}
+
+fn math_context(tokens: &[String]) -> bool {
+    tokens.iter().any(|t| {
+        matches!(
+            core(t).as_str(),
+            "дискриминант"
+                | "discriminant"
+                | "квадрат"
+                | "squared"
+                | "куб"
+                | "cubed"
+                | "равен"
+                | "equals"
+                | "формула"
+                | "формуле"
+                | "formula"
+        )
+    })
+}
+
+fn math_letter(word: &str) -> Option<char> {
+    if word.chars().count() == 1 {
+        let ch = word.chars().next()?;
+        if ch.is_ascii_alphabetic() {
+            return Some(ch.to_ascii_lowercase());
+        }
+        return match ch {
+            'а' => Some('a'),
+            'б' => Some('b'),
+            'ц' | 'с' => Some('c'),
+            'д' => Some('d'),
+            'е' => Some('e'),
+            'ф' => Some('f'),
+            _ => spoken_letters(word).first().copied(),
+        };
+    }
+    spoken_letters(word)
+        .first()
+        .copied()
+        .filter(|_| !is_ambiguous_short_word(word) || matches!(word, "б" | "цэ" | "ц" | "а"))
+}
+
+fn is_math_atom(token: &str) -> bool {
+    !token.is_empty()
+        && token.len() <= 12
+        && token
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '²' | '³' | '−' | '-' | '(' | ')'))
+        && token
+            .chars()
+            .any(|c| c.is_ascii_alphanumeric() || matches!(c, '²' | '³'))
+        && !has_cyrillic(token)
+}
+
+fn join_math(tokens: Vec<String>) -> Vec<String> {
+    if !math_context(&tokens) {
+        return tokens;
+    }
+    let mut out: Vec<String> = Vec::with_capacity(tokens.len());
+    let mut i = 0;
+    while i < tokens.len() {
+        if tokens[i] == "−"
+            || (is_math_atom(&tokens[i])
+                && tokens[i].chars().any(|c| {
+                    matches!(c, '²' | '³')
+                        || c.is_ascii_digit() && tokens[i].chars().any(char::is_alphabetic)
+                }))
+        {
+            out.push(tokens[i].clone());
+            i += 1;
+            continue;
+        }
+        let w = core(&tokens[i]);
+        if matches!(w.as_str(), "квадрат" | "squared") {
+            if let Some(last) = out.last_mut() {
+                if last.chars().last().is_some_and(|c| c.is_ascii_alphabetic()) {
+                    last.push('²');
+                    i += 1;
+                    continue;
+                }
+            }
+        }
+        if matches!(w.as_str(), "куб" | "cubed") {
+            if let Some(last) = out.last_mut() {
+                if last.chars().last().is_some_and(|c| c.is_ascii_alphabetic()) {
+                    last.push('³');
+                    i += 1;
+                    continue;
+                }
+            }
+        }
+        if matches!(w.as_str(), "минус" | "minus")
+            && out.last().is_some_and(|t| is_math_atom(t))
+            && tokens
+                .get(i + 1)
+                .is_some_and(|t| is_math_atom_token(t) || math_letter(&core(t)).is_some())
+        {
+            out.push("−".into());
+            i += 1;
+            continue;
+        }
+        if let Some(ch) = math_letter(&w) {
+            if let Some(last) = out.last_mut() {
+                if is_math_atom(last)
+                    && last
+                        .chars()
+                        .last()
+                        .is_some_and(|c| c.is_ascii_alphanumeric() || matches!(c, '²' | '³'))
+                {
+                    last.push(ch);
+                    i += 1;
+                    continue;
+                }
+            }
+            out.push(ch.to_string());
+            i += 1;
+            continue;
+        }
+        if let Some((n, end)) = consume_uint(&tokens, i, 10_000) {
+            if end > i
+                && tokens[i..end]
+                    .iter()
+                    .all(|t| spoken_uint(&core(t)).is_some())
+            {
+                out.push(n.to_string());
+                i = end;
+                continue;
+            }
+        }
+        out.push(tokens[i].clone());
+        i += 1;
+    }
+    out
+}
+
+fn is_math_atom_token(token: &str) -> bool {
+    spoken_uint(&core(token)).is_some()
+        || math_letter(&core(token)).is_some()
+        || is_math_atom(token)
+}
+
+fn join_emails(tokens: Vec<String>) -> Vec<String> {
+    let mut out: Vec<String> = Vec::with_capacity(tokens.len());
+    let mut i = 0;
+    while i < tokens.len() {
+        let at = matches!(core(&tokens[i]).as_str(), "собака") || tokens[i].trim() == "@";
+        if at && !out.is_empty() && i + 1 < tokens.len() {
+            let left = out.pop().unwrap();
+            let (_, left_core, _) = split_affixes(&left);
+            let right = tokens[i + 1].clone();
+            if !left_core.is_empty() && looks_like_local_part(left_core) {
+                out.push(format!("{left_core}@{right}"));
+                i += 2;
+                continue;
+            }
+            out.push(left);
+        }
+        out.push(tokens[i].clone());
+        i += 1;
+    }
+    out
+}
+
+fn looks_like_local_part(text: &str) -> bool {
+    !text.is_empty()
+        && text
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '+' | '-'))
+}
+
+fn join_after_trigger(
+    tokens: &[String],
+    triggers: &[&[&str]],
+    take: fn(&[String], usize) -> Option<(String, usize)>,
+) -> Vec<String> {
+    let mut out: Vec<String> = Vec::with_capacity(tokens.len());
+    let mut i = 0;
+    while i < tokens.len() {
+        if let Some(len) = match_trigger(tokens, i, triggers) {
+            for token in &tokens[i..i + len] {
+                out.push(token.clone());
+            }
+            let start = i + len;
+            if let Some((literal, end)) = take(tokens, start) {
+                out.push(literal);
+                i = end;
+                continue;
+            }
+            i = start;
             continue;
         }
         out.push(tokens[i].clone());
@@ -1171,5 +1815,72 @@ mod tests {
         assert_eq!(out.open_literal, None);
         let next = frame("и проверь релиз", false, out.open_literal.as_deref());
         assert!(!next.glue);
+    }
+
+    #[test]
+    fn rebuilds_ip_port_email_serial_ticket_branch_and_math() {
+        assert_eq!(
+            apply(
+                "адрес сервера сто девяносто два точка сто шестьдесят восемь точка двадцать восемь точка сто девяносто девять порт восемь тысяч восемьдесят"
+            ),
+            "адрес сервера 192.168.28.199 порт 8080"
+        );
+        assert_eq!(
+            apply("напиши на адрес support собака example точка com"),
+            "напиши на адрес support@example.com"
+        );
+        assert_eq!(
+            apply("серийный номер устройства SN47-47322"),
+            "серийный номер устройства SN47-47322"
+        );
+        assert_eq!(
+            apply("серийный номер устройства эс эн 47 дефис 47322"),
+            "серийный номер устройства SN47-47322"
+        );
+        assert_eq!(
+            apply("проверь коммит эф 4 д 5 4 б"),
+            "проверь коммит f4d54b"
+        );
+        assert_eq!(
+            apply("хеш начинается на бэ 5 бэ 4 0 1 и заканчивается на 9 3 9 е"),
+            "хеш начинается на b5b401 и заканчивается на 939e"
+        );
+        assert_eq!(
+            apply("тикет войс дефис 798 закрыт коммитом f4d5 в ветке fix слэш gmv"),
+            "тикет VOICE-798 закрыт коммитом f4d5 в ветке fix/gmv"
+        );
+        assert_eq!(
+            apply("карта 6347 2472 1830 5276"),
+            "карта 6347 2472 1830 5276"
+        );
+        assert_eq!(
+            apply("дискриминант равен б квадрат минус четыре а цэ"),
+            "дискриминант равен b² − 4ac"
+        );
+    }
+
+    #[test]
+    fn already_formatted_technical_sentences_stay_intact() {
+        for text in [
+            "Адрес сервера 192.168.28.199 порт 8080",
+            "support@example.com",
+            "SN47-47322",
+            "коммит f4d54b",
+            "VOICE-798",
+            "fix/gmv",
+            "b² − 4ac",
+        ] {
+            assert!(
+                apply(text).contains(text.split_whitespace().last().unwrap()),
+                "{}",
+                apply(text)
+            );
+        }
+        assert!(looks_technical("192.168.28.199"));
+        assert!(looks_technical("support@example.com"));
+        assert!(looks_technical("f4d54b"));
+        assert!(looks_technical("fix/gmv"));
+        assert!(looks_technical("4ac"));
+        assert!(looks_technical("b²"));
     }
 }

@@ -411,6 +411,7 @@ impl AppEngine {
             vad_model: None,
             timestamps: false,
             long_form: false,
+            vad_threshold: self.settings.vad_threshold,
         }
     }
 
@@ -454,6 +455,7 @@ impl AppEngine {
             let options = if self.file_verbatim {
                 let mut options = crate::whisper_stt::DecodeOptions::long_form_interview();
                 options.vad_model = self.vad_model_path();
+                options.vad_threshold = self.settings.vad_threshold;
                 options
             } else {
                 self.decode_options()
@@ -470,7 +472,13 @@ impl AppEngine {
             transcript.to_string()
         };
         let raw = crate::sanitize::strip_model_tags(&raw);
+        let is_spell_end = self.spell_mode
+            && matches!(
+                raw.trim().to_ascii_lowercase().as_str(),
+                "конец" | "стоп" | "всё" | "все" | "end" | "stop"
+            );
         if crate::sanitize::is_likely_hallucination(&raw)
+            && !is_spell_end
             && (!self.file_verbatim || raw.split_whitespace().count() < 8)
         {
             return Err(LfError::Other(

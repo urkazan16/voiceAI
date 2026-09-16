@@ -120,8 +120,10 @@ pub fn save_settings(
     let compute_changed;
     let compute;
     let preload_path;
+    let previous_settings;
     {
         let mut eng = lock(&engine)?;
+        previous_settings = eng.settings.clone();
         crate::journal::set_max_bytes(settings.log_max_bytes);
         compute_changed = eng.settings.compute_device != settings.compute_device;
         compute = settings.compute_device.clone();
@@ -135,6 +137,20 @@ pub fn save_settings(
         }
     }
     crate::apply_shortcuts(&app, &engine);
+    let requested_talk = lock(&engine)?.settings.hotkey.clone();
+    let applied_talk = lock(&engine)?.hotkey_registered.clone();
+    if previous_settings.hotkey != requested_talk
+        && applied_talk.as_deref() != Some(requested_talk.as_str())
+    {
+        let mut eng = lock(&engine)?;
+        commit_settings(&mut eng, previous_settings)?;
+        drop(eng);
+        crate::apply_shortcuts(&app, &engine);
+        return Err(CommandError {
+            code: "CONFIG_INVALID".into(),
+            message: "The selected talk shortcut could not be registered. The previous working shortcut was restored.".into(),
+        });
+    }
     Ok(())
 }
 
@@ -913,13 +929,16 @@ pub fn begin_audio_upload(filename: String) -> Result<String, CommandError> {
             ),
         });
     }
-    let ext = hint
-        .extension()
-        .and_then(|e| e.to_str())
-        .unwrap_or("wav");
+    let ext = hint.extension().and_then(|e| e.to_str()).unwrap_or("wav");
     let id = uuid::Uuid::new_v4().to_string();
-    let dir = std::env::temp_dir().join("localflow-uploads");
+    let dir = std::env::temp_dir().join("localflow-uploads").join(&id);
     std::fs::create_dir_all(&dir).map_err(LfError::from)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700))
+            .map_err(LfError::from)?;
+    }
     let path = dir.join(format!("{id}.{ext}"));
     OpenOptions::new()
         .create(true)
@@ -994,6 +1013,9 @@ pub async fn transcribe_staged_audio(
     let result = tokio::task::spawn_blocking(move || {
         let out = transcribe_audio_file_sync(engine, name, Some(path.display().to_string()), None);
         let _ = std::fs::remove_file(&path);
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::remove_dir(parent);
+        }
         out
     })
     .await
@@ -1089,6 +1111,7 @@ fn transcribe_audio_file_sync(
         })?;
         let mut options = crate::whisper_stt::DecodeOptions::long_form_interview();
         options.vad_model = eng.vad_model_path();
+        options.vad_threshold = eng.settings.vad_threshold;
         (
             stt_path,
             eng.settings.stt_language.clone(),

@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import catalogJson from "../src-tauri/resources/model-catalog.json";
 
 export type ViewId =
@@ -216,6 +217,23 @@ export function isTauriRuntime(): boolean {
   return typeof (window as TauriWindow).__TAURI_INTERNALS__?.invoke === "function";
 }
 
+/** Unsubscribe even if the effect tears down before listen() resolves. */
+export function listenWhileMounted<T>(event: string, handler: (payload: T) => void): () => void {
+  let cancelled = false;
+  let unlisten: (() => void) | undefined;
+  void listen<T>(event, (e) => handler(e.payload)).then((fn) => {
+    if (cancelled) {
+      fn();
+      return;
+    }
+    unlisten = fn;
+  });
+  return () => {
+    cancelled = true;
+    unlisten?.();
+  };
+}
+
 export const bundledCatalog: ModelRecord[] = catalogJson.models as ModelRecord[];
 
 export interface DictationState {
@@ -227,6 +245,15 @@ export interface DictationState {
   insert_ok?: boolean;
   rms?: number;
   wpm?: number | null;
+}
+
+export interface TranscribeProgress {
+  phase: string;
+  percent: number;
+  chunk: number;
+  chunks: number;
+  audio_ms: number;
+  message: string;
 }
 
 export interface PermissionStatus {
@@ -376,6 +403,14 @@ export const api = {
     call<{ model_id: string; bytes_freed: number }[]>("remove_unused_models"),
   lastUtteranceReady: () => call<boolean>("last_utterance_ready"),
   repeatLastUtterance: () => call<PipelineOutput>("repeat_last_utterance"),
+  beginAudioUpload: (filename: string) => call<string>("begin_audio_upload", { filename }),
+  appendAudioUpload: (id: string, chunk: number[]) =>
+    call<number>("append_audio_upload", { id, chunk }),
+  transcribeStagedAudio: (id: string, filename?: string) =>
+    call<PipelineOutput>("transcribe_staged_audio", { id, filename }),
+  transcribeAudioFile: (args: { filename: string; path?: string; bytes?: number[] }) =>
+    call<PipelineOutput>("transcribe_audio_file", args),
+  getTranscribeProgress: () => call<TranscribeProgress>("get_transcribe_progress"),
   getHotkeyStatus: () => call<HotkeyStatus>("get_hotkey_status"),
   getStats: () => call<StatsSnapshot>("get_stats"),
   resetStats: () => call<void>("reset_stats"),

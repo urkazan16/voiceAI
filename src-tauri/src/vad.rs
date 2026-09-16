@@ -90,7 +90,97 @@ pub fn had_speech(pcm: &[f32], sample_rate: u32) -> bool {
 }
 
 pub fn had_speech_at(pcm: &[f32], sample_rate: u32, threshold: f32) -> bool {
-    !trim_silence_at(pcm, sample_rate, threshold).is_empty()
+    if pcm.is_empty() || sample_rate == 0 {
+        return false;
+    }
+    let threshold = clamp_threshold(threshold);
+    let frame_len = ((sample_rate * FRAME_MS) / 1000).max(1) as usize;
+    pcm.chunks(frame_len).any(|frame| rms(frame) >= threshold)
+}
+
+/// Speech islands in milliseconds, padded like `trim_silence_at`.
+pub fn speech_ranges_ms(pcm: &[f32], sample_rate: u32, threshold: f32) -> Vec<(u64, u64)> {
+    if pcm.is_empty() || sample_rate == 0 {
+        return Vec::new();
+    }
+    let threshold = clamp_threshold(threshold);
+    let frame_len = ((sample_rate * FRAME_MS) / 1000).max(1) as usize;
+    let frames: Vec<bool> = pcm
+        .chunks(frame_len)
+        .map(|frame| rms(frame) >= threshold)
+        .collect();
+    let voiced: Vec<usize> = frames
+        .iter()
+        .enumerate()
+        .filter_map(|(i, voiced)| voiced.then_some(i))
+        .collect();
+    if voiced.is_empty() {
+        return Vec::new();
+    }
+    let mut clusters: Vec<(usize, usize)> = vec![(voiced[0], voiced[0])];
+    for &idx in &voiced[1..] {
+        let last = clusters.last_mut().expect("cluster");
+        if idx.saturating_sub(last.1) > 8 {
+            clusters.push((idx, idx));
+        } else {
+            last.1 = idx;
+        }
+    }
+    let n_frames = frames.len();
+    clusters
+        .into_iter()
+        .map(|(first, last)| {
+            let start = first.saturating_sub(LEAD_PAD_FRAMES);
+            let end = (last + PAD_FRAMES).min(n_frames.saturating_sub(1));
+            let start_ms = (start * frame_len) as u64 * 1000 / u64::from(sample_rate);
+            let end_ms =
+                (((end + 1) * frame_len).min(pcm.len()) as u64) * 1000 / u64::from(sample_rate);
+            (start_ms, end_ms.max(start_ms + 1))
+        })
+        .collect()
+}
+
+/// Place Whisper segments on energy islands when timestamp tokens are off.
+pub fn spread_cues_over_speech(
+    cues: &mut [crate::pipeline::TranscriptCue],
+    pcm: &[f32],
+    sample_rate: u32,
+) {
+    if cues.is_empty() {
+        return;
+    }
+    let window_ms = if sample_rate == 0 {
+        0
+    } else {
+        (pcm.len() as u64 * 1000) / u64::from(sample_rate)
+    };
+    let ranges = speech_ranges_ms(pcm, sample_rate, default_threshold());
+    if ranges.len() == cues.len() {
+        for (cue, (start, end)) in cues.iter_mut().zip(ranges) {
+            cue.start_ms = start;
+            cue.end_ms = end.max(start + 1);
+        }
+        return;
+    }
+    let (span_start, span_end) = if let (Some(first), Some(last)) = (ranges.first(), ranges.last())
+    {
+        (first.0, last.1)
+    } else {
+        (0, window_ms.max(1))
+    };
+    let span = span_end.saturating_sub(span_start).max(1);
+    let weights: Vec<u64> = cues
+        .iter()
+        .map(|cue| cue.text.chars().count().max(1) as u64)
+        .collect();
+    let total: u64 = weights.iter().sum::<u64>().max(1);
+    let mut at = span_start;
+    for (cue, weight) in cues.iter_mut().zip(weights) {
+        let dur = (span * weight / total).max(1);
+        cue.start_ms = at;
+        cue.end_ms = (at + dur).min(span_end).max(at + 1);
+        at = cue.end_ms;
+    }
 }
 
 pub fn trailing_silence_ms(pcm: &[f32], sample_rate: u32) -> u64 {
@@ -180,5 +270,18 @@ mod tests {
         assert!(had_speech(&[0.2; 8_000], 16_000));
         assert_eq!(clamp_threshold(0.0), 0.002);
         assert_eq!(clamp_threshold(1.0), 0.08);
+    }
+
+    #[test]
+    fn speech_ranges_cover_voiced_frames() {
+        let sr = 16_000u32;
+        let mut pcm = vec![0.0; sr as usize * 4];
+        for sample in pcm.iter_mut().skip(sr as usize).take(sr as usize) {
+            *sample = 0.2;
+        }
+        let ranges = speech_ranges_ms(&pcm, sr, 0.012);
+        assert_eq!(ranges.len(), 1);
+        assert!(ranges[0].0 < 1_200, "{ranges:?}");
+        assert!(ranges[0].1 > 1_800, "{ranges:?}");
     }
 }

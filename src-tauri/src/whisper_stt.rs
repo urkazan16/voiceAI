@@ -28,6 +28,8 @@ pub struct DecodeOptions {
     pub timestamps: bool,
     /// Long recording: keep all windows, do not bias with the dictation dictionary.
     pub long_form: bool,
+    /// Energy threshold used before decoding each long-form window.
+    pub vad_threshold: f32,
 }
 
 impl DecodeOptions {
@@ -41,6 +43,7 @@ impl DecodeOptions {
             vad_model: None,
             timestamps: false,
             long_form: true,
+            vad_threshold: crate::vad::default_threshold(),
         }
     }
 }
@@ -349,7 +352,7 @@ fn run_job(
         }
         CHUNK_INDEX.store(i as u32, Ordering::Relaxed);
         note_inner_progress(0);
-        if !crate::vad::had_speech_at(&pcm[start..end], 16_000, crate::vad::default_threshold()) {
+        if !crate::vad::had_speech_at(&pcm[start..end], 16_000, options.vad_threshold) {
             note_inner_progress(100);
             continue;
         }
@@ -357,11 +360,7 @@ fn run_job(
         let offset_ms = (start as u64 * 1000) / 16_000;
         let mut window_cues = last_cues();
         if options.long_form && !options.timestamps {
-            crate::vad::spread_cues_over_speech(
-                &mut window_cues,
-                &pcm[start..end],
-                16_000,
-            );
+            crate::vad::spread_cues_over_speech(&mut window_cues, &pcm[start..end], 16_000);
         }
         let trimmed = if options.long_form {
             crate::sanitize::collapse_long_form_text(text.trim())
@@ -409,7 +408,9 @@ fn run_job(
             crate::pipeline::PARAGRAPH_PAUSE_MS,
         ))
     } else {
-        Ok(crate::sanitize::collapse_echoed_transcript(&texts.join(" ")))
+        Ok(crate::sanitize::collapse_echoed_transcript(
+            &texts.join(" "),
+        ))
     }
 }
 
@@ -614,8 +615,7 @@ fn decode(
             continue;
         };
         let text = crate::sanitize::strip_model_tags(&seg.to_str_lossy().unwrap_or_default());
-        if text.is_empty()
-            || (options.long_form && crate::sanitize::is_likely_hallucination(&text))
+        if text.is_empty() || (options.long_form && crate::sanitize::is_likely_hallucination(&text))
         {
             continue;
         }
@@ -649,8 +649,7 @@ fn decode(
     } else {
         crate::sanitize::collapse_echoed_transcript(&cleaned)
     };
-    if crate::sanitize::is_likely_hallucination(&cleaned)
-        && cleaned.split_whitespace().count() < 24
+    if crate::sanitize::is_likely_hallucination(&cleaned) && cleaned.split_whitespace().count() < 24
     {
         return Ok(String::new());
     }

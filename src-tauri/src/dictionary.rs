@@ -354,7 +354,33 @@ pub fn builtin_developer_terms() -> Vec<DictionaryEntry> {
         ),
         DictionaryEntry::vocabulary("builtin-nuget", "NuGet", &["нюгет", "нуget", "nuget"]),
         DictionaryEntry::vocabulary("builtin-csharp", "C#", &["си шарп", "c sharp", "сишарп"]),
-        DictionaryEntry::vocabulary("builtin-docker", "Docker", &["докер", "docker"]),
+        DictionaryEntry::vocabulary(
+            "builtin-docker-compose",
+            "docker compose",
+            &[
+                "docker compose",
+                "docker-compose",
+                "докер композ",
+                "докер компоуз",
+                "докер-композ",
+            ],
+        ),
+        DictionaryEntry::vocabulary("builtin-docker", "Docker", &["докер"]),
+        DictionaryEntry::vocabulary(
+            "builtin-healthcheck",
+            "healthcheck",
+            &["healthcheck", "health check", "хелсчек", "хелс чек"],
+        ),
+        DictionaryEntry::vocabulary(
+            "builtin-deploy",
+            "задеплой",
+            &["задеплой", "задеплойть", "задеплойи"],
+        ),
+        DictionaryEntry::vocabulary(
+            "builtin-discriminant",
+            "дискриминант",
+            &["дискриминант", "discriminant"],
+        ),
         DictionaryEntry::vocabulary("builtin-nginx", "nginx", &["энджинкс", "нжинкс"]),
         DictionaryEntry::vocabulary("builtin-elma365", "ELMA365", &["эльма 365", "элма 365"]),
     ]

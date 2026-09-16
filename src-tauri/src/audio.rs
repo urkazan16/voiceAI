@@ -7,6 +7,26 @@ use serde::{Deserialize, Serialize};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
+/// Hands-free can leave the mic open; stop appending after this many seconds
+/// of native samples so RAM cannot grow without bound.
+pub const MAX_CAPTURE_SECS: u32 = 120;
+
+pub fn max_capture_samples(sample_rate: u32, channels: u16) -> usize {
+    let rate = sample_rate.max(1) as usize;
+    let ch = channels.max(1) as usize;
+    rate.saturating_mul(ch)
+        .saturating_mul(MAX_CAPTURE_SECS as usize)
+}
+
+pub fn append_capped(buf: &mut Vec<f32>, data: &[f32], max: usize) {
+    if max == 0 || data.is_empty() || buf.len() >= max {
+        return;
+    }
+    let room = max - buf.len();
+    let take = data.len().min(room);
+    buf.extend_from_slice(&data[..take]);
+}
+
 static LAST_STREAM_ERROR: OnceLock<Mutex<Option<String>>> = OnceLock::new();
 
 fn stream_error_slot() -> &'static Mutex<Option<String>> {
@@ -186,6 +206,7 @@ pub fn start_capture(preferred_name: Option<&str>) -> LfResult<LiveCapture> {
     let channels = config.channels();
     let samples = Arc::new(Mutex::new(Vec::new()));
     let writer = samples.clone();
+    let max_samples = max_capture_samples(sample_rate, channels);
     let err_fn = |err: cpal::StreamError| {
         let message = err.to_string();
         remember_stream_error(message.clone());
@@ -197,7 +218,7 @@ pub fn start_capture(preferred_name: Option<&str>) -> LfResult<LiveCapture> {
                 &config.into(),
                 move |data: &[f32], _| {
                     if let Ok(mut buf) = writer.lock() {
-                        buf.extend_from_slice(data);
+                        append_capped(&mut buf, data, max_samples);
                     }
                 },
                 err_fn,
@@ -209,7 +230,11 @@ pub fn start_capture(preferred_name: Option<&str>) -> LfResult<LiveCapture> {
                 &config.into(),
                 move |data: &[i16], _| {
                     if let Ok(mut buf) = writer.lock() {
-                        buf.extend(data.iter().map(|s| *s as f32 / 32768.0));
+                        if buf.len() >= max_samples {
+                            return;
+                        }
+                        let room = max_samples - buf.len();
+                        buf.extend(data.iter().take(room).map(|s| *s as f32 / 32768.0));
                     }
                 },
                 err_fn,
@@ -258,7 +283,11 @@ impl LiveCapture {
         let _ = self.stream.pause();
         drop(self.stream);
         std::thread::sleep(Duration::from_millis(20));
-        let samples = self.samples.lock().map(|g| g.clone()).unwrap_or_default();
+        let samples = self
+            .samples
+            .lock()
+            .map(|mut g| std::mem::take(&mut *g))
+            .unwrap_or_default();
         CapturedAudio {
             samples,
             sample_rate: self.sample_rate,
@@ -376,6 +405,21 @@ mod tests {
         let buf: Vec<f32> = (0..10).map(|i| i as f32).collect();
         let start = buf.len().saturating_sub(3);
         assert_eq!(&buf[start..], &[7.0, 8.0, 9.0]);
+    }
+
+    #[test]
+    fn append_capped_stops_at_max_samples() {
+        let mut buf = vec![1.0, 2.0];
+        append_capped(&mut buf, &[3.0, 4.0, 5.0], 4);
+        assert_eq!(buf, vec![1.0, 2.0, 3.0, 4.0]);
+        append_capped(&mut buf, &[9.0], 4);
+        assert_eq!(buf, vec![1.0, 2.0, 3.0, 4.0]);
+    }
+
+    #[test]
+    fn max_capture_samples_is_rate_times_channels_times_cap() {
+        assert_eq!(max_capture_samples(16_000, 1), 16_000 * 120);
+        assert_eq!(max_capture_samples(48_000, 2), 48_000 * 2 * 120);
     }
 
     #[test]

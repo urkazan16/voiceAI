@@ -662,6 +662,7 @@ pub fn normalize_spoken_values(
     out = normalize_clock(&out);
     out = normalize_dates(&out, date_format);
     out = squeeze_emails_and_urls(&out);
+    out = squeeze_dotted_numbers(&out);
     out = collapse_phone_runs(&out);
     out = collapse_fractions(&out);
     out = uppercase_abbreviations(&out);
@@ -733,6 +734,56 @@ fn squeeze_emails_and_urls(text: &str) -> String {
         }
     }
     out
+}
+
+fn squeeze_dotted_numbers(text: &str) -> String {
+    map_lines(text, squeeze_dotted_numbers_line)
+}
+
+fn squeeze_dotted_numbers_line(text: &str) -> String {
+    let tokens: Vec<&str> = text.split_whitespace().collect();
+    let mut out: Vec<String> = Vec::new();
+    let mut i = 0;
+    while i < tokens.len() {
+        if is_numeric_dot_token(tokens[i]) {
+            let mut acc = tokens[i].trim_end_matches('.').to_string();
+            let mut j = i + 1;
+            while j < tokens.len() {
+                if tokens[j] == "." && j + 1 < tokens.len() && is_numeric_dot_token(tokens[j + 1]) {
+                    acc.push('.');
+                    acc.push_str(tokens[j + 1].trim_matches('.'));
+                    j += 2;
+                    continue;
+                }
+                if tokens[j].starts_with('.')
+                    && tokens[j].chars().skip(1).all(|c| c.is_ascii_digit())
+                    && tokens[j].len() > 1
+                {
+                    acc.push_str(tokens[j]);
+                    j += 1;
+                    continue;
+                }
+                break;
+            }
+            // A lone "6." is a sentence, not an IP. Only rewrite when dots
+            // were actually squeezed together.
+            if j == i + 1 {
+                out.push(tokens[i].to_string());
+            } else {
+                out.push(acc);
+            }
+            i = j;
+            continue;
+        }
+        out.push(tokens[i].to_string());
+        i += 1;
+    }
+    out.join(" ")
+}
+
+fn is_numeric_dot_token(token: &str) -> bool {
+    let core = token.trim_matches('.');
+    !core.is_empty() && core.chars().all(|c| c.is_ascii_digit())
 }
 
 fn normalize_money(text: &str) -> String {

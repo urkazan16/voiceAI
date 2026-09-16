@@ -290,6 +290,14 @@ pub fn emit_state(app: &AppHandle, state: DictationState) {
     });
 }
 
+pub fn emit_transcribe_progress(progress: crate::whisper_stt::TranscribeProgress) {
+    if let Ok(guard) = APP.lock() {
+        if let Some(app) = guard.as_ref() {
+            let _ = app.emit("transcribe-progress", &progress);
+        }
+    }
+}
+
 fn sync_tray(app: &AppHandle, phase: &str) {
     if let Some(tray) = app.tray_by_id("localflow") {
         let (mark, tooltip) = tray_appearance(phase);
@@ -723,6 +731,7 @@ fn finish_recording(app: &AppHandle, engine: &SharedEngine, capture: &SharedCapt
         let duration_ms = audio::duration_ms(&captured);
         let mut pcm =
             crate::vad::trim_silence_at(&audio::to_whisper_pcm(&captured), 16_000, cached_vad());
+        drop(captured);
         // Keep the onset so the first phoneme/letter is not trimmed away.
         let mut onset = vec![0.0; 2_400];
         onset.append(&mut pcm);
@@ -834,18 +843,19 @@ fn finish_recording(app: &AppHandle, engine: &SharedEngine, capture: &SharedCapt
         let (mut result, paste) =
             match rx.recv_timeout(Duration::from_millis(timeout_ms.max(1_000))) {
                 Ok(r) => r,
-                Err(_) => {
-                    CANCEL.store(true, Ordering::Relaxed);
-                    fail(
-                        &app,
-                        &engine,
-                        "Post-processing timed out. Raise the timeout in Settings.",
-                        duration_ms,
-                    );
-                    // Leave CANCEL set so the orphan pipeline skips insert.
-                    // The next talk press clears it in on_hotkey_pressed.
-                    return;
-                }
+                Err(_) => match rx.recv_timeout(Duration::from_secs(5)) {
+                    Ok(r) => r,
+                    Err(_) => {
+                        CANCEL.store(true, Ordering::Relaxed);
+                        fail(
+                            &app,
+                            &engine,
+                            "Post-processing timed out. Raise the timeout in Settings.",
+                            duration_ms,
+                        );
+                        return;
+                    }
+                },
             };
         if CANCEL.load(Ordering::Relaxed)
             || matches!(&result, Err(LfError::Other(m)) if m == "cancelled")
@@ -1182,7 +1192,8 @@ mod tests {
 
     #[test]
     fn dictation_drops_the_engine_lock_before_command_v() {
-        let spawn = include_str!("dictation.rs")
+        let src = include_str!("dictation.rs");
+        let spawn = src
             .split("let engine_for_pipe = engine.clone();")
             .nth(1)
             .unwrap()
@@ -1197,34 +1208,28 @@ mod tests {
             !spawn.contains("ClipboardInjector"),
             "Cmd+V while the engine mutex is held deadlocks the UI on macOS"
         );
-        let after = include_str!("dictation.rs")
-            .split("rx.recv_timeout")
-            .nth(1)
-            .unwrap()
-            .split("match result")
-            .next()
-            .unwrap();
-        assert!(
-            after.contains("ClipboardInjector"),
-            "paste once the pipeline lock is dropped"
-        );
+        let mem = src
+            .find("MemoryInjector::default()")
+            .expect("pipeline uses MemoryInjector");
+        let clip = src
+            .find("ClipboardInjector {")
+            .expect("paste once the pipeline lock is dropped");
+        assert!(mem < clip, "paste once the pipeline lock is dropped");
     }
 
     #[test]
     fn postprocess_timeout_keeps_cancel_so_orphan_insert_is_skipped() {
-        let arm = include_str!("dictation.rs")
-            .split("rx.recv_timeout")
-            .nth(1)
-            .unwrap()
-            .split("if CANCEL.load")
-            .next()
-            .unwrap();
+        let src = include_str!("dictation.rs");
+        let timeout_at = src
+            .find("Post-processing timed out")
+            .expect("timeout fail path");
+        let window = &src[timeout_at.saturating_sub(500)..timeout_at];
         assert!(
-            arm.contains("CANCEL.store(true"),
+            window.contains("CANCEL.store(true"),
             "timeout must cancel the pipeline thread"
         );
         assert!(
-            !arm.contains("CANCEL.store(false"),
+            !window.contains("CANCEL.store(false"),
             "clearing CANCEL on timeout lets the orphan thread paste into the wrong field"
         );
     }

@@ -112,9 +112,18 @@ const EN = {
     "This browser tab cannot talk to Rust. Keep npm run tauri dev running and use the LocalFlow window (it should open itself).",
   homeTitle: "Dictation pipeline",
   homeHelp:
-    "Type a sample and click Process locally, or hold the hotkey over a field. Whisper.cpp transcribes when the model is installed. Escape cancels. Cmd+Ctrl+C/V copy or paste the last transcript.",
+    "Type a sample and click Process locally, choose an audio file to transcribe, or hold the hotkey over a field. Whisper.cpp transcribes when the model is installed. Escape cancels. Cmd+Ctrl+C/V copy or paste the last transcript.",
   homePlaceholder: "Preview a transcript without the microphone",
   processLocally: "Process locally",
+  transcribeFile: "Recognize audio file",
+  transcribeFileHelp: "WAV, MP3, M4A, AAC, OGG, FLAC, or AIFF. Text stays in this window.",
+  transcribeFileBusy: "Recognizing audio…",
+  transcribeFileReading: "Reading audio file…",
+  transcribeFileFormatting: "Formatting transcript…",
+  transcribeFileElapsed: "Elapsed",
+  transcribeFileNeedModel: "Install a speech model first, then choose a file.",
+  transcribeFileEmpty: "Choose an audio file to transcribe.",
+  transcribeFileTooLarge: "Audio file is too large (80 MB max).",
   transcript: "Transcript",
   afterDictionary: "After dictionary",
   formedText: "Formed text",
@@ -290,9 +299,18 @@ const RU: typeof EN = {
     "Эта вкладка браузера не связана с Rust. Оставьте npm run tauri dev и работайте в окне LocalFlow.",
   homeTitle: "Конвейер диктовки",
   homeHelp:
-    "Введите пример и нажмите «Обработать локально» или удерживайте хоткей над полем. Whisper.cpp распознаёт речь, когда модель установлена. Escape отменяет. Cmd+Ctrl+C/V копируют или вставляют последний текст.",
+    "Введите пример и нажмите «Обработать локально», выберите аудиофайл для распознавания или удерживайте хоткей над полем. Whisper.cpp распознаёт речь, когда модель установлена. Escape отменяет. Cmd+Ctrl+C/V копируют или вставляют последний текст.",
   homePlaceholder: "Предпросмотр транскрипта без микрофона",
   processLocally: "Обработать локально",
+  transcribeFile: "Распознать аудиофайл",
+  transcribeFileHelp: "WAV, MP3, M4A, AAC, OGG, FLAC или AIFF. Текст останется в этом окне.",
+  transcribeFileBusy: "Распознаю аудио…",
+  transcribeFileReading: "Читаю аудиофайл…",
+  transcribeFileFormatting: "Форматирую текст…",
+  transcribeFileElapsed: "Прошло",
+  transcribeFileNeedModel: "Сначала установите модель речи, затем выберите файл.",
+  transcribeFileEmpty: "Выберите аудиофайл для распознавания.",
+  transcribeFileTooLarge: "Аудиофайл слишком большой (не больше 80 МБ).",
   transcript: "Транскрипт",
   afterDictionary: "После словаря",
   formedText: "Готовый текст",
@@ -482,7 +500,7 @@ const WINDOWS_EN: Partial<UiCopy> = {
   onboardingTitle: "Speak. Release. Insert — entirely on this PC.",
   onboarding1: "1. Allow the microphone. Dictation pastes with Ctrl+V into other apps.",
   homeHelp:
-    "Type a sample and click Process locally, or hold the hotkey over a field. Whisper.cpp transcribes when the model is installed. Escape cancels. Ctrl+Alt+C/V copy or paste the last transcript.",
+    "Type a sample and click Process locally, choose an audio file to transcribe, or hold the hotkey over a field. Whisper.cpp transcribes when the model is installed. Escape cancels. Ctrl+Alt+C/V copy or paste the last transcript.",
   hotkeyHelp:
     "Click the field, then press a combination (Ctrl+Shift+Space or F13). Escape cancels. Win+Space and Ctrl+C are reserved by Windows.",
   speechModelHelp:
@@ -503,7 +521,7 @@ const WINDOWS_RU: Partial<UiCopy> = {
   onboardingTitle: "Говорите. Отпустите. Вставка — полностью на этом ПК.",
   onboarding1: "1. Разрешите микрофон. Диктовка вставляет текст в другие приложения через Ctrl+V.",
   homeHelp:
-    "Введите пример и нажмите «Обработать локально» или удерживайте хоткей над полем. Whisper.cpp распознаёт речь, когда модель установлена. Escape отменяет. Ctrl+Alt+C/V копируют или вставляют последний текст.",
+    "Введите пример и нажмите «Обработать локально», выберите аудиофайл для распознавания или удерживайте хоткей над полем. Whisper.cpp распознаёт речь, когда модель установлена. Escape отменяет. Ctrl+Alt+C/V копируют или вставляют последний текст.",
   hotkeyHelp:
     "Нажмите поле, затем сочетание (Ctrl+Shift+Space или F13). Escape отменяет. Win+Space и Ctrl+C заняты Windows.",
   speechModelHelp:
@@ -525,7 +543,7 @@ const LINUX_EN: Partial<UiCopy> = {
   onboarding1:
     "1. Allow the microphone. On X11, text is pasted with Ctrl+V. On Wayland, copy and press Ctrl+V if automatic paste is blocked.",
   homeHelp:
-    "Type a sample and click Process locally, or hold the hotkey over a field. Whisper.cpp transcribes when the model is installed. Escape cancels. Ctrl+Alt+C/V copy or paste the last transcript.",
+    "Type a sample and click Process locally, choose an audio file to transcribe, or hold the hotkey over a field. Whisper.cpp transcribes when the model is installed. Escape cancels. Ctrl+Alt+C/V copy or paste the last transcript.",
   hotkeyHelp:
     "Click the field, then press a combination (Ctrl+Shift+Space or F13). Escape cancels. Super+Space is often taken by the desktop input switcher.",
   speechModelHelp:
@@ -546,7 +564,7 @@ const LINUX_RU: Partial<UiCopy> = {
   onboarding1:
     "1. Разрешите микрофон. В X11 текст вставляется через Ctrl+V. В Wayland скопируйте и нажмите Ctrl+V, если автоматическая вставка недоступна.",
   homeHelp:
-    "Введите пример и нажмите «Обработать локально» или удерживайте хоткей над полем. Whisper.cpp распознаёт речь, когда модель установлена. Escape отменяет. Ctrl+Alt+C/V копируют или вставляют последний текст.",
+    "Введите пример и нажмите «Обработать локально», выберите аудиофайл для распознавания или удерживайте хоткей над полем. Whisper.cpp распознаёт речь, когда модель установлена. Escape отменяет. Ctrl+Alt+C/V копируют или вставляют последний текст.",
   hotkeyHelp:
     "Нажмите поле, затем сочетание (Ctrl+Shift+Space или F13). Escape отменяет. Super+Space часто занят переключателем раскладки.",
   speechModelHelp:

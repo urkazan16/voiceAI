@@ -202,9 +202,22 @@ export function reservedHotkeyReason(chord: string): string | null {
   if (RESERVED.has(id)) {
     return `${normalized} is reserved by the OS or by copy/paste. Pick another combination.`;
   }
+  if (id === "fn" || id === "function" || id === "globe") {
+    return "Fn/Globe cannot be used as a global shortcut. Use F13 or a key combination.";
+  }
+  if (id === "space" || id === "enter" || id === "tab") {
+    return `${normalized} alone cannot be used safely. Add Control/Shift or use F13.`;
+  }
   const parts = normalized.split("+");
   const key = parts[parts.length - 1];
   const mods = parts.slice(0, -1);
+  const modifierNames = new Set(["Control", "Alt", "Shift", "Command", "Super"]);
+  if (!key || modifierNames.has(key)) {
+    return "Choose a key together with Control/Alt/Shift/Command, or use F13–F24.";
+  }
+  if (mods.length === 0 && /^F([1-9]|1[0-2])$/.test(key)) {
+    return `${key} is not supported as a global shortcut. Use F13–F24.`;
+  }
   if (mods.length === 0 && key && /^[A-Z0-9]$/.test(key)) {
     return `${key} alone would fire while typing. Add Control/Shift or use F13 / Space.`;
   }

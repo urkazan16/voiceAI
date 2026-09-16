@@ -258,6 +258,74 @@ pub(crate) fn hotkey_conflict_reason(
         ("Edit", edit),
     ] {
         let id = canon_hotkey(chord);
+        if matches!(id.as_str(), "fn" | "function" | "globe") {
+            return Some(format!(
+                "{label} cannot use Fn/Globe as a global shortcut. Choose F13 or a key combination."
+            ));
+        }
+        if id == "space" || id == "enter" || id == "tab" {
+            return Some(format!(
+                "{label} cannot use {chord} alone. Add Control/Shift or use F13."
+            ));
+        }
+        let parts: Vec<_> = chord
+            .split('+')
+            .map(|part| part.trim().to_ascii_lowercase())
+            .filter(|part| !part.is_empty())
+            .collect();
+        let modifiers = [
+            "control", "ctrl", "alt", "option", "shift", "command", "cmd", "super", "meta", "win",
+        ];
+        let key = parts.last().map(String::as_str).unwrap_or_default();
+        let has_modifier = parts[..parts.len().saturating_sub(1)]
+            .iter()
+            .any(|part| modifiers.contains(&part.as_str()));
+        if key.is_empty() || modifiers.contains(&key) {
+            return Some(format!(
+                "{label} must include a non-modifier key. Use a key combination or F13–F24."
+            ));
+        }
+        if !has_modifier
+            && matches!(
+                key,
+                "f1" | "f2"
+                    | "f3"
+                    | "f4"
+                    | "f5"
+                    | "f6"
+                    | "f7"
+                    | "f8"
+                    | "f9"
+                    | "f10"
+                    | "f11"
+                    | "f12"
+            )
+        {
+            return Some(format!(
+                "{label} cannot use {chord}. Use F13–F24 for an unmodified function key."
+            ));
+        }
+        if !has_modifier
+            && !matches!(
+                key,
+                "f13"
+                    | "f14"
+                    | "f15"
+                    | "f16"
+                    | "f17"
+                    | "f18"
+                    | "f19"
+                    | "f20"
+                    | "f21"
+                    | "f22"
+                    | "f23"
+                    | "f24"
+            )
+        {
+            return Some(format!(
+                "{label} must use Control/Alt/Shift/Command, or F13–F24."
+            ));
+        }
         if id == "escape" {
             return Some(format!(
                 "{label} cannot be Escape — Escape already cancels dictation."
@@ -475,6 +543,10 @@ mod tests {
         settings.hotkey = settings.copy_last_hotkey.clone();
         let err = settings.validate().unwrap_err();
         assert!(err.to_string().contains("same shortcut"), "{err}");
+        settings = AppSettings::default();
+        settings.hotkey = "Fn".into();
+        let err = settings.validate().unwrap_err();
+        assert!(err.to_string().contains("Fn/Globe"), "{err}");
     }
 
     #[test]

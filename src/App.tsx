@@ -1095,6 +1095,11 @@ export function App() {
               onListeningChange={captureHotkey}
               onChange={(hotkey) => void save({ ...settings, hotkey })}
             />
+            <p className="mt-1 text-xs text-paper/60">
+              {hotkeyStatus?.registered
+                ? `Active: ${hotkeyStatus.registered}`
+                : "No talk shortcut is currently registered."}
+            </p>
             <p className="text-xs text-paper/60">{t.hotkeyHelp}</p>
             <label className="block text-sm text-paper/70">
               {t.speechLanguage}

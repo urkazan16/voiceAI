@@ -1,46 +1,27 @@
 # LocalFlow
 
-LocalFlow is a desktop dictation app: you hold a hotkey, speak, and the transcript is pasted into the app that has focus. Recognition, formatting, and insertion run on this machine. There is no cloud account. Inserted text is never executed.
+[![ci](https://github.com/urkazan16/voiceAI/actions/workflows/ci.yml/badge.svg)](https://github.com/urkazan16/voiceAI/actions/workflows/ci.yml)
+[![license](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 
-It targets people who dictate into editors, browsers, messengers, and IDEs — including mixed Russian/English and technical identifiers (commits, GUIDs, file names, URLs).
-
-LocalFlow — десктопное приложение для диктовки: удерживаете горячую клавишу, говорите, и текст вставляется в то приложение, которое в фокусе. Распознавание, форматирование и вставка выполняются на этой машине. Облачного аккаунта нет. Вставленный текст никогда не выполняется.
+Открытый системный голосовой ввод: зажал клавишу, сказал, отпустил — текст появился в активном поле любого приложения. Распознавание, оформление и вставка идут на вашем компьютере. Облачного аккаунта нет. Вставленный текст никогда не выполняется.
 
 Рассчитано на тех, кто диктует в редакторы, браузеры, мессенджеры и IDE — в том числе смешанную русско-английскую речь и технические идентификаторы (коммиты, GUID, имена файлов, URL).
 
-```text
-1. Capture   / Запись     — hold Control+Shift+Space; mic on only while held
-                            удерживайте Control+Shift+Space; микрофон только на время удержания
-2. Recognize / Распознать — local Whisper ggml (SHA-256 + format check before use)
-                            локальный Whisper ggml (SHA-256 и проверка формата до загрузки)
-3. Format    / Оформить   — dictionary, snippets, backtrack, digits / dates / HH:MM, optional LLM
-                            словарь, сниппеты, откат, цифры / даты / ЧЧ:ММ, опциональная локальная LLM
-4. Insert    / Вставить   — paste into the frontmost app, then restore the previous clipboard
-                            вставка в активное приложение, затем восстановление буфера
-```
+> [!NOTE]
+> Версия `0.1.0`. Стек: Tauri 2 + Rust + React. Язык интерфейса — английский или русский. Чем проект отличается от аналогов — [docs/evaluation/UNIQUENESS.md](docs/evaluation/UNIQUENESS.md)
 
-License / Лицензия: MIT. See `LICENSE`.
+## Как это работает
 
-## What it does / Что умеет
+- **Захват** — микрофон через `cpal`; поток открывается только на время записи и закрывается после отпускания, короткого удержания или отмены. Звук приводится к моно 16 кГц. Одна реплика не длиннее 120 с
+- **Распознавание** — `whisper.cpp` локально (`whisper-rs`). На Apple Silicon можно Metal; Intel, Windows и Linux считают на CPU. Перед загрузкой весов проверяются SHA-256 и формат ggml
+- **Постобработка** — словарь терминов, сниппеты, персонализация, числа и даты, техническая диктовка — без модели. По желанию локальная LLM (Qwen, GGUF) из менеджера моделей
+- **Вставка** — синтетическая вставка (`Cmd+V` на macOS, `Ctrl+V` на Windows и Linux) с восстановлением прежнего буфера (текст, RTF, изображения на macOS). Поля пароля и Secure Input пропускаются
 
-- **Hold-to-talk / Удержание клавиши** — default `Control+Shift+Space`. Hands-free is press-to-start / press-to-stop. Escape cancels. По умолчанию `Control+Shift+Space`. Режим hands-free — нажал, чтобы начать / нажал, чтобы остановить. Escape отменяет текущую фразу.
-- **Local speech-to-text / Локальное распознавание** — Whisper.cpp on CPU. Language: Russian, English, or auto-detect. Default model is Whisper Medium (~1.5 GB), downloaded on first launch and verified before use. Whisper.cpp на CPU. Язык: русский, английский или автоопределение. Модель по умолчанию — Whisper Medium (~1.5 ГБ), скачивается при первом запуске и проверяется перед использованием.
-- **Insert into other apps / Вставка в другие приложения** — synthetic paste (`Cmd+V` on macOS, `Ctrl+V` elsewhere). Previous clipboard (text, RTF, images on macOS) is restored. Password fields are skipped. Синтетическая вставка (`Cmd+V` на macOS, `Ctrl+V` на других ОС). Предыдущий буфер восстанавливается. Поля пароля пропускаются; «Копировать последнее» / «Вставить последнее» работают после выхода из поля.
-- **Copy last, paste last, edit selection / Копировать, вставить, править** — extra hotkeys (`Cmd+Ctrl+C/V/E` on macOS, `Ctrl+Alt+C/V/E` elsewhere). Edit re-runs hold-to-talk and replaces the selection. Дополнительные горячие клавиши. «Править» снова запускает диктовку и заменяет выделенный текст.
-- **Dictionary / Словарь** — canonical terms, aliases, and spoken → written rules. Built-in developer vocabulary is seeded. Terms are also passed to Whisper as a prompt. Канонические термины, синонимы и правила «как сказано → как пишется». Вшит базовый словарь разработчика. Термины также уходят в Whisper как подсказка декодеру.
-- **Snippets / Сниппеты** — exact triggers expand before the LLM (command → snippet → dictionary). Точные триггеры раскрываются до LLM (команда → сниппет → словарь).
-- **Profiles / Профили** — per-app styles: `raw`, `normal`, `professional`, `code`. Стили по приложению; активное окно выбирает профиль, его можно переопределить.
-- **Personalization / Персонализация** — repeated corrections become suggestions; accepting one writes a dictionary rule. Повторяющиеся правки становятся подсказками; принятие записывает правило в словарь.
-- **Technical dictation / Техническая диктовка** — hashes, GUIDs, domains, file names, versions, and spell-out (`по буквам` / `air bat cap`). See [Dictating technical text](#dictating-technical-text--техническая-диктовка). Хэши, GUID, домены, имена файлов, версии и режим по буквам.
-- **Numbers and dates / Числа и даты** — spoken numbers as digits, DMY or ISO dates, clock times, list and punctuation voice commands, “scratch that”. Числа цифрами, даты DMY или ISO, время, голосовые знаки препинания, откат «зачеркни».
-- **Repeat / Повтор** — re-runs the last recording through the current speech model. Повтор последней записи через текущую модель (опциональный WAV).
-- **Model Manager / Менеджер моделей** — download, checksum, activate, or delete Whisper and optional Qwen models. Dictation works without an LLM. Скачать, проверить, активировать или удалить модели. Диктовка работает без LLM.
-- **History and journal / История и журнал** — SQLite history plus a JSONL utterance log; export, retry, turn a replica into a snippet. История SQLite и журнал JSONL; экспорт, повтор, сниппет из реплики.
-- **Tray and LocalFlow Bar / Трей и панель** — idle / recording / processing in the menu bar; optional floating bar; sound cues; launch at login. Индикаторы в строке меню, плавающая панель при записи, звуковые сигналы, автозапуск.
-- **Privacy / Конфиденциальность** — audio, STT, dictionary, personalization, and history stay on disk. Network is only for user-initiated model download (and optional updates). Uninstall from Privacy or `scripts/uninstall.sh` / `scripts/uninstall.ps1`. Аудио, распознавание, словарь, персонализация и история остаются на диске. Сеть — только для скачивания моделей по действию пользователя (и опциональных обновлений). Удаление — с экрана «Конфиденциальность» или скриптами.
-- **Headless CLI** — transcribe a file, a directory, or stdin without opening the window. Транскрибация файла, каталога или stdin без окна.
+Подробнее — [docs/architecture/OVERVIEW.md](docs/architecture/OVERVIEW.md), схема журнала реплик — [docs/journal/UTTERANCE.md](docs/journal/UTTERANCE.md), приватность — [docs/privacy/OVERVIEW.md](docs/privacy/OVERVIEW.md)
 
-UI language is English or Russian. / Язык интерфейса — английский или русский. Stack: Tauri 2 + Rust + React. This build is CPU-only. / Эта сборка только на CPU.
+## Как это выглядит
+
+В трее — состояние: покой, запись, обработка. Плавающая панель LocalFlow Bar (включается настройкой) показывает уровень сигнала и текущий шаг пайплайна. Главное окно — настройки, словарь, сниппеты, история, менеджер моделей и экран конфиденциальности. История читает ту же SQLite-базу и JSONL-журнал, что и экспорт из приложения.
 
 ## Download / Скачать
 
@@ -59,137 +40,69 @@ Ready-made installers from the [latest GitHub Release](https://github.com/urkaza
 
 All versions / Все версии: [github.com/urkazan16/voiceAI/releases](https://github.com/urkazan16/voiceAI/releases)
 
-macOS shows _“Apple could not verify LocalFlow is free of malware”_ when the `.dmg` is **not notarized**. That is Gatekeeper, not a virus. New GitHub `package` jobs sign with Developer ID and notarize; download a **new** `.dmg` after that job is green.
+## Установка
 
-macOS пишет _«не удалось подтвердить, что LocalFlow не содержит вредоносного ПО»_, если `.dmg` **не нотаризован**. Это Gatekeeper, не вирус. Новые job `package` подписывают Developer ID и нотаризуют; после зелёного прогона скачайте **новый** `.dmg`.
+Готовые сборки — в [Download / Скачать](#download--скачать). Веса Whisper в установщик не входят: при первом запуске скачивается Whisper Medium (~1.5 ГБ) с Hugging Face, затем проверяются SHA-256 и magic ggml.
 
-Until that build exists, open an already-downloaded copy with **Open Anyway**:
+### macOS и Gatekeeper
 
-Пока новой сборки нет, уже скачанный файл можно открыть через **Открыть всё равно**:
+Неподписанный `.dmg` вызывает «не удалось подтвердить, что LocalFlow не содержит вредоносного ПО». Это Gatekeeper, не вирус. Новые job `package` на `main` подписывают Developer ID и нотаризуют; после зелёного прогона скачайте **новый** `.dmg`.
 
-1. **System Settings → Privacy & Security** (scroll to the bottom) → **Open Anyway** next to LocalFlow.  
-   **Системные настройки → Конфиденциальность и безопасность** (вниз страницы) → **Открыть всё равно**.
-2. Confirm with the password or Touch ID. / Подтвердите паролем или Touch ID.
-3. Or in Terminal / Или в Терминале:
+Уже скачанный файл открывается через **Открыть всё равно**:
+
+1. **Системные настройки → Конфиденциальность и безопасность** (вниз страницы) → **Открыть всё равно**
+2. Подтвердите паролем или Touch ID
+3. Или в Терминале:
 
 ```bash
 xattr -cr /Applications/LocalFlow.app
 open /Applications/LocalFlow.app
 ```
 
-Then enable **Accessibility** and **Microphone** for LocalFlow, or dictated text stays on the clipboard.  
-Затем включите **Универсальный доступ** и **Микрофон**, иначе текст останется в буфере.
+Затем включите **Универсальный доступ** и **Микрофон** для LocalFlow, иначе текст останется в буфере и не попадёт в поле.
 
-Notarization uses the GitHub **environment** named `APPLE_CERTIFICATE` (Settings → Environments). Put the six secrets there, not under Actions → Repository secrets. Do not put them in git or chat. macOS `package` fails until they are set.
+> [!NOTE]
+> Нотаризация в CI читает секреты из GitHub Environment `APPLE_CERTIFICATE`, не из обычных Repository secrets. Значения сертификата в git и в этот файл не кладутся
 
-Для нотаризации нужен environment **`APPLE_CERTIFICATE`** (Settings → Environments), не обычные Repository secrets. **Не** коммитьте их и не присылайте в чат. Job `package` на macOS падает, пока секреты не заданы.
+### Из исходников
 
-| Secret                       | What it is                                               |
-| ---------------------------- | -------------------------------------------------------- |
-| `APPLE_CERTIFICATE`          | base64 of the `.p12` (see command below)                 |
-| `APPLE_CERTIFICATE_PASSWORD` | password you set when exporting the `.p12`               |
-| `APPLE_SIGNING_IDENTITY`     | `Developer ID Application: Maksim Zhadobov (UZ676B64S2)` |
-| `APPLE_ID`                   | Apple ID email                                           |
-| `APPLE_PASSWORD`             | Apple **app-specific** password (`xxxx-xxxx-xxxx-xxxx`)  |
-| `APPLE_TEAM_ID`              | `UZ676B64S2`                                             |
-
-```bash
-openssl base64 -A -in "$HOME/Downloads/Сертификаты.p12" | pbcopy
-```
-
-That copies `APPLE_CERTIFICATE` to the clipboard. The value must be thousands of characters and usually starts with `MII`. Paste **one line** into the environment secret: no quotes. Do not paste the signing identity, Apple ID, file path, `.cer` / PEM, or the binary `.p12`.
-
-Check the clipboard before saving the secret:
-
-```bash
-pbpaste | wc -c
-pbpaste | openssl base64 -d -A 2>/dev/null | wc -c
-```
-
-The first number should be thousands; the second is the decoded `.p12` size (also thousands). After the next green `package` job on `main`, download a new `.dmg`.
-
-После успешного `package` на `main` скачайте новый `.dmg`.
-
-After installing on macOS, enable **System Settings → Privacy & Security → Accessibility** and **Microphone** for LocalFlow, or dictated text stays on the clipboard.  
-После установки на macOS включите **Системные настройки → Конфиденциальность и безопасность → Универсальный доступ** и **Микрофон**, иначе текст останется в буфере.
-
-## Install from source / Сборка из исходников
+Минимум: Node.js 20.19 (`engines` / `.nvmrc`), npm 10, Rust 1.88 (`rust-toolchain.toml`), Git 2.30. Tauri CLI ставится через `npm install` (`@tauri-apps/cli@2.2.7`) — глобальный `latest` не используйте.
 
 macOS / Linux:
 
-```text
+```sh
 ./install.sh
 npm run tauri dev
 ```
 
 Windows (PowerShell):
 
-```text
+```powershell
 .\install.ps1
 npm run tauri dev
 ```
 
-Hold **Control+Shift+Space**, speak, release.  
-Удерживайте **Control+Shift+Space**, говорите, отпустите.
+`install.sh` ставит JS-зависимости и скачивает Whisper Medium с проверкой SHA-256. Без сети: `LOCALFLOW_SKIP_MODEL_DOWNLOAD=1 ./install.sh` — веса подтянутся при первом запуске GUI или командой `npm run download:stt`.
 
-| Host    | Avoid these system shortcuts / Не занимайте            | Paste / Вставка                                           |
-| ------- | ------------------------------------------------------ | --------------------------------------------------------- |
-| macOS   | Option+Space, Control+Space (Spotlight / input source) | Cmd+V                                                     |
-| Windows | Win+Space (input language)                             | Ctrl+V                                                    |
-| Linux   | Super+Space (desktop layout switcher)                  | Ctrl+V; on Wayland press it if automatic paste is blocked |
-
-Packaged builds are in [Download](#download--скачать): `.dmg` (macOS), NSIS `.exe` (Windows, current user), `.deb` and AppImage (Linux).  
-Готовые сборки — в [Скачать](#download--скачать).
-
-Full uninstall (models, settings, history, autostart, and the `.app` on macOS): Settings or Privacy → **Delete LocalFlow completely**, or `scripts/uninstall.sh` / `scripts/uninstall.ps1` (`--keep-history` keeps only the database).  
-Полное удаление (модели, настройки, история, автозапуск и `.app` на macOS): Настройки или Приватность → **Удалить LocalFlow полностью**, либо `scripts/uninstall.sh` / `scripts/uninstall.ps1` (`--keep-history` оставляет только базу).
-
-## Prerequisites (minimum versions)
-
-| Tool         | Minimum                        |
-| ------------ | ------------------------------ |
-| Node.js      | 20.19.0 (see `.nvmrc`)         |
-| npm          | 10                             |
-| Rust / Cargo | 1.88.0 (`rust-toolchain.toml`) |
-| Git          | 2.30                           |
-
-Tauri CLI is installed via `npm install` (`@tauri-apps/cli@2.2.7`). Do not use a globally installed `latest` CLI.
-
-After installing Rust, add Cargo to your shell (or open a new terminal):
+После установки Rust в новой оболочке:
 
 ```bash
 source "$HOME/.cargo/env"
 ```
 
-`npm run check` and `npm run tauri` also look in `~/.cargo/bin` so they work if rustup is installed but not sourced.
+`npm run check` и `npm run tauri` смотрят и в `~/.cargo/bin`, если rustup есть, но не в `PATH`.
 
-### macOS
+#### macOS
 
-| Tool                     | Minimum            |
-| ------------------------ | ------------------ |
-| macOS                    | 12                 |
-| CMake                    | 3.16               |
-| Xcode Command Line Tools | current for the OS |
+macOS 12+, CMake 3.16+, актуальные Xcode Command Line Tools. Строки микрофона и универсального доступа живут в `src-tauri/Info.plist` (их подмешивает Tauri). Не кладите `infoPlist` под `bundle.macOS` — CLI 2.2 этот ключ отвергает.
 
-Microphone / Accessibility strings live in `src-tauri/Info.plist` (merged by Tauri). Do not put `infoPlist` under `bundle.macOS` — CLI 2.2 rejects that key.
+Установленный `.app` — новая запись TCC. Включите универсальный доступ, иначе вставка не дойдёт до поля.
 
-A packaged `.app` is a new TCC identity. Enable **System Settings → Privacy & Security → Accessibility** for LocalFlow, or paste stays on the clipboard and never reaches the focused field.  
-Установленный `.app` — новая запись TCC. Включите **Системные настройки → Конфиденциальность и безопасность → Универсальный доступ** для LocalFlow, иначе текст останется в буфере и не попадёт в поле.
+#### Windows
 
-### Windows
+Windows 10/11, Visual Studio Build Tools 2022 с рабочей нагрузкой C++ (whisper.cpp / `cc`), WebView2 Evergreen (на Windows 11 уже есть). Установщик NSIS — per-user (`%LOCALAPPDATA%`). Микрофон: Параметры → Конфиденциальность и безопасность → Микрофон.
 
-| Tool                      | Minimum                                          |
-| ------------------------- | ------------------------------------------------ |
-| Windows                   | 10 / 11                                          |
-| Visual Studio Build Tools | 2022, with the C++ workload (whisper.cpp / `cc`) |
-| WebView2 Runtime          | Evergreen (Windows 11 includes it)               |
-
-NSIS installers are per-user (`%LOCALAPPDATA%`). Grant LocalFlow the microphone in Windows Settings → Privacy & security → Microphone.  
-Разрешите микрофон: Параметры → Конфиденциальность и безопасность → Микрофон.
-
-### Linux (Ubuntu 22.04+)
-
-Build packages:
+#### Linux (Ubuntu 22.04+)
 
 ```bash
 sudo apt-get install --no-install-recommends -y \
@@ -197,46 +110,148 @@ sudo apt-get install --no-install-recommends -y \
   libgtk-3-dev librsvg2-dev libssl-dev libwebkit2gtk-4.1-dev libclang-dev patchelf
 ```
 
-Runtime helpers for paste: `xclip` on X11, `wl-clipboard` on Wayland. Automatic paste into other windows works on X11 (XTEST). On Wayland, LocalFlow copies the transcript and you press Ctrl+V if the compositor blocks synthetic keys.  
-Для вставки: `xclip` на X11, `wl-clipboard` на Wayland. Автоматическая вставка в другие окна работает на X11 (XTEST). На Wayland текст копируется в буфер — нажмите Ctrl+V, если композитор блокирует синтетические клавиши.
+Для вставки: `xclip` на X11, `wl-clipboard` на Wayland. Автоматическая вставка в чужие окна работает на X11 (XTEST). На Wayland текст копируется в буфер — нажмите Ctrl+V, если композитор блокирует синтетические клавиши.
 
-There are no secret environment variables and no absolute developer paths in the build.
+### Удаление
 
-## Commands
+Снимается то, что лежит в каталоге данных, плюс автозапуск. Модели, настройки и история уходят вместе, если не попросить оставить базу:
 
-| Command                    | What it does                                                                                  |
-| -------------------------- | --------------------------------------------------------------------------------------------- |
-| `npm install`              | Install JS dependencies from `package-lock.json`                                              |
-| `npm run check:gate`       | Same as CI **quality** + **license** + **security** (tsc, ESLint, Prettier, licenses, audit)  |
-| `npm run check`            | `check:gate` plus `cargo check`, `cargo fmt`, Clippy                                          |
-| `npm test`                 | Frontend + Rust unit + integration tests                                                      |
-| `npm run test:all`         | Unit, integration, UI, pipeline, dictionary, personalization                                  |
-| `npm run test:ai`          | AI benchmark profile (requires catalog + optional local models)                               |
-| `npm run build`            | Frontend production bundle + debug Rust binary                                                |
-| `npm run build:release`    | Checks UI, builds Rust, packages host installers (dmg/app, nsis, deb/AppImage), SBOM, SHA-256 |
-| `npm run check:local`      | Offline checker (WER + VAD SNR 15 dB), no network                                             |
-| `npm run license:check`    | Dependency license allowlist                                                                  |
-| `npm run uniqueness:check` | Confirms `docs/evaluation/UNIQUENESS.md` is attached                                          |
+```sh
+scripts/uninstall.sh                  # спросит про историю
+scripts/uninstall.sh --keep-history   # оставить только базу
+```
 
-Headless CLI (no window):
+На Windows — `scripts/uninstall.ps1`. В GUI: Настройки или Приватность → **Удалить LocalFlow полностью**.
+
+## Быстрый старт
+
+Удерживайте **Control+Shift+Space**, говорите, отпустите. Hands-free — отдельный флажок в настройках: нажал, чтобы начать / нажал, чтобы остановить. Escape отменяет текущую фразу.
+
+| Хост    | Не занимайте                                        | Вставка                                                       |
+| ------- | --------------------------------------------------- | ------------------------------------------------------------- |
+| macOS   | Option+Space, Control+Space (Spotlight / раскладка) | Cmd+V                                                         |
+| Windows | Win+Space (язык ввода)                              | Ctrl+V                                                        |
+| Linux   | Super+Space (переключатель раскладки)               | Ctrl+V; на Wayland нажмите сами, если синтетика заблокирована |
+
+Дополнительные сочетания: копировать / вставить последнюю реплику и править выделение — `Cmd+Ctrl+C/V/E` на macOS, `Ctrl+Alt+C/V/E` на Windows и Linux. Если основная клавиша занята системой, приложение пробует запасную (`Command+Shift+D` / `Control+Shift+D`).
+
+Headless CLI без окна:
 
 ```bash
 cargo run --manifest-path src-tauri/Cargo.toml -- --help
 cargo run --manifest-path src-tauri/Cargo.toml -- check
+cargo run --manifest-path src-tauri/Cargo.toml -- devices
+cargo run --manifest-path src-tauri/Cargo.toml -- download --model whisper-medium
 cargo run --manifest-path src-tauri/Cargo.toml -- transcribe --json --language ru speech.wav
 cargo run --manifest-path src-tauri/Cargo.toml -- transcribe --dir ./clips --no-postprocess
 ffmpeg -f avfoundation -i ":0" -t 3 -f wav - | cargo run --manifest-path src-tauri/Cargo.toml -- transcribe --stdin
 ```
 
-## Dictating technical text / Техническая диктовка
+`check` гоняет локальный офлайн-проверщик (WER на фикстуре + VAD SNR 15 дБ) и не ходит в сеть. `paste-smoke` проверяет, что текст вообще доходит до поля. Код выхода CLI: `0` — получилось, иначе ошибка; прогресс в stderr, расшифровка в stdout.
 
-Identifiers are rebuilt deterministically, before punctuation is applied, so the
-word "точка" holding a name together does not become a full stop.
+## Приватность микрофона
 
-Идентификаторы собираются детерминированно, до расстановки пунктуации: слово
-«точка» внутри имени не превращается в конец предложения.
+Поток микрофона открывается в момент нажатия клавиши и закрывается сразу после отпускания, отмены или сбоя захвата: вне записи LocalFlow ничего не слушает. Hands-free держит поток, пока сессия не остановлена, но буфер ограничен `MAX_CAPTURE_SECS` (120 с), чтобы запись не росла без верхней границы.
 
-| Say / Сказать                                   | Get / Получить                         |
+Список устройств (`devices` / экран настроек) перечисляет Bluetooth и виртуальные источники **без** открытия потока.
+
+Аудио, распознавание, словарь, персонализация и история остаются на диске. Сеть нужна только когда вы сами скачиваете модель (и опционально для обновления приложения). Оба случая подписаны в интерфейсе.
+
+## Настройки
+
+Файл `config/settings.json` в каталоге данных создаётся при первом запуске. Правка применяется без пересборки, за секунды. Неверное значение даёт ошибку с кодом `CONFIG_INVALID`.
+
+| Хост    | Каталог данных                                                       |
+| ------- | -------------------------------------------------------------------- |
+| macOS   | `~/Library/Application Support/LocalFlow/`                           |
+| Windows | `%APPDATA%\LocalFlow\`                                               |
+| Linux   | `~/.local/share/LocalFlow/` (`$XDG_DATA_HOME/LocalFlow`, если задан) |
+
+Для тестов каталог можно подменить `LOCALFLOW_DATA_DIR`.
+
+| Ключ                      | По умолчанию                          | Что делает                                                               |
+| ------------------------- | ------------------------------------- | ------------------------------------------------------------------------ |
+| `hotkey`                  | `Control+Shift+Space`                 | удержание записи; синтаксис Tauri                                        |
+| `copy_last_hotkey`        | `Command+Control+C` / `Control+Alt+C` | копировать последнюю реплику                                             |
+| `paste_last_hotkey`       | `Command+Control+V` / `Control+Alt+V` | вставить последнюю реплику                                               |
+| `edit_hotkey`             | `Command+Control+E` / `Control+Alt+E` | диктовка с заменой выделения                                             |
+| `microphone_name`         | пусто                                 | имя из списка устройств; пусто — системный по умолчанию                  |
+| `active_stt_model`        | `whisper-medium`                      | id из каталога моделей                                                   |
+| `active_llm_model`        | пусто                                 | id LLM; пусто — диктовка без языковой модели                             |
+| `stt_language`            | `ru`                                  | `ru`, `en` или `auto`                                                    |
+| `mode`                    | `normal`                              | запасной стиль пайплайна: `raw` / `normal` / `professional` / `code`     |
+| `profile_override`        | пусто                                 | зафиксировать профиль, не смотря на активное окно                        |
+| `ui_language`             | `en`                                  | язык интерфейса: `en` или `ru`                                           |
+| `hands_free`              | `false`                               | `true` — нажал/нажал, а не удерживай                                     |
+| `restore_clipboard`       | `true`                                | вернуть прежний буфер после вставки                                      |
+| `insert_delay_ms`         | `40`                                  | пауза перед вставкой (40…5000), чтобы фокус успел вернуться              |
+| `postprocess_timeout_ms`  | `45000`                               | лимит оформления; не меньше 1000                                         |
+| `sound_cues`              | `true`                                | звуковые метки начала и конца                                            |
+| `sound_cue_volume`        | `0.25`                                | громкость меток, 0.05…1.0                                                |
+| `autostart`               | `false`                               | запускать при входе в систему                                            |
+| `history_enabled`         | `true`                                | SQLite-история и JSONL-журнал                                            |
+| `history_max_items`       | `500`                                 | сколько реплик хранить (50…10000)                                        |
+| `vad_threshold`           | `0.012`                               | чувствительность обрезки тишины                                          |
+| `digits_from_speech`      | `true`                                | числительные цифрами                                                     |
+| `date_format`             | `DMY`                                 | `DMY` (`ДД.ММ.ГГГГ`) или `ISO`                                           |
+| `compute_device`          | `auto`                                | `auto` / `cpu` / `gpu` (`metal`). GPU есть только в сборке Apple Silicon |
+| `keep_last_audio`         | `true`                                | сохранить последнюю реплику как WAV для «Повторить»                      |
+| `show_flow_bar`           | `true`                                | плавающая панель во время записи                                         |
+| `personalization_enabled` | `true`                                | учитывать правки                                                         |
+| `learn_from_corrections`  | `true`                                | предлагать правила из повторяющихся правок                               |
+| `onboarding_complete`     | `false`                               | мастер первого запуска пройден                                           |
+| `log_max_bytes`           | `2 MiB`                               | ротация `localflow.log`                                                  |
+
+Полный список полей — в `src-tauri/src/config.rs`. Профили приложений (`raw` / `normal` / `professional` / `code`) живут рядом и выбираются по активному окну.
+
+## Замена модели распознавания
+
+Модель — файл весов из каталога. Меняется в Менеджере моделей или ключом `active_stt_model`:
+
+```bash
+npm run download:stt
+cargo run --manifest-path src-tauri/Cargo.toml -- download --model whisper-large-v3-turbo
+```
+
+`whisper-base` быстрее и заметно хуже на русском, `whisper-small` — черновик, `whisper-medium` — компромисс по умолчанию (~1.5 ГБ F16). На Intel-CPU удобнее `whisper-medium-q8_0` (~820 МБ). `whisper-large-v3-turbo` обычно быстрее Medium при том же порядке размера на диске.
+
+Перед использованием:
+
+1. SHA-256
+2. Проверка формата (ggml / GGUF)
+3. Активация
+
+Несовпадение даёт `MODEL_CHECKSUM_MISMATCH`, модель не загружается. Qwen для оформления — отдельные записи каталога, диктовка без них работает. Каталог: `src-tauri/resources/model-catalog.json`. Веса в репозиторий не входят и лицензией приложения не покрываются — см. [docs/licensing/POLICY.md](docs/licensing/POLICY.md).
+
+## Язык реплики
+
+По умолчанию язык жёсткий: `stt_language = "ru"`. Это самый быстрый путь — модель не выбирает язык, и английская речь в этом режиме часто записывается по-русски.
+
+Двуязычная диктовка:
+
+```json
+"stt_language": "auto"
+```
+
+Допустимы только `ru`, `en` и `auto`. Смешанная речь внутри одной реплики остаётся в одном прочтении: латинские вставки в русской фразе распознаются, целое английское предложение посреди русской реплики — ненадёжно. В режиме `code` снимается подавление символов Whisper, чтобы диктовать `/`, `_` и `#`.
+
+Словарь уходит в Whisper как подсказка декодеру, поэтому проектные термины предпочтительнее фонетической догадки.
+
+## Языковая модель
+
+По умолчанию текст правят словарь, сниппеты, персонализация и правила. LLM выключена, пока в Менеджере моделей не активирован `active_llm_model`. Стили `professional` и `code` зовут модель; `raw` и `normal` обходятся без неё. Если модель не отвечает или не укладывается в `postprocess_timeout_ms`, в поле уходит текст после правил — реплика не теряется. `--no-postprocess` на CLI выключает оформление на один запуск.
+
+Ключ облачного API в приложении не хранится: LLM считается локально из GGUF. Веса Qwen скачиваются по действию пользователя после показа лицензии.
+
+## Работа без интернета
+
+Сеть нужна, когда вы сами скачиваете веса с Hugging Face (и опционально для обновления). Всё остальное работает с выдернутым кабелем: захват, распознавание, словарь, правила, вставка, журнал, GUI. `localflow check` и автотесты в сеть не ходят. Без сети нельзя скачать новую модель; стили с LLM работают только если GGUF уже на диске.
+
+## Оригинальная фича
+
+**Техническая диктовка.** Идентификаторы собираются детерминированно, до расстановки пунктуации: слово «точка» внутри имени не превращается в конец предложения. Модель для этого не нужна.
+
+| Сказать                                         | Получить                               |
 | ----------------------------------------------- | -------------------------------------- |
 | `гуид четыре три шесть а … дефис це а семь и …` | `436a2969-ca7e-47ab-b0f3-72a534d744b6` |
 | `коммит пять три це три девять шесть три`       | `53c3963`                              |
@@ -246,91 +261,50 @@ word "точка" holding a name together does not become a full stop.
 | `установи дот нет фреймворк`                    | `.NET Framework`                       |
 | `по буквам air bat cap` / `по буквам эй би си`  | `abc`                                  |
 
-- Say `коммит`, `хеш`, `гуид`, `uuid`, or `id` before a hash to have the characters
-  joined; 32 hexadecimal characters are regrouped as `8-4-4-4-12`. A GUID-shaped
-  run needs no lead-in word. Произнесите `коммит`, `хеш`, `гуид`, `uuid` или `id`
-  перед хэшем — символы склеятся; 32 шестнадцатеричных символа группируются как
-  `8-4-4-4-12`. GUID такой формы можно диктовать без вводного слова.
-- Say `по буквам` to spell anything else out. One-syllable code words (`air bat cap
-drum each…`, or Russian `аз цап дэт ель…`) are preferred in a stream; letter
-  names and `дефис` / `точка` / `слэш` / `подчёркивание` still work. The run stays
-  open across push-to-talk presses until `конец` or ordinary speech. Режим «по
-  буквам» остаётся открытым между нажатиями PTT, пока не скажете `конец` или
-  обычную фразу.
-- A GUID can be dictated in `8-4-4-4-12` groups. After the first group, say `дефис`
-  and the next group: it is appended without a space. A finished 7-character
-  commit hash is not continued, so "коммит …" then "и проверь" stays two phrases.
-  GUID можно диктовать группами `8-4-4-4-12`: после первой скажите `дефис` и
-  следующую — она допишется без пробела. Законченный 7-символьный хэш коммита
-  не продолжается.
-- A run of digits alone stays a number, so "коммит 2024 года" is left as spoken.
-  Одна цепочка цифр остаётся числом: «коммит 2024 года» не склеивается в хэш.
-- `.NET` is a dictionary term rather than a spoken-dot rule, because "нет" is a
-  Russian word and gluing it to a dot would corrupt ordinary speech. `.NET` —
-  словарный термин, а не правило «точка + нет»: иначе обычная речь ломалась бы.
+- Произнесите `коммит`, `хеш`, `гуид`, `uuid` или `id` перед хэшем — символы склеятся; 32 шестнадцатеричных символа группируются как `8-4-4-4-12`. GUID такой формы можно диктовать без вводного слова
+- `по буквам` открывает режим спеллинга между нажатиями PTT, пока не скажете `конец` или обычную фразу. Кодовые слова (`air bat cap…` или `аз цап дэт…`) устойчивее имён букв
+- GUID можно диктовать группами: после первой скажите `дефис` и следующую — она допишется без пробела. Законченный 7-символьный хэш коммита не продолжается
+- Одна цепочка цифр остаётся числом: «коммит 2024 года» не склеивается в хэш
+- `.NET` — словарный термин, а не правило «точка + нет»: иначе ломалась бы обычная речь
 
-Dictionary terms are also fed to Whisper as a decoding prompt, so the recognizer
-is biased towards your project vocabulary instead of guessing phonetically. In
-`code` mode symbol suppression is lifted so `/`, `_`, and `#` can be dictated.
+Реализация: `src-tauri/src/spoken_tech.rs`. Рядом — **правка выделения**: выделите текст, нажмите клавишу Edit, продиктуйте замену, отпустите — выделение сменяется новой репликой на месте, без копирования в чат.
 
-Settings live in `config/settings.json` under the data root (JSON). Edits apply within a couple of seconds without rebuilding. Schema of the replica journal: `docs/journal/UTTERANCE.md`.
+## Тесты
 
-| Host    | Data root                                                       |
-| ------- | --------------------------------------------------------------- |
-| macOS   | `~/Library/Application Support/LocalFlow/`                      |
-| Windows | `%APPDATA%\LocalFlow\`                                          |
-| Linux   | `~/.local/share/LocalFlow/` (`$XDG_DATA_HOME/LocalFlow` if set) |
+```sh
+npm test                 # фронтенд + Rust unit + integration
+npm run test:all         # плюс UI, pipeline, dictionary, personalization
+npm run check:gate       # как CI jobs quality + license + security
+npm run check            # gate + cargo check/fmt/clippy
+npm run check:local      # офлайн-проверщик, без сети
+npm run test:ai          # бенчмарк (каталог + опционально локальные модели)
+```
 
-## Settings / Настройки
+Юнит-тесты не требуют микрофона: железо подменяется, фикстуры лежат в дереве. GUI-крейту нужны системные библиотеки Tauri (на Debian — список в разделе Linux выше).
 
-| Key                                     | Meaning                                                       |
-| --------------------------------------- | ------------------------------------------------------------- |
-| `hotkey`                                | Push-to-talk shortcut                                         |
-| `microphone_name`                       | Input device, or `null` for the OS default                    |
-| `active_stt_model` / `active_llm_model` | Catalog ids (see Model Manager)                               |
-| `stt_language`                          | `ru`, `en`, or `auto`                                         |
-| `mode`                                  | Fallback pipeline: `raw` / `normal` / `professional` / `code` |
-| `autostart`                             | Launch at login                                               |
-| `history_enabled`                       | SQLite history + JSONL journal                                |
-| `sound_cues`                            | Start/end beeps                                               |
-| `sound_cue_volume`                      | Cue loudness 0.05–1.0 (default 0.25)                          |
-| `insert_delay_ms`                       | Pause before paste                                            |
-| `hands_free`                            | Press-to-toggle listen; off = hold-to-talk                    |
-| `digits_from_speech`                    | Spoken numbers become digits                                  |
-| `date_format`                           | `DMY` (DD.MM.YYYY) or `ISO`                                   |
-| `compute_device`                        | Inference device; this build is CPU only                      |
-| `postprocess_timeout_ms`                | Cap on formatting                                             |
-| `restore_clipboard`                     | Restore clipboard after paste                                 |
-| `vad_threshold`                         | Silence trim sensitivity (default 0.012)                      |
-| `history_max_items`                     | SQLite history rotation cap (default 500)                     |
-| `log_max_bytes`                         | Size rotation for `localflow.log`                             |
+## Разработка
 
-Replace the recognizer by downloading another Whisper ggml in Model Manager, or set `active_stt_model` in `settings.json` to a catalog id whose file is already verified.
+```sh
+npm install
+npm run check
+npm test
+npm run tauri dev
+```
 
-`npm run sbom` writes a CycloneDX SBOM.
+| Команда                    | Что делает                                                                              |
+| -------------------------- | --------------------------------------------------------------------------------------- |
+| `npm run build`            | UI + debug-бинарник Rust                                                                |
+| `npm run build:release`    | проверки UI, релиз Rust, установщики хоста (dmg/app, nsis, deb/AppImage), SBOM, SHA-256 |
+| `npm run sbom`             | CycloneDX SBOM                                                                          |
+| `npm run audit`            | npm audit + cargo audit                                                                 |
+| `npm run uniqueness:check` | что отчёт уникальности приложен к дереву                                                |
 
-First Cargo fetch needs network. After `src-tauri/Cargo.lock` is present, crates resolve reproducibly.
+CI гоняет те же скрипты, а не копии их команд: зелёный `quality` / `lint` / `test` / `license` / `security` в Actions означает то же, что локальный `npm run check` + `npm run test:all`. Job `package` собирает установщики на `main`, теге `v*` или `workflow_dispatch`.
 
-## Models / Модели
+Первый `cargo fetch` нужен сети. После `src-tauri/Cargo.lock` крейты резолвятся воспроизводимо. В сборке нет секретов и абсолютных путей разработчика.
 
-Weights are **not** inside the app bundle. On `./install.sh` / `.\install.ps1` and on first GUI launch LocalFlow downloads the **active speech model** (default Whisper Medium, ~1.5 GB, `ggml-medium.bin`) from Hugging Face, then verifies SHA-256 and ggml magic before activation. Qwen formatting models stay optional in Model Manager.
+Окружение закреплено в [docs/development/SETUP.md](docs/development/SETUP.md). Вклад — [CONTRIBUTING.md](CONTRIBUTING.md).
 
-Веса **не** лежат в бандле. При `./install.sh` / `.\install.ps1` и при первом запуске GUI LocalFlow скачивает **активную речевую модель** (по умолчанию Whisper Medium, ~1.5 ГБ, `ggml-medium.bin`) с Hugging Face, затем проверяет SHA-256 и ggml magic. Модели оформления Qwen остаются опциональными в Менеджере моделей.
+## Лицензия
 
-Skip the network step with `LOCALFLOW_SKIP_MODEL_DOWNLOAD=1`. Retry anytime: `npm run download:stt` or `localflow download --model whisper-medium`.
-
-Before a model is used:
-
-1. SHA-256 verification
-2. Format validation (GGUF / ggml)
-3. Activation
-
-Mismatch raises `MODEL_CHECKSUM_MISMATCH` and the model is not loaded.
-
-User data lives in the data root in the table above (override with `LOCALFLOW_DATA_DIR` for tests).
-
-## License / Лицензия
-
-MIT. See `LICENSE`, `NOTICE`, `licenses/`, and `docs/licensing/`.
-
-Uniqueness report (attached to this tree): `docs/evaluation/UNIQUENESS.md`.
+MIT. См. `LICENSE`, `NOTICE`, `licenses/`, [docs/licensing/](docs/licensing/).

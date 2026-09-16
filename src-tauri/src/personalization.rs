@@ -78,6 +78,11 @@ impl PersonalizationState {
             }
         }
         self.corrections.push(event);
+        const MAX_CORRECTIONS: usize = 200;
+        if self.corrections.len() > MAX_CORRECTIONS {
+            let overflow = self.corrections.len() - MAX_CORRECTIONS;
+            self.corrections.drain(..overflow);
+        }
     }
 
     pub fn suggestions(&self) -> Vec<LearnedCandidate> {
@@ -176,5 +181,24 @@ mod tests {
         assert!(state.corrections.is_empty());
         assert!(state.learned.is_empty());
         assert!(state.preferences.is_empty());
+    }
+
+    #[test]
+    fn corrections_log_is_capped() {
+        let mut state = PersonalizationState::default();
+        for i in 0..250 {
+            state.record_correction(
+                CorrectionEvent {
+                    id: format!("c{i}"),
+                    original: format!("a{i}"),
+                    corrected: format!("b{i}"),
+                    accepted: true,
+                },
+                false,
+            );
+        }
+        assert_eq!(state.corrections.len(), 200);
+        assert_eq!(state.corrections[0].id, "c50");
+        assert_eq!(state.corrections[199].id, "c249");
     }
 }

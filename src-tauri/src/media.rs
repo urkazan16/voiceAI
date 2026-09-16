@@ -4,12 +4,12 @@ use std::fs;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
-const AUDIO_EXT: &[&str] = &["wav", "mp3", "m4a", "aac", "ogg", "flac", "aiff", "aif"];
+pub const AUDIO_EXTENSIONS: &[&str] = &["wav", "mp3", "m4a", "aac", "ogg", "flac", "aiff", "aif"];
 
 pub fn is_audio_path(path: &Path) -> bool {
     path.extension()
         .and_then(|e| e.to_str())
-        .map(|e| AUDIO_EXT.iter().any(|x| e.eq_ignore_ascii_case(x)))
+        .map(|e| AUDIO_EXTENSIONS.iter().any(|x| e.eq_ignore_ascii_case(x)))
         .unwrap_or(false)
 }
 
@@ -49,6 +49,7 @@ fn decode_wav(bytes: &[u8]) -> Result<Vec<f32>, ()> {
     let mut channels = 1u16;
     let mut rate = 16_000u32;
     let mut bits = 16u16;
+    let mut audio_format = 1u16;
     let mut data = None;
     while offset + 8 <= bytes.len() {
         let id = &bytes[offset..offset + 4];
@@ -56,6 +57,10 @@ fn decode_wav(bytes: &[u8]) -> Result<Vec<f32>, ()> {
         let start = offset + 8;
         let end = start.saturating_add(size).min(bytes.len());
         if id == b"fmt " && size >= 16 {
+            if end.saturating_sub(start) < 16 {
+                return Err(());
+            }
+            audio_format = u16::from_le_bytes(bytes[start..start + 2].try_into().unwrap());
             channels = u16::from_le_bytes(bytes[start + 2..start + 4].try_into().unwrap());
             rate = u32::from_le_bytes(bytes[start + 4..start + 8].try_into().unwrap());
             bits = u16::from_le_bytes(bytes[start + 14..start + 16].try_into().unwrap());
@@ -73,9 +78,13 @@ fn decode_wav(bytes: &[u8]) -> Result<Vec<f32>, ()> {
             .chunks_exact(2)
             .map(|c| i16::from_le_bytes([c[0], c[1]]) as f32 / 32768.0)
             .collect::<Vec<_>>(),
-        32 => payload
+        32 if audio_format == 3 => payload
             .chunks_exact(4)
             .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+            .collect::<Vec<_>>(),
+        32 if audio_format == 1 => payload
+            .chunks_exact(4)
+            .map(|c| i32::from_le_bytes([c[0], c[1], c[2], c[3]]) as f32 / 2_147_483_648.0)
             .collect::<Vec<_>>(),
         8 => payload
             .iter()
@@ -88,11 +97,20 @@ fn decode_wav(bytes: &[u8]) -> Result<Vec<f32>, ()> {
 }
 
 fn decode_via_converter(hint: &Path, bytes: &[u8]) -> LfResult<Vec<f32>> {
-    let dir = std::env::temp_dir().join(format!("localflow-{}", std::process::id()));
-    fs::create_dir_all(&dir)?;
+    let dir_path = std::env::temp_dir().join(format!(
+        "localflow-{}-{}",
+        std::process::id(),
+        uuid::Uuid::new_v4()
+    ));
+    fs::create_dir(&dir_path)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&dir_path, fs::Permissions::from_mode(0o700))?;
+    }
     let ext = hint.extension().and_then(|e| e.to_str()).unwrap_or("bin");
-    let src = dir.join(format!("in.{ext}"));
-    let wav = dir.join("out.wav");
+    let src = dir_path.join(format!("in.{ext}"));
+    let wav = dir_path.join("out.wav");
     fs::write(&src, bytes)?;
     let converted = run_afconvert(&src, &wav).or_else(|_| run_ffmpeg(&src, &wav));
     let pcm = match converted {
@@ -107,8 +125,7 @@ fn decode_via_converter(hint: &Path, bytes: &[u8]) -> LfResult<Vec<f32>> {
             hint.display()
         ))),
     };
-    let _ = fs::remove_file(&src);
-    let _ = fs::remove_file(&wav);
+    let _ = fs::remove_dir(&dir_path);
     pcm
 }
 
@@ -239,12 +256,41 @@ mod tests {
     }
 
     #[test]
+    fn decodes_32_bit_integer_pcm_as_integer_not_float() {
+        let mut bytes = Vec::new();
+        let payload = 1_i32.to_le_bytes();
+        let riff_size = 36 + payload.len() as u32;
+        bytes.extend_from_slice(b"RIFF");
+        bytes.extend_from_slice(&riff_size.to_le_bytes());
+        bytes.extend_from_slice(b"WAVEfmt ");
+        bytes.extend_from_slice(&16_u32.to_le_bytes());
+        bytes.extend_from_slice(&1_u16.to_le_bytes());
+        bytes.extend_from_slice(&1_u16.to_le_bytes());
+        bytes.extend_from_slice(&16_000_u32.to_le_bytes());
+        bytes.extend_from_slice(&64_000_u32.to_le_bytes());
+        bytes.extend_from_slice(&4_u16.to_le_bytes());
+        bytes.extend_from_slice(&32_u16.to_le_bytes());
+        bytes.extend_from_slice(b"data");
+        bytes.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+        bytes.extend_from_slice(&payload);
+        let pcm = load_bytes(&bytes, Path::new("sample.wav")).unwrap();
+        assert_eq!(pcm.len(), 1);
+        assert!(pcm[0].abs() < 0.001, "decoded value was {}", pcm[0]);
+    }
+
+    #[test]
     fn zero_byte_file_is_error() {
         let dir = tempdir().unwrap();
         let path = dir.path().join("empty.wav");
         fs::write(&path, []).unwrap();
         let err = load_pcm_16k_mono(&path).unwrap_err();
         assert!(err.to_string().contains("0 bytes"));
+    }
+
+    #[test]
+    fn rejects_non_audio_extension() {
+        assert!(!is_audio_path(std::path::Path::new("notes.txt")));
+        assert!(is_audio_path(std::path::Path::new("talk.M4A")));
     }
 
     #[test]
