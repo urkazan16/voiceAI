@@ -53,7 +53,25 @@ extern "C" {
 #[link(name = "ApplicationServices", kind = "framework")]
 extern "C" {
     fn AXIsProcessTrusted() -> bool;
+    fn AXUIElementCreateApplication(pid: i32) -> *const c_void;
+    fn AXUIElementCopyAttributeValue(
+        element: *const c_void,
+        attribute: *const c_void,
+        value: *mut *const c_void,
+    ) -> i32;
+    fn AXUIElementSetAttributeValue(
+        element: *const c_void,
+        attribute: *const c_void,
+        value: *const c_void,
+    ) -> i32;
+    fn AXUIElementIsAttributeSettable(
+        element: *const c_void,
+        attribute: *const c_void,
+        settable: *mut u8,
+    ) -> i32;
 }
+
+const AX_ERROR_SUCCESS: i32 = 0;
 
 extern "C" {
     fn lf_screen_is_locked() -> i32;
@@ -91,8 +109,29 @@ impl Platform for MacOs {
                 "secure input blocked paste".into(),
             ));
         }
+        // Clipboard + Cmd+V is the reliable insert path. AXSelectedText was
+        // reporting success in Word/Chrome while replacing the wrong range or
+        // skipping the caret. Opt in with LOCALFLOW_AX_INSERT=1 to experiment.
+        if ax_insert_enabled() {
+            if let Some(pid) = request
+                .target_pid
+                .filter(|&p| p != crate::injection::own_process_id())
+                .filter(|_| !is_editor_or_terminal(request.target_app))
+            {
+                match insert_via_accessibility(pid, request.text) {
+                    AxInsert::Inserted => {
+                        crate::journal::log("insert_path", "accessibility");
+                        return Ok(());
+                    }
+                    AxInsert::Unsupported => {}
+                }
+            }
+        }
+
         prepare_keyboard();
         focus_target(request.target_pid, request.target_app);
+        // `focus_target` already waited for the target to become frontmost;
+        // this is only the app's own settle time after activation.
         let delay = request.insert_delay_ms.max(40);
         let extra = if is_editor_or_terminal(request.target_app) || is_browser(request.target_app) {
             delay.saturating_add(40)
@@ -114,9 +153,14 @@ impl Platform for MacOs {
         }
 
         write_pasteboard_string(request.text)?;
-        // Give other apps time to observe the new changeCount before Cmd+V.
-        std::thread::sleep(Duration::from_millis(80));
+        // The pasteboard server is updated synchronously and the write is
+        // read back before returning; a short pause covers apps that poll
+        // changeCount on a timer.
+        std::thread::sleep(Duration::from_millis(PASTEBOARD_SETTLE));
         let paste_result = post_paste(request.target_pid);
+        if paste_result.is_ok() {
+            crate::journal::log("insert_path", "clipboard");
+        }
         release_stuck_modifiers();
 
         if let Some(prev) = previous {
@@ -662,17 +706,161 @@ fn focus_target(pid: Option<i32>, app: Option<&str>) {
     // away from us, so Cmd+V lands in LocalFlow instead of the field.
     let own = crate::injection::own_process_id();
     if let Some(pid) = pid.filter(|&p| p != own) {
+        if frontmost_pid() == Some(pid) {
+            return;
+        }
         if activate_pid(pid) {
-            std::thread::sleep(Duration::from_millis(120));
+            wait_until_frontmost(|front| front == Some(pid), FOCUS_TIMEOUT);
             return;
         }
     }
     if let Some(name) = app.map(str::trim).filter(|n| !n.is_empty()) {
         if !crate::injection::is_own_process(None, Some(name)) {
             let _ = activate_named_app(name);
+            wait_until_frontmost(|front| front.is_some() && front != Some(own), FOCUS_TIMEOUT);
+            return;
         }
     }
-    std::thread::sleep(Duration::from_millis(80));
+    std::thread::sleep(Duration::from_millis(40));
+}
+
+/// Upper bound for the activation poll. A fixed 120 ms sleep used to sit here;
+/// most apps report frontmost within 10–30 ms.
+const FOCUS_TIMEOUT: Duration = Duration::from_millis(300);
+const FOCUS_POLL: Duration = Duration::from_millis(8);
+/// Pause between the pasteboard write and Cmd+V. 80 ms is enough for Word
+/// and Chrome to observe changeCount; 30 ms was dropping pastes.
+const PASTEBOARD_SETTLE: u64 = 80;
+/// How long an AXSelectedText write may take to show up in AXValue.
+const AX_VERIFY_TIMEOUT: Duration = Duration::from_millis(400);
+const AX_VERIFY_POLL: Duration = Duration::from_millis(10);
+
+/// Goes through the 250 ms guarded read so a stalled main thread cannot hang
+/// the paste thread inside the focus poll.
+fn frontmost_pid() -> Option<i32> {
+    MacOs.frontmost_target().0
+}
+
+/// Poll `NSWorkspace.frontmostApplication` until `done` or the timeout, then
+/// give the app one poll interval to finish its activation handlers.
+fn wait_until_frontmost(done: impl Fn(Option<i32>) -> bool, timeout: Duration) {
+    let start = Instant::now();
+    while start.elapsed() < timeout {
+        if done(frontmost_pid()) {
+            std::thread::sleep(FOCUS_POLL);
+            return;
+        }
+        std::thread::sleep(FOCUS_POLL);
+    }
+}
+
+enum AxInsert {
+    Inserted,
+    Unsupported,
+}
+
+fn ax_insert_enabled() -> bool {
+    std::env::var("LOCALFLOW_AX_INSERT")
+        .map(|v| matches!(v.trim(), "1" | "true" | "yes"))
+        .unwrap_or(false)
+}
+
+fn ax_disabled_by_env() -> bool {
+    !ax_insert_enabled()
+        || std::env::var("LOCALFLOW_NO_AX_INSERT")
+            .map(|v| matches!(v.trim(), "1" | "true" | "yes"))
+            .unwrap_or(false)
+}
+
+/// Replace the selection (or insert at the caret) of `pid`'s focused text
+/// element by setting `AXSelectedText`. Guarded so a failed or ignored write
+/// never leads to a second insert via paste:
+/// * the element must expose a readable `AXValue` and a settable
+///   `AXSelectedText` before anything is written;
+/// * after the write the value must have changed. An unchanged value means
+///   the app acknowledged and dropped the text, so paste takes over.
+fn insert_via_accessibility(pid: i32, text: &str) -> AxInsert {
+    if text.is_empty() || ax_disabled_by_env() || !process_is_trusted() {
+        return AxInsert::Unsupported;
+    }
+    // AXUIElement calls are thread-safe and may block on a slow target app;
+    // keep them off the main thread so the overlay never freezes with them.
+    ax_insert_selected_text(pid, text)
+}
+
+fn ax_insert_selected_text(pid: i32, text: &str) -> AxInsert {
+    use objc2_foundation::NSString;
+    let attr_focused = NSString::from_str("AXFocusedUIElement");
+    let attr_value = NSString::from_str("AXValue");
+    let attr_selected = NSString::from_str("AXSelectedText");
+    let cf = |s: &NSString| -> *const c_void { s as *const NSString as *const c_void };
+
+    unsafe {
+        let app = AXUIElementCreateApplication(pid);
+        if app.is_null() {
+            return AxInsert::Unsupported;
+        }
+        let mut focused: *const c_void = std::ptr::null();
+        let rc = AXUIElementCopyAttributeValue(app, cf(&attr_focused), &mut focused);
+        CFRelease(app);
+        if rc != AX_ERROR_SUCCESS || focused.is_null() {
+            return AxInsert::Unsupported;
+        }
+        let outcome = (|| {
+            let mut settable: u8 = 0;
+            if AXUIElementIsAttributeSettable(focused, cf(&attr_selected), &mut settable)
+                != AX_ERROR_SUCCESS
+                || settable == 0
+            {
+                return AxInsert::Unsupported;
+            }
+            let Some(before) = ax_copy_string(focused, cf(&attr_value)) else {
+                return AxInsert::Unsupported;
+            };
+            let ns_text = NSString::from_str(text);
+            if AXUIElementSetAttributeValue(focused, cf(&attr_selected), cf(&ns_text))
+                != AX_ERROR_SUCCESS
+            {
+                return AxInsert::Unsupported;
+            }
+            // Chromium/Electron apply the edit in the renderer and publish the
+            // new AXValue a few ms later; poll so a slow round-trip is not
+            // mistaken for "ignored" (which would paste a second copy).
+            let start = Instant::now();
+            loop {
+                match ax_copy_string(focused, cf(&attr_value)) {
+                    Some(after) if after != before => return AxInsert::Inserted,
+                    Some(_) if start.elapsed() < AX_VERIFY_TIMEOUT => {
+                        std::thread::sleep(AX_VERIFY_POLL);
+                    }
+                    _ => return AxInsert::Unsupported,
+                }
+            }
+        })();
+        CFRelease(focused);
+        outcome
+    }
+}
+
+/// Read a CFString-valued attribute. `None` when the attribute is missing or
+/// not a string (attachments, AXValue of non-text elements).
+unsafe fn ax_copy_string(element: *const c_void, attribute: *const c_void) -> Option<String> {
+    use objc2::ClassType;
+    use objc2_foundation::{NSObject, NSObjectProtocol, NSString};
+    let mut value: *const c_void = std::ptr::null();
+    if AXUIElementCopyAttributeValue(element, attribute, &mut value) != AX_ERROR_SUCCESS
+        || value.is_null()
+    {
+        return None;
+    }
+    let obj = &*(value as *const NSObject);
+    let text = if obj.isKindOfClass(NSString::class()) {
+        Some((*(value as *const NSString)).to_string())
+    } else {
+        None
+    };
+    CFRelease(value);
+    text
 }
 
 fn activate_pid(pid: i32) -> bool {

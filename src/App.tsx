@@ -24,6 +24,8 @@ import {
   type JournalView,
   type ViewId,
   type HotkeyStatus,
+  type TranscribeProgress,
+  listenWhileMounted,
 } from "./api";
 import {
   copy,
@@ -38,7 +40,6 @@ import {
 } from "./ui";
 import { HotkeyField } from "./HotkeyField";
 import { talkHotkeyPresets, validateTalkHotkey } from "./hotkey";
-import { listen } from "@tauri-apps/api/event";
 
 const fallbackCopyHotkey = () =>
   showMacOnlyControls(hostKindFromUa()) ? "Command+Control+C" : "Control+Alt+C";
@@ -52,7 +53,7 @@ const fallbackSettings = (): AppSettings => ({
   mode: "normal",
   microphone_name: null,
   active_stt_model: "whisper-medium",
-  active_llm_model: "Qwen3-4B-Instruct-2507",
+  active_llm_model: null,
   restore_clipboard: true,
   onboarding_complete: false,
   copy_last_hotkey: fallbackCopyHotkey(),
@@ -87,6 +88,39 @@ function isToday(iso: string): boolean {
   }
   const now = new Date();
   return date.toDateString() === now.toDateString();
+}
+
+function yieldUi(): Promise<void> {
+  return new Promise((resolve) => {
+    window.setTimeout(resolve, 0);
+  });
+}
+
+function formatElapsed(seconds: number): string {
+  const mins = Math.floor(seconds / 60);
+  const secs = seconds % 60;
+  return `${mins}:${secs.toString().padStart(2, "0")}`;
+}
+
+function transcribeStatusLabel(
+  t: ReturnType<typeof copy>,
+  progress: TranscribeProgress | null,
+  fallback: string,
+): string {
+  if (!progress) {
+    return fallback;
+  }
+  if (progress.phase === "load") {
+    return t.transcribeFileReading;
+  }
+  if (progress.phase === "format") {
+    return t.transcribeFileFormatting;
+  }
+  const pct = progress.percent > 0 ? ` ${progress.percent}%` : "";
+  if (progress.chunks > 1) {
+    return `${t.transcribeFileBusy} ${progress.chunk + 1}/${progress.chunks}${pct}`;
+  }
+  return `${t.transcribeFileBusy}${pct}`;
 }
 
 function daysAgo(iso: string, days: number): boolean {
@@ -194,7 +228,12 @@ export function App() {
   const [journal, setJournal] = useState<JournalView | null>(null);
   const [logFilter, setLogFilter] = useState("");
   const logPaneRef = useRef<HTMLPreElement | null>(null);
+  const audioFileRef = useRef<HTMLInputElement | null>(null);
+  const audioBusyRef = useRef(false);
   const autoDownloadStarted = useRef<Record<string, boolean>>({});
+  const [audioBusy, setAudioBusy] = useState(false);
+  const [fileProgress, setFileProgress] = useState<TranscribeProgress | null>(null);
+  const [fileElapsed, setFileElapsed] = useState(0);
 
   async function refresh() {
     try {
@@ -278,51 +317,83 @@ export function App() {
     if (!isTauriRuntime()) {
       return;
     }
-    let unpressed: (() => void) | undefined;
-    let unreleased: (() => void) | undefined;
-    void listen("hotkey-pressed", () => {
-      setStatus("Recording… keep holding, then release to process.");
-    }).then((fn) => {
-      unpressed = fn;
-    });
-    void listen("hotkey-released", () => {
-      setStatus("Processing recording…");
-    }).then((fn) => {
-      unreleased = fn;
-    });
-    let unprogress: (() => void) | undefined;
-    void listen<ModelDownloadProgress>("model-download-progress", (event) => {
-      const progress = event.payload;
-      setDownloadProgress((current) => ({ ...current, [progress.model_id]: progress }));
-    }).then((fn) => {
-      unprogress = fn;
-    });
-    let undictation: (() => void) | undefined;
-    void listen<DictationState>("dictation-state", (event) => {
-      const payload = event.payload;
-      setStatus(payload.message);
-      if (payload.transcript) {
-        setDraft(payload.transcript);
-      }
-      if (payload.insert_ok === false && payload.transcript) {
-        void api.getLastTranscript().then((last) => {
-          if (last) {
-            setPipelineOut(last);
-          }
-        });
-      }
-    }).then((fn) => {
-      undictation = fn;
-    });
+    const stop = [
+      listenWhileMounted("hotkey-pressed", () => {
+        setStatus("Recording… keep holding, then release to process.");
+      }),
+      listenWhileMounted("hotkey-released", () => {
+        setStatus("Processing recording…");
+      }),
+      listenWhileMounted<TranscribeProgress>("transcribe-progress", (payload) => {
+        if (!audioBusyRef.current) {
+          return;
+        }
+        setFileProgress(payload);
+      }),
+      listenWhileMounted<ModelDownloadProgress>("model-download-progress", (progress) => {
+        setDownloadProgress((current) => ({ ...current, [progress.model_id]: progress }));
+      }),
+      listenWhileMounted<DictationState>("dictation-state", (payload) => {
+        if (audioBusyRef.current) {
+          return;
+        }
+        setStatus(payload.message);
+        if (payload.transcript) {
+          setDraft(payload.transcript);
+        }
+        if (payload.insert_ok === false && payload.transcript) {
+          void api.getLastTranscript().then((last) => {
+            if (last) {
+              setPipelineOut(last);
+            }
+          });
+        }
+      }),
+    ];
     return () => {
-      unpressed?.();
-      unreleased?.();
-      unprogress?.();
-      undictation?.();
+      for (const fn of stop) {
+        fn();
+      }
     };
   }, []);
 
   useEffect(() => {
+    audioBusyRef.current = audioBusy;
+  }, [audioBusy]);
+
+  useEffect(() => {
+    if (!audioBusy) {
+      return;
+    }
+    const started = Date.now();
+    const reset = window.setTimeout(() => {
+      setFileElapsed(0);
+    }, 0);
+    const tick = window.setInterval(() => {
+      setFileElapsed(Math.floor((Date.now() - started) / 1000));
+    }, 500);
+    const poll = window.setInterval(() => {
+      void api
+        .getTranscribeProgress()
+        .then((progress) => {
+          if (!audioBusyRef.current) {
+            return;
+          }
+          setFileProgress(progress);
+        })
+        .catch(() => undefined);
+    }, 200);
+    return () => {
+      window.clearTimeout(reset);
+      window.clearInterval(tick);
+      window.clearInterval(poll);
+    };
+  }, [audioBusy]);
+
+  useEffect(() => {
+    if (audioBusy) {
+      return;
+    }
     if ((view !== "models" && view !== "onboarding" && view !== "home") || !isTauriRuntime()) {
       return;
     }
@@ -349,7 +420,7 @@ export function App() {
       cancelled = true;
       window.clearInterval(timer);
     };
-  }, [view]);
+  }, [view, audioBusy]);
 
   useEffect(() => {
     if (view !== "logs" || !isTauriRuntime()) {
@@ -503,6 +574,111 @@ export function App() {
   const host = hostKindFrom(build?.platform);
   const macOnly = showMacOnlyControls(host);
   const t = copy(settings.ui_language, host);
+  const sttStatusForHome = modelStatus.find((item) => item.model_id === settings.active_stt_model);
+  const speechReady =
+    Boolean(sttStatusForHome) &&
+    (sttStatusForHome?.verified || sttStatusForHome?.state === "installed") &&
+    Boolean(sttStatusForHome?.active);
+
+  async function transcribeChosenAudio(file: File | undefined) {
+    if (!file) {
+      return;
+    }
+    if (!speechReady) {
+      setStatus(t.transcribeFileNeedModel);
+      return;
+    }
+    if (file.size > 80 * 1024 * 1024) {
+      setStatus(t.transcribeFileTooLarge);
+      return;
+    }
+    const nativePath =
+      "path" in file && typeof (file as File & { path?: string }).path === "string"
+        ? (file as File & { path: string }).path
+        : "";
+    setAudioBusy(true);
+    audioBusyRef.current = true;
+    setFileProgress({
+      phase: "load",
+      percent: 1,
+      chunk: 0,
+      chunks: 1,
+      audio_ms: 0,
+      message: `${t.transcribeFileReading} ${file.name}`,
+    });
+    setStatus(`${t.transcribeFileReading} ${file.name}`);
+    try {
+      const filename = file.name || nativePath || "upload.wav";
+      let output;
+      if (nativePath) {
+        output = await api.transcribeAudioFile({ filename, path: nativePath });
+      } else {
+        const id = await api.beginAudioUpload(filename);
+        const step = 32 * 1024;
+        const sendChunk = async (bytes: Uint8Array, total: number, already: number) => {
+          let sent = already;
+          for (let offset = 0; offset < bytes.byteLength; offset += step) {
+            const piece = bytes.subarray(offset, offset + step);
+            await api.appendAudioUpload(id, Array.from(piece));
+            sent += piece.byteLength;
+            const percent = Math.max(1, Math.min(12, Math.round((sent / total) * 12)));
+            setFileProgress({
+              phase: "load",
+              percent,
+              chunk: 0,
+              chunks: 1,
+              audio_ms: 0,
+              message: `${t.transcribeFileReading} ${file.name}`,
+            });
+            await yieldUi();
+          }
+          return sent;
+        };
+        const total = Math.max(file.size, 1);
+        let sent = 0;
+        if (typeof file.stream === "function") {
+          const reader = file.stream().getReader();
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) {
+              break;
+            }
+            if (!value || value.byteLength === 0) {
+              continue;
+            }
+            sent = await sendChunk(value, total, sent);
+          }
+        } else {
+          sent = await sendChunk(new Uint8Array(await file.arrayBuffer()), total, 0);
+        }
+        setFileProgress({
+          phase: "recognize",
+          percent: 12,
+          chunk: 0,
+          chunks: 1,
+          audio_ms: 0,
+          message: t.transcribeFileBusy,
+        });
+        output = await api.transcribeStagedAudio(id, filename);
+      }
+      setPipelineOut(output);
+      setDraft(output.final_text);
+      setStatus(`Formed: ${output.final_text}`);
+      setHistory(await api.listHistory());
+      setLastUtteranceReady(await api.lastUtteranceReady().catch(() => false));
+    } catch (error) {
+      setPipelineOut(null);
+      setStatus(error instanceof Error ? error.message : String(error));
+    } finally {
+      setAudioBusy(false);
+      audioBusyRef.current = false;
+      setFileProgress(null);
+      if (audioFileRef.current) {
+        audioFileRef.current.value = "";
+      }
+    }
+  }
+
   const captureHotkey = useCallback((listening: boolean) => {
     if (!isTauriRuntime()) {
       return;
@@ -742,48 +918,99 @@ export function App() {
                 {context.style || context.mode}, {context.source})
               </p>
             )}
-            <p className="mt-2 text-paper/70">{status}</p>
+            <p className="mt-2 text-paper/70">
+              {audioBusy ? transcribeStatusLabel(t, fileProgress, t.transcribeFileBusy) : status}
+            </p>
             <p className="mt-1 text-sm text-paper/50">{t.homeHelp}</p>
             <textarea
               className="mt-6 h-32 w-full rounded-2xl border border-paper/15 bg-paper/5 p-4"
               placeholder={t.homePlaceholder}
               value={draft}
               onChange={(e) => setDraft(e.target.value)}
-            />
-            <button
-              className="mt-4 rounded-full bg-copper px-5 py-2 text-ink"
-              onClick={async () => {
-                if (!draft.trim()) {
-                  setStatus("Type a sample transcript first.");
-                  return;
-                }
-                try {
-                  const output = await api.processTranscript(draft);
-                  setPipelineOut(output);
-                  setDraft(output.final_text);
-                  setStatus(`Formed: ${output.final_text}`);
-                  setHistory(await api.listHistory());
-                } catch (error) {
-                  setPipelineOut(null);
-                  setStatus(error instanceof Error ? error.message : String(error));
-                }
+              onDragOver={(e) => {
+                e.preventDefault();
               }}
-            >
-              {t.processLocally}
-            </button>
+              onDrop={(e) => {
+                e.preventDefault();
+                const dropped = e.dataTransfer.files[0];
+                void transcribeChosenAudio(dropped);
+              }}
+            />
+            <div className="mt-4 flex flex-wrap items-center gap-3">
+              <button
+                className="rounded-full bg-copper px-5 py-2 text-ink disabled:opacity-40"
+                disabled={audioBusy}
+                onClick={async () => {
+                  if (!draft.trim()) {
+                    setStatus("Type a sample transcript first.");
+                    return;
+                  }
+                  try {
+                    const output = await api.processTranscript(draft);
+                    setPipelineOut(output);
+                    setDraft(output.final_text);
+                    setStatus(`Formed: ${output.final_text}`);
+                    setHistory(await api.listHistory());
+                  } catch (error) {
+                    setPipelineOut(null);
+                    setStatus(error instanceof Error ? error.message : String(error));
+                  }
+                }}
+              >
+                {t.processLocally}
+              </button>
+              <input
+                ref={audioFileRef}
+                type="file"
+                accept=".wav,.mp3,.m4a,.aac,.ogg,.flac,.aiff,.aif,audio/*"
+                className="hidden"
+                onChange={(e) => {
+                  void transcribeChosenAudio(e.target.files?.[0]);
+                }}
+              />
+              <button
+                className="rounded-full border border-paper/30 px-5 py-2 disabled:opacity-40"
+                disabled={audioBusy || !speechReady}
+                onClick={() => audioFileRef.current?.click()}
+              >
+                {audioBusy ? t.transcribeFileBusy : t.transcribeFile}
+              </button>
+            </div>
+            <p className="mt-2 text-xs text-paper/50">{t.transcribeFileHelp}</p>
+            {audioBusy && (
+              <div className="mt-4 rounded-2xl border border-copper/40 bg-copper/10 p-4">
+                <p className="text-sm">
+                  {transcribeStatusLabel(t, fileProgress, t.transcribeFileBusy)}
+                  <span className="ml-2 text-paper/50">
+                    {t.transcribeFileElapsed} {formatElapsed(fileElapsed)}
+                  </span>
+                </p>
+                <div className="mt-3 h-2 overflow-hidden rounded-full bg-paper/15">
+                  <div
+                    className="h-2 rounded-full bg-copper transition-[width] duration-300"
+                    style={{ width: `${Math.max(4, fileProgress?.percent ?? 4)}%` }}
+                  />
+                </div>
+                {fileProgress && fileProgress.chunks > 1 && (
+                  <p className="mt-2 text-xs text-paper/50">
+                    {fileProgress.chunk + 1}/{fileProgress.chunks}
+                  </p>
+                )}
+              </div>
+            )}
             {pipelineOut && (
               <dl className="mt-6 space-y-2 rounded-2xl border border-paper/10 p-4 text-sm">
                 <div>
                   <dt className="text-paper/50">{t.transcript}</dt>
-                  <dd>{pipelineOut.raw_transcript}</dd>
+                  <dd className="whitespace-pre-wrap">{pipelineOut.raw_transcript}</dd>
                 </div>
                 <div>
                   <dt className="text-paper/50">{t.afterDictionary}</dt>
-                  <dd>{pipelineOut.dictionary_text}</dd>
+                  <dd className="whitespace-pre-wrap">{pipelineOut.dictionary_text}</dd>
                 </div>
                 <div>
                   <dt className="text-paper/50">{t.formedText}</dt>
-                  <dd className="text-lg">{pipelineOut.final_text}</dd>
+                  <dd className="whitespace-pre-wrap text-lg">{pipelineOut.final_text}</dd>
                 </div>
                 {pipelineOut.insert_ok === false && pipelineOut.final_text && (
                   <div className="flex flex-wrap gap-2 pt-2">
@@ -1514,190 +1741,167 @@ export function App() {
             })()}
             <p className="mt-2 text-copper">{modelMessage}</p>
             <div className="mt-6 grid gap-4">
-              {models.map((model) => {
-                const status = modelStatus.find((item) => item.model_id === model.model_id);
-                const progress = downloadProgress[model.model_id];
-                const state = status?.state ?? "missing";
-                const ready = state === "verified" || state === "installed";
-                const isSpeechActive = settings.active_stt_model === model.model_id;
-                const isFormattingActive = settings.active_llm_model === model.model_id;
-                const isActive = isSpeechActive || isFormattingActive || Boolean(status?.active);
-                const busy =
-                  state === "downloading" ||
-                  progress?.phase === "downloading" ||
-                  progress?.phase === "verifying" ||
-                  progress?.phase === "installing";
-                const bytes =
-                  busy && progress
-                    ? progress.bytes_downloaded
-                    : Math.max(status?.bytes_on_disk ?? 0, progress?.bytes_downloaded ?? 0);
-                const total = status?.expected_bytes || model.size || progress?.total_bytes || 0;
-                const percent = total > 0 ? Math.min(100, Math.round((bytes / total) * 100)) : 0;
-                const roleLabel = isSpeechActive
-                  ? "In use · speech"
-                  : isFormattingActive
-                    ? "In use · formatting"
-                    : null;
-                const badge = roleLabel
-                  ? { label: roleLabel, className: "bg-copper text-ink" }
-                  : ready
-                    ? {
-                        label: "Installed",
-                        className: "bg-moss text-ink",
-                      }
-                    : state === "downloading"
-                      ? { label: `Downloading ${percent}%`, className: "bg-copper text-ink" }
-                      : state === "incomplete"
-                        ? {
-                            label: `Incomplete ${percent}%`,
-                            className: "bg-copper/30 text-copper",
-                          }
-                        : state === "unverified"
-                          ? { label: "Checksum failed", className: "bg-red-900 text-paper" }
-                          : { label: "Not installed", className: "bg-paper/15 text-paper/70" };
-                const buttonLabel = ready
-                  ? "Re-download & verify"
-                  : state === "incomplete" || state === "downloading"
-                    ? "Resume download"
-                    : "Download & install";
-                return (
-                  <article
-                    key={model.model_id}
-                    className={`rounded-2xl border p-5 ${
-                      isActive ? "border-copper/70 bg-copper/5" : "border-paper/10"
-                    }`}
-                  >
-                    <div className="flex items-baseline justify-between gap-4">
-                      <h2 className="text-2xl">{model.display_name}</h2>
-                      <span
-                        className={`rounded-full px-3 py-1 text-xs font-semibold uppercase tracking-wide ${badge.className}`}
-                      >
-                        {badge.label}
-                      </span>
-                    </div>
-                    <p className="mt-2 text-sm text-paper/70">
-                      {model.kind === "stt" ? "Speech" : "Formatting"} · {model.version} ·{" "}
-                      {model.format} {model.quantization} · {formatBytes(model.size)}
-                      {model.model_id === "whisper-medium" ? " · recommended default" : ""}
-                    </p>
-                    {(state === "downloading" ||
-                      state === "incomplete" ||
-                      progress?.phase === "downloading" ||
-                      progress?.phase === "verifying" ||
-                      progress?.phase === "installing") && (
-                      <div className="mt-3">
-                        <div className="h-2 overflow-hidden rounded-full bg-paper/10">
-                          <div className="h-full bg-copper" style={{ width: `${percent}%` }} />
-                        </div>
-                        <p className="mt-2 text-sm text-copper">
-                          {formatBytes(bytes)} of {formatBytes(total)}
-                        </p>
+              {models
+                .filter((model) => model.kind === "stt" || model.kind === "llm")
+                .map((model) => {
+                  const status = modelStatus.find((item) => item.model_id === model.model_id);
+                  const progress = downloadProgress[model.model_id];
+                  const state = status?.state ?? "missing";
+                  const ready = state === "verified" || state === "installed";
+                  const isSpeechActive = settings.active_stt_model === model.model_id;
+                  const isFormattingActive = settings.active_llm_model === model.model_id;
+                  const isActive = isSpeechActive || isFormattingActive || Boolean(status?.active);
+                  const busy =
+                    state === "downloading" ||
+                    progress?.phase === "downloading" ||
+                    progress?.phase === "verifying" ||
+                    progress?.phase === "installing";
+                  const bytes =
+                    busy && progress
+                      ? progress.bytes_downloaded
+                      : Math.max(status?.bytes_on_disk ?? 0, progress?.bytes_downloaded ?? 0);
+                  const total = status?.expected_bytes || model.size || progress?.total_bytes || 0;
+                  const percent = total > 0 ? Math.min(100, Math.round((bytes / total) * 100)) : 0;
+                  const roleLabel = isSpeechActive
+                    ? "In use · speech"
+                    : isFormattingActive
+                      ? "In use · formatting"
+                      : null;
+                  const badge = roleLabel
+                    ? { label: roleLabel, className: "bg-copper text-ink" }
+                    : ready
+                      ? {
+                          label: "Installed",
+                          className: "bg-moss text-ink",
+                        }
+                      : state === "downloading"
+                        ? { label: `Downloading ${percent}%`, className: "bg-copper text-ink" }
+                        : state === "incomplete"
+                          ? {
+                              label: `Incomplete ${percent}%`,
+                              className: "bg-copper/30 text-copper",
+                            }
+                          : state === "unverified"
+                            ? { label: "Checksum failed", className: "bg-red-900 text-paper" }
+                            : { label: "Not installed", className: "bg-paper/15 text-paper/70" };
+                  const buttonLabel = ready
+                    ? "Re-download & verify"
+                    : state === "incomplete" || state === "downloading"
+                      ? "Resume download"
+                      : "Download & install";
+                  return (
+                    <article
+                      key={model.model_id}
+                      className={`rounded-2xl border p-5 ${
+                        isActive ? "border-copper/70 bg-copper/5" : "border-paper/10"
+                      }`}
+                    >
+                      <div className="flex items-baseline justify-between gap-4">
+                        <h2 className="text-2xl">{model.display_name}</h2>
+                        <span
+                          className={`rounded-full px-3 py-1 text-xs font-semibold uppercase tracking-wide ${badge.className}`}
+                        >
+                          {badge.label}
+                        </span>
                       </div>
-                    )}
-                    {ready && (
-                      <p className="mt-2 text-sm text-moss">
-                        {isSpeechActive
-                          ? "This is the speech model LocalFlow uses for dictation. "
-                          : isFormattingActive
-                            ? "This is the formatting model used after speech-to-text. "
-                            : ""}
-                        Ready at {status?.local_path}
+                      <p className="mt-2 text-sm text-paper/70">
+                        {model.kind === "stt" ? "Speech" : "Formatting"} · {model.version} ·{" "}
+                        {model.format} {model.quantization} · {formatBytes(model.size)}
+                        {model.model_id === "whisper-medium" ? " · recommended default" : ""}
                       </p>
-                    )}
-                    {isActive && !ready && (
-                      <p className="mt-2 text-sm text-copper">
-                        Selected as the current {isSpeechActive ? "speech" : "formatting"} model,
-                        but the file is not ready yet.
-                      </p>
-                    )}
-                    {status?.local_path && !ready && (
+                      {(state === "downloading" ||
+                        state === "incomplete" ||
+                        progress?.phase === "downloading" ||
+                        progress?.phase === "verifying" ||
+                        progress?.phase === "installing") && (
+                        <div className="mt-3">
+                          <div className="h-2 overflow-hidden rounded-full bg-paper/10">
+                            <div className="h-full bg-copper" style={{ width: `${percent}%` }} />
+                          </div>
+                          <p className="mt-2 text-sm text-copper">
+                            {formatBytes(bytes)} of {formatBytes(total)}
+                          </p>
+                        </div>
+                      )}
+                      {ready && (
+                        <p className="mt-2 text-sm text-moss">
+                          {isSpeechActive
+                            ? "This is the speech model LocalFlow uses for dictation. "
+                            : isFormattingActive
+                              ? "This is the formatting model used after speech-to-text. "
+                              : ""}
+                          Ready at {status?.local_path}
+                        </p>
+                      )}
+                      {isActive && !ready && (
+                        <p className="mt-2 text-sm text-copper">
+                          Selected as the current {isSpeechActive ? "speech" : "formatting"} model,
+                          but the file is not ready yet.
+                        </p>
+                      )}
+                      {status?.local_path && !ready && (
+                        <p className="mt-1 break-all font-mono text-xs text-paper/50">
+                          {status.local_path}
+                        </p>
+                      )}
+                      <p className="mt-1 text-sm">License: {model.license}</p>
+                      <p className="mt-1 text-sm">Source: {model.source}</p>
+                      {model.notes && <p className="mt-2 text-sm text-paper/70">{model.notes}</p>}
                       <p className="mt-1 break-all font-mono text-xs text-paper/50">
-                        {status.local_path}
+                        SHA-256: {model.sha256}
                       </p>
-                    )}
-                    <p className="mt-1 text-sm">License: {model.license}</p>
-                    <p className="mt-1 text-sm">Source: {model.source}</p>
-                    {model.notes && <p className="mt-2 text-sm text-paper/70">{model.notes}</p>}
-                    <p className="mt-1 break-all font-mono text-xs text-paper/50">
-                      SHA-256: {model.sha256}
-                    </p>
-                    <div className="mt-3 flex flex-wrap gap-3">
-                      <a
-                        className="text-copper underline"
-                        href={model.license_url}
-                        target="_blank"
-                        rel="noreferrer"
-                      >
-                        View License
-                      </a>
-                      <button
-                        className="rounded-full bg-moss px-4 py-1 text-ink disabled:opacity-40"
-                        disabled={busy || !model.download_url}
-                        onClick={async () => {
-                          const redownload = ready;
-                          setDownloadProgress((current) => ({
-                            ...current,
-                            [model.model_id]: {
-                              model_id: model.model_id,
-                              phase: "downloading",
-                              bytes_downloaded: 0,
-                              total_bytes: model.size,
-                            },
-                          }));
-                          setModelMessage(
-                            redownload
-                              ? `Re-downloading ${model.display_name}…`
-                              : `Network download started for ${model.display_name}`,
-                          );
-                          try {
-                            const path = await api.downloadModel(model.model_id, redownload);
-                            setModelMessage(`Installed and verified at ${path}`);
-                            await refresh();
-                          } catch (error) {
-                            setModelMessage(error instanceof Error ? error.message : String(error));
-                            try {
-                              setModelStatus(await api.listModelStatus());
-                            } catch {
-                              /* keep last known status */
-                            }
-                          }
-                        }}
-                      >
-                        {buttonLabel}
-                      </button>
-                      <button
-                        className="text-paper/80 underline"
-                        onClick={async () => {
-                          try {
-                            const path = await api.verifyModel(model.model_id);
-                            setModelMessage(`Verified at ${path}`);
-                            await refresh();
-                          } catch (error) {
-                            setModelMessage(error instanceof Error ? error.message : String(error));
-                          }
-                        }}
-                      >
-                        Verify local file
-                      </button>
-                      {ready && isActive && (
-                        <button
-                          className="rounded-full border border-copper px-4 py-1 text-copper"
-                          disabled
+                      <div className="mt-3 flex flex-wrap gap-3">
+                        <a
+                          className="text-copper underline"
+                          href={model.license_url}
+                          target="_blank"
+                          rel="noreferrer"
                         >
-                          Currently in use
-                        </button>
-                      )}
-                      {!isActive && (
+                          View License
+                        </a>
                         <button
-                          className="rounded-full border border-paper/30 px-4 py-1"
+                          className="rounded-full bg-moss px-4 py-1 text-ink disabled:opacity-40"
+                          disabled={busy || !model.download_url}
+                          onClick={async () => {
+                            const redownload = ready;
+                            setDownloadProgress((current) => ({
+                              ...current,
+                              [model.model_id]: {
+                                model_id: model.model_id,
+                                phase: "downloading",
+                                bytes_downloaded: 0,
+                                total_bytes: model.size,
+                              },
+                            }));
+                            setModelMessage(
+                              redownload
+                                ? `Re-downloading ${model.display_name}…`
+                                : `Network download started for ${model.display_name}`,
+                            );
+                            try {
+                              const path = await api.downloadModel(model.model_id, redownload);
+                              setModelMessage(`Installed and verified at ${path}`);
+                              await refresh();
+                            } catch (error) {
+                              setModelMessage(
+                                error instanceof Error ? error.message : String(error),
+                              );
+                              try {
+                                setModelStatus(await api.listModelStatus());
+                              } catch {
+                                /* keep last known status */
+                              }
+                            }
+                          }}
+                        >
+                          {buttonLabel}
+                        </button>
+                        <button
+                          className="text-paper/80 underline"
                           onClick={async () => {
                             try {
-                              await api.setActiveModel(model.model_id);
-                              setModelMessage(
-                                `${model.display_name} is now the ${
-                                  model.kind === "llm" ? "formatting" : "speech"
-                                } model in use.${ready ? "" : " Download it to start dictation."}`,
-                              );
+                              const path = await api.verifyModel(model.model_id);
+                              setModelMessage(`Verified at ${path}`);
                               await refresh();
                             } catch (error) {
                               setModelMessage(
@@ -1706,42 +1910,71 @@ export function App() {
                             }
                           }}
                         >
-                          Use this {model.kind === "llm" ? "for formatting" : "for speech"}
+                          Verify local file
                         </button>
+                        {ready && isActive && (
+                          <button
+                            className="rounded-full border border-copper px-4 py-1 text-copper"
+                            disabled
+                          >
+                            Currently in use
+                          </button>
+                        )}
+                        {!isActive && (
+                          <button
+                            className="rounded-full border border-paper/30 px-4 py-1"
+                            onClick={async () => {
+                              try {
+                                await api.setActiveModel(model.model_id);
+                                setModelMessage(
+                                  `${model.display_name} is now the ${
+                                    model.kind === "llm" ? "formatting" : "speech"
+                                  } model in use.${ready ? "" : " Download it to start dictation."}`,
+                                );
+                                await refresh();
+                              } catch (error) {
+                                setModelMessage(
+                                  error instanceof Error ? error.message : String(error),
+                                );
+                              }
+                            }}
+                          >
+                            Use this {model.kind === "llm" ? "for formatting" : "for speech"}
+                          </button>
+                        )}
+                        {canDeleteDownloadedModel(status) && (
+                          <button
+                            className="rounded-full border border-paper/30 px-4 py-1 text-paper/80"
+                            disabled={busy}
+                            onClick={async () => {
+                              if (!window.confirm(t.deleteModelConfirm)) {
+                                return;
+                              }
+                              try {
+                                const result = await api.removeModel(model.model_id);
+                                setModelMessage(
+                                  `${t.deletedModel} ${model.display_name} (${formatBytes(result.bytes_freed)}).`,
+                                );
+                                await refresh();
+                              } catch (error) {
+                                setModelMessage(
+                                  error instanceof Error ? error.message : String(error),
+                                );
+                              }
+                            }}
+                          >
+                            {t.deleteModel}
+                          </button>
+                        )}
+                      </div>
+                      {model.network_required_to_obtain && !ready && (
+                        <p className="mt-3 text-xs uppercase tracking-wide text-copper">
+                          Network required to download (Hugging Face)
+                        </p>
                       )}
-                      {canDeleteDownloadedModel(status) && (
-                        <button
-                          className="rounded-full border border-paper/30 px-4 py-1 text-paper/80"
-                          disabled={busy}
-                          onClick={async () => {
-                            if (!window.confirm(t.deleteModelConfirm)) {
-                              return;
-                            }
-                            try {
-                              const result = await api.removeModel(model.model_id);
-                              setModelMessage(
-                                `${t.deletedModel} ${model.display_name} (${formatBytes(result.bytes_freed)}).`,
-                              );
-                              await refresh();
-                            } catch (error) {
-                              setModelMessage(
-                                error instanceof Error ? error.message : String(error),
-                              );
-                            }
-                          }}
-                        >
-                          {t.deleteModel}
-                        </button>
-                      )}
-                    </div>
-                    {model.network_required_to_obtain && !ready && (
-                      <p className="mt-3 text-xs uppercase tracking-wide text-copper">
-                        Network required to download (Hugging Face)
-                      </p>
-                    )}
-                  </article>
-                );
-              })}
+                    </article>
+                  );
+                })}
             </div>
           </section>
         )}

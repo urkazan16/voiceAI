@@ -20,6 +20,24 @@ use std::sync::{Arc, Mutex};
 use std::time::{Instant, SystemTime};
 use uuid::Uuid;
 
+/// `space_between_utterances` only needs the previous ending; keep a short tail.
+const SESSION_TEXT_MAX: usize = 2048;
+
+fn cap_utf8_tail(text: &mut String, max_bytes: usize) {
+    if max_bytes == 0 {
+        text.clear();
+        return;
+    }
+    if text.len() <= max_bytes {
+        return;
+    }
+    let mut cut = text.len() - max_bytes;
+    while cut < text.len() && !text.is_char_boundary(cut) {
+        cut += 1;
+    }
+    text.replace_range(..cut, "");
+}
+
 pub struct AppEngine {
     pub paths: DataPaths,
     pub catalog: ModelCatalog,
@@ -41,6 +59,7 @@ pub struct AppEngine {
     /// Unfinished GUID body waiting for a hyphen-led continuation.
     pub open_literal: Option<String>,
     pub inject_enabled: bool,
+    file_verbatim: bool,
     settings_mtime: Option<SystemTime>,
 }
 
@@ -69,6 +88,7 @@ impl AppEngine {
             spell_mode: false,
             open_literal: None,
             inject_enabled: true,
+            file_verbatim: false,
             settings_mtime: None,
         };
         engine.load_persisted();
@@ -248,6 +268,8 @@ impl AppEngine {
         let kind = self.catalog.get(model_id)?.kind.clone();
         match kind.as_str() {
             "llm" => self.settings.active_llm_model = Some(model_id.to_string()),
+            // The VAD model is a helper for whatever speech model is active.
+            "vad" => return Ok(()),
             _ => self.settings.active_stt_model = Some(model_id.to_string()),
         }
         self.persist()?;
@@ -311,6 +333,49 @@ impl AppEngine {
         )
     }
 
+    /// File / upload path: same STT + formatting as a recording, but do not
+    /// paste into whichever app sits behind the LocalFlow window.
+    pub fn process_file_audio(&mut self, pcm_16k: &[f32]) -> LfResult<PipelineOutput> {
+        self.process_file_transcript("", pcm_16k)
+    }
+
+    pub fn process_file_transcript(
+        &mut self,
+        transcript: &str,
+        pcm_16k: &[f32],
+    ) -> LfResult<PipelineOutput> {
+        crate::dictation::clear_cancel();
+        let trimmed_storage;
+        let pcm: &[f32] = if pcm_16k.len() > 16_000 * 60 {
+            pcm_16k
+        } else {
+            trimmed_storage =
+                crate::vad::trim_silence_at(pcm_16k, 16_000, self.settings.vad_threshold);
+            &trimmed_storage
+        };
+        if self.settings.keep_last_audio && pcm.len() <= 16_000 * 60 {
+            let last = self.paths.last_utterance();
+            if let Some(parent) = last.parent() {
+                let _ = fs::create_dir_all(parent);
+            }
+            let _ = crate::media::write_wav_s16le_mono(&last, 16_000, &pcm);
+        }
+        let previous_inject = self.inject_enabled;
+        let previous_verbatim = self.file_verbatim;
+        self.inject_enabled = false;
+        self.file_verbatim = true;
+        let result = self.run_text_pipeline(
+            transcript,
+            &NativeStt,
+            &NativeLlm,
+            &MemoryInjector::default(),
+            &pcm,
+        );
+        self.inject_enabled = previous_inject;
+        self.file_verbatim = previous_verbatim;
+        result
+    }
+
     /// Recognizer settings for the profile that is about to be used. The
     /// dictionary doubles as a prompt so Whisper spells project vocabulary the
     /// way the user does, instead of guessing phonetically.
@@ -341,7 +406,19 @@ impl AppEngine {
         crate::whisper_stt::DecodeOptions {
             prompt,
             allow_symbols: mode == PipelineMode::Code || self.spell_mode,
+            // Energy VAD already trims the PTT clip. Whisper's Silero path
+            // concatenates fragments and was looping short dictation.
+            vad_model: None,
+            timestamps: false,
+            long_form: false,
         }
+    }
+
+    /// Installed Silero VAD ggml, if the catalog has one and it is on disk.
+    pub(crate) fn vad_model_path(&self) -> Option<PathBuf> {
+        let record = self.catalog.models.iter().find(|m| m.kind == "vad")?;
+        let path = self.model_path(record);
+        looks_installed(&path, record).then_some(path)
     }
 
     pub fn run_text_pipeline(
@@ -374,30 +451,43 @@ impl AppEngine {
                         .unwrap_or_else(|| crate::config::DEFAULT_STT_MODEL.to_string()),
                 )
             })?;
+            let options = if self.file_verbatim {
+                let mut options = crate::whisper_stt::DecodeOptions::long_form_interview();
+                options.vad_model = self.vad_model_path();
+                options
+            } else {
+                self.decode_options()
+            };
             crate::stt::transcribe_with_paragraph_pauses(
                 stt,
                 pcm,
                 Some(path.as_path()),
                 &self.settings.stt_language,
                 self.settings.vad_threshold,
-                &self.decode_options(),
+                &options,
             )?
         } else {
             transcript.to_string()
         };
         let raw = crate::sanitize::strip_model_tags(&raw);
-        if crate::sanitize::is_likely_hallucination(&raw) {
+        if crate::sanitize::is_likely_hallucination(&raw)
+            && (!self.file_verbatim || raw.split_whitespace().count() < 8)
+        {
             return Err(LfError::Other(
                 "No speech detected. Nothing was inserted.".into(),
             ));
         }
         let cues = crate::whisper_stt::last_cues();
+        crate::whisper_stt::set_progress("format", 92, "Formatting transcript…");
+        if self.file_verbatim {
+            return self.complete_file_transcript(raw, cues, pcm, started, injector);
+        }
+        // Whisper on a file can take minutes; the post-process budget applies
+        // only to dictionary / LLM / insert, not to recognition.
+        let postprocess_started = Instant::now();
         let timeout =
             std::time::Duration::from_millis(self.settings.postprocess_timeout_ms.max(1_000));
         stop_if_cancelled()?;
-        if started.elapsed() > timeout {
-            return Err(LfError::Other("postprocess timeout".into()));
-        }
         let (after_command, command_mode, _) = profiles::apply_voice_command(&raw);
         let resolved = self.resolve_context();
         let mode = command_mode.unwrap_or(resolved.mode);
@@ -455,7 +545,7 @@ impl AppEngine {
         };
         self.snapshot.transition(PipelineState::Llm)?;
         stop_if_cancelled()?;
-        let timed_out = started.elapsed() > timeout;
+        let timed_out = postprocess_started.elapsed() > timeout;
         let llm_text = if skip_llm
             || timed_out
             || crate::dictation::is_cancelled()
@@ -525,6 +615,7 @@ impl AppEngine {
         self.last_output = Some(output.clone());
         if !final_text.is_empty() && insert_ok {
             self.session_text.push_str(&inject_text);
+            cap_utf8_tail(&mut self.session_text, SESSION_TEXT_MAX);
         }
         let _ = self.store.put_kv(
             "last_transcript",
@@ -582,11 +673,125 @@ impl AppEngine {
                     insert_ok,
                 },
             );
+            let _ = crate::uttlog::prune_to_latest(
+                &self.paths,
+                self.settings.history_max_items as usize,
+            );
         }
         self.snapshot.transition(PipelineState::Idle)?;
         if let Some(err) = insert_err {
             crate::journal::log("insert_failed", &err.to_string());
         }
+        Ok(output)
+    }
+
+    fn complete_file_transcript(
+        &mut self,
+        raw: String,
+        cues: Vec<crate::pipeline::TranscriptCue>,
+        pcm: &[f32],
+        started: Instant,
+        injector: &dyn TextInjector,
+    ) -> LfResult<PipelineOutput> {
+        self.snapshot.transition(PipelineState::Dictionary)?;
+        self.snapshot.transition(PipelineState::Backtrack)?;
+        self.snapshot.transition(PipelineState::Formatting)?;
+        let diarized = crate::pipeline::format_diarized_transcript(&cues);
+        let final_text = if diarized.trim().is_empty() {
+            raw.trim().to_string()
+        } else {
+            diarized
+        };
+        self.snapshot.transition(PipelineState::Personalization)?;
+        self.snapshot.transition(PipelineState::Llm)?;
+        self.snapshot.transition(PipelineState::Validate)?;
+        self.snapshot.transition(PipelineState::Injecting)?;
+        stop_if_cancelled()?;
+        let resolved = self.resolve_context();
+        let mode = resolved.mode;
+        self.snapshot.mode = mode;
+        if self.inject_enabled && !final_text.is_empty() && !crate::dictation::is_cancelled() {
+            let _ = injector.insert_text(&final_text, self.settings.restore_clipboard);
+        }
+        if crate::dictation::is_cancelled() {
+            return Err(LfError::Other("cancelled".into()));
+        }
+        self.snapshot.transition(PipelineState::Completed)?;
+        let output = PipelineOutput {
+            raw_transcript: raw.clone(),
+            dictionary_text: raw.clone(),
+            backtrack_text: raw.clone(),
+            formatted_text: final_text.clone(),
+            personalized_text: final_text.clone(),
+            final_text: final_text.clone(),
+            mode,
+            insert_ok: true,
+            insert_error: None,
+            cues: cues.clone(),
+        };
+        self.last_output = Some(output.clone());
+        let _ = self.store.put_kv(
+            "last_transcript",
+            &serde_json::to_string(&output).unwrap_or_default(),
+        );
+        let timecodes = if cues.is_empty() {
+            crate::pipeline::cues_to_srt(&[crate::pipeline::TranscriptCue {
+                start_ms: 0,
+                end_ms: started.elapsed().as_millis() as u64,
+                text: final_text.clone(),
+            }])
+        } else {
+            crate::pipeline::cues_to_srt(&cues)
+        };
+        let duration_ms = if pcm.is_empty() {
+            0
+        } else {
+            (pcm.len() as u64 * 1000) / 16_000
+        };
+        let words = crate::uttlog::word_count(&final_text);
+        let wpm = crate::uttlog::wpm(words, duration_ms);
+        let item = HistoryItem {
+            id: Uuid::new_v4().to_string(),
+            created_at: crate::uttlog::now_rfc3339(),
+            mode: "interview".into(),
+            transcript: raw.clone(),
+            output: final_text.clone(),
+            application: resolved.app_name.clone(),
+            profile: resolved.profile_name.clone(),
+            model: self.settings.active_stt_model.clone().unwrap_or_default(),
+            processing_time_ms: started.elapsed().as_millis() as u64,
+            timecodes,
+        };
+        if self.settings.history_enabled {
+            let _ = self.store.insert_history(&item);
+            let _ = self.store.prune_history(self.settings.history_max_items);
+            let _ = crate::uttlog::append(
+                &self.paths,
+                crate::uttlog::UtteranceLine {
+                    schema: 1,
+                    id: item.id.clone(),
+                    ts: item.created_at.clone(),
+                    timezone: crate::uttlog::timezone_name(),
+                    text: final_text,
+                    raw,
+                    application: resolved.app_name.clone(),
+                    profile: resolved.profile_name.clone(),
+                    mode: item.mode.clone(),
+                    model: item.model.clone(),
+                    processing_time_ms: item.processing_time_ms,
+                    duration_ms,
+                    word_count: words,
+                    wpm,
+                    insert_method: "none".into(),
+                    insert_ok: true,
+                },
+            );
+            let _ = crate::uttlog::prune_to_latest(
+                &self.paths,
+                self.settings.history_max_items as usize,
+            );
+        }
+        self.snapshot.transition(PipelineState::Idle)?;
         Ok(output)
     }
 
@@ -711,6 +916,15 @@ mod tests {
     }
 
     #[test]
+    fn session_text_keeps_only_a_utf8_tail() {
+        let mut text = "абвгде".repeat(400);
+        cap_utf8_tail(&mut text, SESSION_TEXT_MAX);
+        assert!(text.len() <= SESSION_TEXT_MAX);
+        assert!(text.ends_with("абвгде"));
+        assert!(!text.is_empty());
+    }
+
+    #[test]
     fn pipeline_applies_dictionary_and_personalization() {
         let (_dir, mut eng) = engine();
         eng.dictionary
@@ -825,6 +1039,23 @@ mod tests {
             ("коммит д шесть б ноль два ноль четыре", "d6b0204"),
             ("версия два точка ноль точка один", "2.0.1"),
             ("запусти скрипт точка sh", "скрипт.sh"),
+            (
+                "адрес сервера сто девяносто два точка сто шестьдесят восемь точка двадцать восемь точка сто девяносто девять порт восемь тысяч восемьдесят",
+                "192.168.28.199",
+            ),
+            ("напиши на адрес support собака example точка com", "support@example.com"),
+            ("серийный номер устройства эс эн 47 дефис 47322", "SN47-47322"),
+            ("проверь коммит эф 4 д 5 4 б", "f4d54b"),
+            ("хеш начинается на бэ 5 бэ 4 0 1 и заканчивается на 9 3 9 е", "b5b401"),
+            ("хеш начинается на бэ 5 бэ 4 0 1 и заканчивается на 9 3 9 е", "939e"),
+            ("тикет войс дефис 798 закрыт коммитом f4d5 в ветке fix слэш gmv", "VOICE-798"),
+            ("тикет войс дефис 798 закрыт коммитом f4d5 в ветке fix слэш gmv", "fix/gmv"),
+            (
+                "адрес сервера сто девяносто два точка сто шестьдесят восемь точка двадцать восемь точка сто девяносто девять порт восемь тысяч восемьдесят",
+                "8080",
+            ),
+            ("задеплой сервис через docker compose и проверь healthcheck", "docker compose"),
+            ("дискриминант равен б квадрат минус четыре а цэ", "b²"),
         ];
         for (spoken, expected) in cases {
             let out = eng.run_scripted(spoken).unwrap().final_text;
@@ -972,6 +1203,73 @@ mod tests {
             eng.session_text
         );
         assert_eq!(eng.snapshot.state, PipelineState::Idle);
+    }
+
+    #[test]
+    fn file_audio_pipeline_disables_clipboard_paste() {
+        let body = include_str!("engine.rs")
+            .split("pub fn process_file_audio")
+            .nth(1)
+            .unwrap()
+            .split("pub fn decode_options")
+            .next()
+            .unwrap();
+        assert!(body.contains("MemoryInjector"));
+        assert!(body.contains("inject_enabled = false"));
+        assert!(!body.contains("ClipboardInjector"));
+        assert!(body.contains("file_verbatim = true"));
+    }
+
+    #[test]
+    fn file_transcript_formats_speakers_without_dictionary() {
+        let (_dir, mut eng) = engine();
+        crate::whisper_stt::store_cues(vec![
+            crate::pipeline::TranscriptCue {
+                start_ms: 1_000,
+                end_ms: 17_000,
+                text: "Я Миша.".into(),
+            },
+            crate::pipeline::TranscriptCue {
+                start_ms: 18_500,
+                end_ms: 20_000,
+                text: "Да, давайте.".into(),
+            },
+        ]);
+        let pcm = vec![0.2; 16_000];
+        let out = eng
+            .process_file_transcript("Я Миша. Да, давайте.", &pcm)
+            .unwrap();
+        assert!(
+            out.final_text.contains("[speaker_0 0:01 – 0:17]"),
+            "{}",
+            out.final_text
+        );
+        assert!(
+            out.final_text.contains("[speaker_1 0:19 – 0:20]"),
+            "{}",
+            out.final_text
+        );
+        assert!(!out.final_text.contains("NuGet"));
+        assert_eq!(out.raw_transcript, "Я Миша. Да, давайте.");
+    }
+
+    #[test]
+    fn stt_does_not_eat_postprocess_budget() {
+        let body = include_str!("engine.rs")
+            .split("pub fn run_text_pipeline")
+            .nth(1)
+            .unwrap()
+            .split("pub fn delete_history")
+            .next()
+            .unwrap();
+        assert!(
+            body.contains("postprocess_started"),
+            "long Whisper jobs must not consume the post-process budget"
+        );
+        assert!(
+            !body.contains("return Err(LfError::Other(\"postprocess timeout\""),
+            "aborting after STT drops a finished transcript"
+        );
     }
 
     #[test]

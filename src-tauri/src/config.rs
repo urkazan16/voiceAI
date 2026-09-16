@@ -299,7 +299,7 @@ impl Default for AppSettings {
             mode: PipelineMode::Normal,
             microphone_name: None,
             active_stt_model: Some(DEFAULT_STT_MODEL.into()),
-            active_llm_model: Some("Qwen3-4B-Instruct-2507".into()),
+            active_llm_model: None,
             restore_clipboard: true,
             onboarding_complete: false,
             copy_last_hotkey: default_copy_hotkey(),
@@ -419,6 +419,7 @@ mod tests {
             imported.settings.active_stt_model.as_deref(),
             Some(DEFAULT_STT_MODEL)
         );
+        assert_eq!(imported.settings.active_llm_model, None);
     }
 
     #[test]

@@ -1,5 +1,5 @@
 {
-  "catalog_version": "0.2.0",
+  "catalog_version": "0.3.0",
   "models": [
     {
       "model_id": "whisper-base",
@@ -59,6 +59,25 @@
       "notes": "Recommended for Russian dictation. ~1.5 GB, slower than Small, much more accurate on similar-sounding words."
     },
     {
+      "model_id": "whisper-medium-q8_0",
+      "display_name": "Whisper Medium Q8_0",
+      "version": "ggml-medium-q8_0.bin Q8_0",
+      "filename": "ggml-medium-q8_0.bin",
+      "format": "ggml",
+      "quantization": "Q8_0",
+      "kind": "stt",
+      "source": "ggerganov/whisper.cpp",
+      "source_url": "https://huggingface.co/ggerganov/whisper.cpp",
+      "download_url": "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-medium-q8_0.bin?download=true",
+      "sha256": "42a1ffcbe4167d224232443396968db4d02d4e8e87e213d3ee2e03095dea6502",
+      "size": 823369779,
+      "license": "MIT",
+      "license_url": "https://github.com/ggerganov/whisper.cpp/blob/master/LICENSE",
+      "network_required_to_obtain": true,
+      "checksum_pinned": true,
+      "notes": "Same accuracy as Medium F16 within noise, half the RAM and disk (~820 MB). Integer kernels are usually faster than F16 on Intel/AMD CPUs. Recommended on Intel Macs."
+    },
+    {
       "model_id": "whisper-large-v3-turbo",
       "display_name": "Whisper Large v3 Turbo",
       "version": "ggml-large-v3-turbo.bin F16",
@@ -76,6 +95,44 @@
       "network_required_to_obtain": true,
       "checksum_pinned": true,
       "notes": "About the same disk size as Medium, usually faster. Slightly less precise than Medium on Russian tongue twisters."
+    },
+    {
+      "model_id": "whisper-large-v3-turbo-q8_0",
+      "display_name": "Whisper Large v3 Turbo Q8_0",
+      "version": "ggml-large-v3-turbo-q8_0.bin Q8_0",
+      "filename": "ggml-large-v3-turbo-q8_0.bin",
+      "format": "ggml",
+      "quantization": "Q8_0",
+      "kind": "stt",
+      "source": "ggerganov/whisper.cpp",
+      "source_url": "https://huggingface.co/ggerganov/whisper.cpp",
+      "download_url": "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo-q8_0.bin?download=true",
+      "sha256": "317eb69c11673c9de1e1f0d459b253999804ec71ac4c23c17ecf5fbe24e259a1",
+      "size": 874188075,
+      "license": "MIT",
+      "license_url": "https://github.com/ggerganov/whisper.cpp/blob/master/LICENSE",
+      "network_required_to_obtain": true,
+      "checksum_pinned": true,
+      "notes": "Turbo with 8-bit weights: ~870 MB instead of 1.6 GB, same 4-layer decoder. Good CPU choice when Medium Q8_0 is too slow."
+    },
+    {
+      "model_id": "silero-vad",
+      "display_name": "Silero VAD v6.2",
+      "version": "ggml-silero-v6.2.0.bin F32",
+      "filename": "ggml-silero-v6.2.0.bin",
+      "format": "ggml",
+      "quantization": "F32",
+      "kind": "vad",
+      "source": "ggml-org/whisper-vad",
+      "source_url": "https://huggingface.co/ggml-org/whisper-vad",
+      "download_url": "https://huggingface.co/ggml-org/whisper-vad/resolve/main/ggml-silero-v6.2.0.bin?download=true",
+      "sha256": "2aa269b785eeb53a82983a20501ddf7c1d9c48e33ab63a41391ac6c9f7fb6987",
+      "size": 885098,
+      "license": "MIT",
+      "license_url": "https://github.com/snakers4/silero-vad/blob/master/LICENSE",
+      "network_required_to_obtain": true,
+      "checksum_pinned": true,
+      "notes": "Neural voice activity detector used by whisper.cpp to keep only speech before encoding. Downloaded automatically with the speech model; not a speech model itself."
     },
     {
       "model_id": "Qwen3-4B-Instruct-2507",

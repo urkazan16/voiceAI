@@ -12,7 +12,10 @@ use crate::pipeline::{PipelineOutput, PipelineSnapshot};
 use crate::profiles::{Profile, ResolvedContext};
 use crate::snippets::Snippet;
 use serde::Serialize;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
+use std::fs::OpenOptions;
+use std::io::Write;
+use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 use tauri::{AppHandle, Emitter};
@@ -602,11 +605,43 @@ pub fn skip_auto_model_download() -> bool {
 
 pub fn spawn_required_model_downloads(app: AppHandle, engine: SharedEngine) {
     spawn_required_kind_download(app.clone(), engine.clone(), "stt");
-    spawn_required_kind_download(app, engine, "llm");
+    spawn_vad_model_download(app, engine);
+}
+
+/// Silero VAD is under 1 MB and lets whisper.cpp encode only speech. Fetch it
+/// once next to the speech model; dictation works without it in the meantime.
+fn spawn_vad_model_download(app: AppHandle, engine: SharedEngine) {
+    tauri::async_runtime::spawn(async move {
+        if skip_auto_model_download() {
+            return;
+        }
+        let missing = {
+            let Ok(eng) = engine.lock() else {
+                return;
+            };
+            let Some(record) = eng.catalog.models.iter().find(|m| m.kind == "vad") else {
+                return;
+            };
+            eng.vad_model_path()
+                .is_none()
+                .then(|| record.model_id.clone())
+        };
+        let Some(id) = missing else {
+            return;
+        };
+        crate::journal::log("model_download", &format!("auto {id}"));
+        if let Err(err) = download_model_guarded(app, engine, id.clone(), false).await {
+            crate::journal::log("model_download", &format!("auto {id} failed: {err}"));
+        }
+    });
 }
 
 fn spawn_required_kind_download(app: AppHandle, engine: SharedEngine, kind: &'static str) {
     tauri::async_runtime::spawn(async move {
+        // llama.cpp is not linked; formatting GGUFs stay opt-in in Model Manager.
+        if kind == "llm" {
+            return;
+        }
         let ready = engine.lock().ok().and_then(|eng| {
             crate::whisper_stt::set_use_gpu(crate::whisper_stt::use_gpu_from_setting(
                 &eng.settings.compute_device,
@@ -614,9 +649,7 @@ fn spawn_required_kind_download(app: AppHandle, engine: SharedEngine, kind: &'st
             eng.ready_model_path(kind)
         });
         if let Some(path) = ready {
-            if kind != "llm" {
-                crate::whisper_stt::preload(path);
-            }
+            crate::whisper_stt::preload(path);
             return;
         }
         if skip_auto_model_download() {
@@ -626,17 +659,10 @@ fn spawn_required_kind_download(app: AppHandle, engine: SharedEngine, kind: &'st
             let Ok(eng) = engine.lock() else {
                 return;
             };
-            match kind {
-                "llm" => match eng.settings.active_llm_model.clone() {
-                    Some(id) if !id.is_empty() => id,
-                    _ => return,
-                },
-                _ => eng
-                    .settings
-                    .active_stt_model
-                    .clone()
-                    .unwrap_or_else(|| DEFAULT_STT_MODEL.into()),
-            }
+            eng.settings
+                .active_stt_model
+                .clone()
+                .unwrap_or_else(|| DEFAULT_STT_MODEL.into())
         };
         crate::journal::log("model_download", &format!("auto {id}"));
         if let Err(err) = download_model_guarded(app, engine, id.clone(), false).await {
@@ -709,16 +735,18 @@ async fn download_model_inner(
         CommandError::from(err)
     })?;
 
-    let path = {
+    let (path, kind) = {
         let mut eng = lock(&engine)?;
         eng.mark_active(&model_id)?;
         crate::whisper_stt::set_use_gpu(crate::whisper_stt::use_gpu_from_setting(
             &eng.settings.compute_device,
         ));
         let record = eng.catalog.get(&model_id)?.clone();
-        eng.model_path(&record)
+        (eng.model_path(&record), record.kind)
     };
-    crate::whisper_stt::preload(path.clone());
+    if kind == "stt" {
+        crate::whisper_stt::preload(path.clone());
+    }
     Ok(path.display().to_string())
 }
 
@@ -732,6 +760,7 @@ pub async fn set_active_model(
         let record = eng.catalog.get(&model_id)?.clone();
         (eng.model_path(&record), record)
     };
+    let kind = record.kind.clone();
     if crate::integrity::looks_installed(&path, &record) {
         let verify_path = path.clone();
         tokio::task::spawn_blocking(move || {
@@ -751,7 +780,9 @@ pub async fn set_active_model(
             &eng.settings.compute_device,
         ));
     }
-    crate::whisper_stt::preload(path.clone());
+    if kind == "stt" {
+        crate::whisper_stt::preload(path.clone());
+    }
     Ok(path.display().to_string())
 }
 
@@ -836,6 +867,264 @@ pub fn repeat_last_utterance(
     let path = lock(&engine)?.paths.last_utterance();
     let pcm = crate::media::load_pcm_16k_mono(&path)?;
     Ok(lock(&engine)?.process_captured_audio(&pcm)?)
+}
+
+const MAX_UPLOAD_BYTES: u64 = 80 * 1024 * 1024;
+
+fn upload_slots() -> &'static Mutex<HashMap<String, PathBuf>> {
+    static SLOTS: OnceLock<Mutex<HashMap<String, PathBuf>>> = OnceLock::new();
+    SLOTS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn valid_upload_id(id: &str) -> bool {
+    let ok_len = (8..=64).contains(&id.len());
+    ok_len && id.chars().all(|c| c.is_ascii_hexdigit() || c == '-')
+}
+
+fn take_upload_path(id: &str) -> Result<PathBuf, CommandError> {
+    if !valid_upload_id(id) {
+        return Err(CommandError {
+            code: "CONFIG_INVALID".into(),
+            message: "Invalid upload session.".into(),
+        });
+    }
+    upload_slots()
+        .lock()
+        .map_err(|_| CommandError {
+            code: "ERROR".into(),
+            message: "upload lock poisoned".into(),
+        })?
+        .remove(id)
+        .ok_or_else(|| CommandError {
+            code: "CONFIG_INVALID".into(),
+            message: "Upload session expired. Choose the file again.".into(),
+        })
+}
+
+#[tauri::command]
+pub fn begin_audio_upload(filename: String) -> Result<String, CommandError> {
+    let hint = PathBuf::from(filename.trim());
+    if !crate::media::is_audio_path(&hint) {
+        return Err(CommandError {
+            code: "CONFIG_INVALID".into(),
+            message: format!(
+                "Unsupported audio format. Use {}.",
+                crate::media::AUDIO_EXTENSIONS.join(", ")
+            ),
+        });
+    }
+    let ext = hint
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("wav");
+    let id = uuid::Uuid::new_v4().to_string();
+    let dir = std::env::temp_dir().join("localflow-uploads");
+    std::fs::create_dir_all(&dir).map_err(LfError::from)?;
+    let path = dir.join(format!("{id}.{ext}"));
+    OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(true)
+        .open(&path)
+        .map_err(LfError::from)?;
+    upload_slots()
+        .lock()
+        .map_err(|_| CommandError {
+            code: "ERROR".into(),
+            message: "upload lock poisoned".into(),
+        })?
+        .insert(id.clone(), path);
+    crate::whisper_stt::set_progress("load", 1, "Reading audio file…");
+    Ok(id)
+}
+
+#[tauri::command]
+pub fn append_audio_upload(id: String, chunk: Vec<u8>) -> Result<u64, CommandError> {
+    if !valid_upload_id(&id) {
+        return Err(CommandError {
+            code: "CONFIG_INVALID".into(),
+            message: "Invalid upload session.".into(),
+        });
+    }
+    let path = upload_slots()
+        .lock()
+        .map_err(|_| CommandError {
+            code: "ERROR".into(),
+            message: "upload lock poisoned".into(),
+        })?
+        .get(&id)
+        .cloned()
+        .ok_or_else(|| CommandError {
+            code: "CONFIG_INVALID".into(),
+            message: "Upload session expired. Choose the file again.".into(),
+        })?;
+    if chunk.is_empty() {
+        return Ok(std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0));
+    }
+    let current = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+    if current.saturating_add(chunk.len() as u64) > MAX_UPLOAD_BYTES {
+        return Err(CommandError {
+            code: "CONFIG_INVALID".into(),
+            message: "Audio file is too large (80 MB max).".into(),
+        });
+    }
+    let mut file = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+        .map_err(LfError::from)?;
+    file.write_all(&chunk).map_err(LfError::from)?;
+    Ok(current + chunk.len() as u64)
+}
+
+#[tauri::command]
+pub async fn transcribe_staged_audio(
+    engine: tauri::State<'_, SharedEngine>,
+    id: String,
+    filename: Option<String>,
+) -> Result<PipelineOutput, CommandError> {
+    let path = take_upload_path(&id)?;
+    let engine = engine.inner().clone();
+    let name = filename.unwrap_or_else(|| {
+        path.file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("upload.wav")
+            .to_string()
+    });
+    let result = tokio::task::spawn_blocking(move || {
+        let out = transcribe_audio_file_sync(engine, name, Some(path.display().to_string()), None);
+        let _ = std::fs::remove_file(&path);
+        out
+    })
+    .await
+    .map_err(|err| CommandError {
+        code: "ERROR".into(),
+        message: err.to_string(),
+    })?;
+    result
+}
+
+#[tauri::command]
+pub async fn transcribe_audio_file(
+    engine: tauri::State<'_, SharedEngine>,
+    filename: String,
+    path: Option<String>,
+    bytes: Option<Vec<u8>>,
+) -> Result<PipelineOutput, CommandError> {
+    let engine = engine.inner().clone();
+    tokio::task::spawn_blocking(move || transcribe_audio_file_sync(engine, filename, path, bytes))
+        .await
+        .map_err(|err| CommandError {
+            code: "ERROR".into(),
+            message: err.to_string(),
+        })?
+}
+
+fn transcribe_audio_file_sync(
+    engine: SharedEngine,
+    filename: String,
+    path: Option<String>,
+    bytes: Option<Vec<u8>>,
+) -> Result<PipelineOutput, CommandError> {
+    let hint_name = if !filename.trim().is_empty() {
+        filename.trim()
+    } else {
+        path.as_deref()
+            .filter(|s| !s.is_empty())
+            .unwrap_or("upload.wav")
+    };
+    let hint = PathBuf::from(hint_name);
+    if !crate::media::is_audio_path(&hint) {
+        return Err(CommandError {
+            code: "CONFIG_INVALID".into(),
+            message: format!(
+                "Unsupported audio format. Use {}.",
+                crate::media::AUDIO_EXTENSIONS.join(", ")
+            ),
+        });
+    }
+    crate::whisper_stt::set_progress("load", 8, "Decoding audio…");
+    let pcm = if let Some(file_path) = path.as_deref().filter(|s| !s.is_empty()) {
+        let file_path = PathBuf::from(file_path);
+        let len = std::fs::metadata(&file_path).map_err(LfError::from)?.len();
+        if len > MAX_UPLOAD_BYTES {
+            return Err(CommandError {
+                code: "CONFIG_INVALID".into(),
+                message: "Audio file is too large (80 MB max).".into(),
+            });
+        }
+        crate::media::load_pcm_16k_mono(&file_path)?
+    } else {
+        let data = bytes.unwrap_or_default();
+        if data.is_empty() {
+            return Err(CommandError {
+                code: "CONFIG_INVALID".into(),
+                message: "Choose an audio file to transcribe.".into(),
+            });
+        }
+        if data.len() as u64 > MAX_UPLOAD_BYTES {
+            return Err(CommandError {
+                code: "CONFIG_INVALID".into(),
+                message: "Audio file is too large (80 MB max).".into(),
+            });
+        }
+        crate::media::load_bytes(&data, &hint)?
+    };
+    if pcm.is_empty() {
+        return Err(CommandError {
+            code: "CONFIG_INVALID".into(),
+            message: "The file has no audio to recognize.".into(),
+        });
+    }
+    crate::journal::log("transcribe_file", &hint.display().to_string());
+    let (stt_path, lang, vad, options) = {
+        let eng = lock(&engine)?;
+        let stt_path = eng.ready_model_path("stt").ok_or_else(|| {
+            LfError::ModelMissing(
+                eng.settings
+                    .active_stt_model
+                    .clone()
+                    .unwrap_or_else(|| crate::config::DEFAULT_STT_MODEL.to_string()),
+            )
+        })?;
+        let mut options = crate::whisper_stt::DecodeOptions::long_form_interview();
+        options.vad_model = eng.vad_model_path();
+        (
+            stt_path,
+            eng.settings.stt_language.clone(),
+            eng.settings.vad_threshold,
+            options,
+        )
+    };
+    let pcm = if pcm.len() > 16_000 * 60 {
+        pcm
+    } else {
+        crate::vad::trim_silence_at(&pcm, 16_000, vad)
+    };
+    if !crate::vad::had_speech_at(&pcm, 16_000, vad) {
+        return Err(CommandError {
+            code: "CONFIG_INVALID".into(),
+            message: "No speech detected in this file.".into(),
+        });
+    }
+    crate::whisper_stt::set_progress("recognize", 12, "Starting speech recognition…");
+    let raw = crate::stt::transcribe_with_paragraph_pauses(
+        &crate::stt::NativeStt,
+        &pcm,
+        Some(stt_path.as_path()),
+        &lang,
+        vad,
+        &options,
+    )?;
+    crate::whisper_stt::set_progress("format", 92, "Formatting transcript…");
+    let output = lock(&engine)?.process_file_transcript(&raw, &pcm)?;
+    crate::whisper_stt::set_progress("done", 100, "Done");
+    Ok(output)
+}
+
+#[tauri::command]
+pub fn get_transcribe_progress() -> crate::whisper_stt::TranscribeProgress {
+    crate::whisper_stt::current_progress()
 }
 
 #[derive(Serialize)]
@@ -1110,6 +1399,34 @@ mod tests {
         assert!(
             arm.contains("autostart::apply"),
             "imported autostart must hit the OS before the file is the only source of truth"
+        );
+    }
+
+    #[test]
+    fn file_upload_transcribes_without_pasting() {
+        let body = include_str!("commands.rs")
+            .split("fn transcribe_audio_file_sync")
+            .nth(1)
+            .unwrap()
+            .split("pub fn get_transcribe_progress")
+            .next()
+            .unwrap();
+        assert!(
+            body.contains("process_file_transcript"),
+            "uploaded audio must use the no-paste pipeline"
+        );
+        assert!(
+            !body.contains("process_captured_audio"),
+            "mic paste injector must not run for file upload"
+        );
+        let wrapper = include_str!("commands.rs");
+        assert!(
+            wrapper.contains("spawn_blocking") && wrapper.contains("transcribe_audio_file_sync"),
+            "Whisper must not run on the UI/IPC thread"
+        );
+        assert!(
+            body.contains("long_form_interview"),
+            "file STT must not use the dictation dictionary prompt"
         );
     }
 }
