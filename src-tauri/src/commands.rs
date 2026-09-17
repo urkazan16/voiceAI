@@ -1141,9 +1141,15 @@ fn transcribe_audio_file_sync(
             );
         }
         let stt_path = eng.ready_model_path("stt").ok_or_else(|| {
-            LfError::ModelMissing(eng.settings.active_stt_model.clone().unwrap_or_else(|| {
+            let model_id = if eng.settings.stt_engine.eq_ignore_ascii_case("whisper") {
+                eng.settings
+                    .active_stt_model
+                    .clone()
+                    .unwrap_or_else(|| crate::config::DEFAULT_STT_MODEL.to_string())
+            } else {
                 crate::config::stt_model_id_for_engine(&eng.settings.stt_engine).to_string()
-            }))
+            };
+            LfError::ModelMissing(model_id)
         })?;
         let mut options = crate::whisper_stt::DecodeOptions::long_form_interview();
         options.vad_model = eng.vad_model_path();

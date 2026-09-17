@@ -428,14 +428,8 @@ fn decode_loaded(
     options: &DecodeOptions,
 ) -> LfResult<String> {
     let slot = loaded.as_mut().expect("whisper context");
-    // File jobs leave VAD maps / decoder leftovers on the shared state.
-    // Recreate it for PTT so the previous interview cannot leak into paste.
-    if !options.long_form {
-        slot.state = slot
-            .ctx
-            .create_state()
-            .map_err(|e| LfError::RuntimeUnsupported(e.to_string()))?;
-    }
+    // `no_context` is set for every decode below, so the state can be reused
+    // safely between utterances without reallocating the large KV cache.
     let vad = options
         .vad_model
         .as_deref()
@@ -594,7 +588,7 @@ fn decode(
         // full 30-second encoder window. Keep the same full context for long
         // recordings only; the lower bound in `audio_ctx_for_samples` avoids
         // degrading recognition on very short utterances.
-        params.set_temperature_inc(0.2);
+        params.set_temperature_inc(0.0);
         params.set_audio_ctx(audio_ctx_for_samples(pcm.len()));
     }
     // Deliberately no `set_tokens` call: whisper.cpp ignores `initial_prompt`
@@ -742,7 +736,7 @@ mod tests {
     }
 
     #[test]
-    fn dictation_keeps_full_audio_ctx_and_temperature_fallback() {
+    fn dictation_uses_dynamic_audio_ctx_without_temperature_retries() {
         let src = include_str!("whisper_stt.rs");
         let body = src
             .split("fn decode(")
@@ -751,13 +745,13 @@ mod tests {
             .split("fn silence_whisper_logs")
             .next()
             .unwrap();
-        assert!(body.contains("set_temperature_inc(0.2)"));
+        assert!(body.contains("set_temperature_inc(0.0)"));
         assert!(body.contains("set_audio_ctx(audio_ctx_for_samples("));
         assert!(body.contains("set_no_timestamps(!options.timestamps)"));
     }
 
     #[test]
-    fn dictation_does_not_use_whisper_vad() {
+    fn dictation_uses_silero_vad_when_available() {
         let src = include_str!("engine.rs");
         let body = src
             .split("pub fn decode_options")
@@ -766,7 +760,7 @@ mod tests {
             .split("pub(crate) fn vad_model_path")
             .next()
             .unwrap();
-        assert!(body.contains("vad_model: None"));
+        assert!(body.contains("vad_model: self.vad_model_path()"));
     }
 
     #[test]

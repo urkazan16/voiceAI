@@ -821,7 +821,7 @@ fn finish_recording(app: &AppHandle, engine: &SharedEngine, capture: &SharedCapt
         if !crate::config::stt_engine_runtime_available(&stt_engine) {
             crate::journal::log(
                 "stt_engine_fallback",
-                &format!("{} is unavailable; using Whisper", stt_engine),
+                &format!("{stt_engine} is unavailable; using Whisper"),
             );
         }
         if keep_audio {
@@ -830,12 +830,19 @@ fn finish_recording(app: &AppHandle, engine: &SharedEngine, capture: &SharedCapt
             let _ = std::fs::remove_file(&last_wav);
         }
         let Some(stt_path) = stt_path else {
+            let model_id = if stt_engine.eq_ignore_ascii_case("whisper") {
+                engine
+                    .lock()
+                    .ok()
+                    .and_then(|eng| eng.settings.active_stt_model.clone())
+                    .unwrap_or_else(|| crate::config::DEFAULT_STT_MODEL.to_string())
+            } else {
+                crate::config::stt_model_id_for_engine(&stt_engine).to_string()
+            };
             fail(
                 &app,
                 &engine,
-                &crate::error::user_guidance(&LfError::ModelMissing(
-                    crate::config::stt_model_id_for_engine(&stt_engine).into(),
-                )),
+                &crate::error::user_guidance(&LfError::ModelMissing(model_id)),
                 duration_ms,
             );
             return;

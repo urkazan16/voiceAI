@@ -26,7 +26,7 @@ fn transcribe_inner(engine: &str, model_path: &Path, pcm: &[f32]) -> LfResult<St
     })?;
     let tokens = parent.join("tokens.txt");
     if !tokens.exists() {
-        return Err(LfError::ModelMissing(format!("{} tokens.txt", engine)));
+        return Err(LfError::ModelMissing(format!("{engine} tokens.txt")));
     }
 
     let mut config = OfflineRecognizerConfig::default();

@@ -1388,11 +1388,9 @@ fn looks_like_local_part(text: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '+' | '-'))
 }
 
-fn join_after_trigger(
-    tokens: &[String],
-    triggers: &[&[&str]],
-    take: fn(&[String], usize) -> Option<(String, usize)>,
-) -> Vec<String> {
+type LiteralTaker = fn(&[String], usize) -> Option<(String, usize)>;
+
+fn join_after_trigger(tokens: &[String], triggers: &[&[&str]], take: LiteralTaker) -> Vec<String> {
     let mut out: Vec<String> = Vec::with_capacity(tokens.len());
     let mut i = 0;
     while i < tokens.len() {

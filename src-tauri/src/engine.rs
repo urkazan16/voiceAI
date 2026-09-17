@@ -266,6 +266,9 @@ impl AppEngine {
         let mut status = crate::download::inspect_install(record, &path);
         let configured = match record.kind.as_str() {
             "llm" => self.settings.active_llm_model.as_deref() == Some(model_id),
+            _ if self.settings.stt_engine.eq_ignore_ascii_case("whisper") => {
+                self.settings.active_stt_model.as_deref() == Some(model_id)
+            }
             _ => crate::config::stt_model_id_for_engine(&self.settings.stt_engine) == model_id,
         };
         // A stale settings.json may still point at a deleted or incomplete
@@ -378,7 +381,7 @@ impl AppEngine {
             if let Some(parent) = last.parent() {
                 let _ = fs::create_dir_all(parent);
             }
-            let _ = crate::media::write_wav_s16le_mono(&last, 16_000, &pcm);
+            let _ = crate::media::write_wav_s16le_mono(&last, 16_000, pcm);
         }
         let previous_inject = self.inject_enabled;
         let previous_verbatim = self.file_verbatim;
@@ -389,7 +392,7 @@ impl AppEngine {
             &NativeStt,
             &NativeLlm,
             &MemoryInjector::default(),
-            &pcm,
+            pcm,
         );
         self.inject_enabled = previous_inject;
         self.file_verbatim = previous_verbatim;
@@ -426,9 +429,9 @@ impl AppEngine {
         crate::whisper_stt::DecodeOptions {
             prompt,
             allow_symbols: mode == PipelineMode::Code || self.spell_mode,
-            // Energy VAD already trims the PTT clip. Whisper's Silero path
-            // concatenates fragments and was looping short dictation.
-            vad_model: None,
+            // Use the pinned Silero model when available. Whisper falls back
+            // to plain decoding if a legacy/incompatible VAD file is found.
+            vad_model: self.vad_model_path(),
             timestamps: false,
             long_form: false,
             vad_threshold: self.settings.vad_threshold,
@@ -460,15 +463,27 @@ impl AppEngine {
             return Err(LfError::Other("cancelled".into()));
         }
         let raw = if transcript.is_empty() {
-            if !crate::vad::had_speech_at(pcm, 16_000, self.settings.vad_threshold) {
+            if !crate::vad::had_speech_at(
+                pcm,
+                16_000,
+                crate::vad::soft_threshold(self.settings.vad_threshold),
+            ) {
                 let msg = "No mic signal — check the input device.";
                 self.snapshot.fail(msg);
                 return Err(LfError::Other(msg.into()));
             }
             let path = self.ready_model_path("stt").ok_or_else(|| {
-                LfError::ModelMissing(self.settings.active_stt_model.clone().unwrap_or_else(|| {
-                    crate::config::stt_model_id_for_engine(&self.settings.stt_engine).to_string()
-                }))
+                LfError::ModelMissing(
+                    if self.settings.stt_engine.eq_ignore_ascii_case("whisper") {
+                        self.settings
+                            .active_stt_model
+                            .clone()
+                            .unwrap_or_else(|| crate::config::DEFAULT_STT_MODEL.to_string())
+                    } else {
+                        crate::config::stt_model_id_for_engine(&self.settings.stt_engine)
+                            .to_string()
+                    },
+                )
             })?;
             let options = if self.file_verbatim {
                 let mut options = crate::whisper_stt::DecodeOptions::long_form_interview();
