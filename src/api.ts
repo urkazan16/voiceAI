@@ -44,6 +44,7 @@ export interface AppSettings {
   personalization_enabled: boolean;
   learn_from_corrections: boolean;
   stt_language: string;
+  stt_engine: "whisper" | "gigaam" | "parakeet" | string;
   insert_delay_ms: number;
   postprocess_timeout_ms: number;
   sound_cues: boolean;
@@ -80,6 +81,15 @@ export interface ModelRecord {
   network_required_to_obtain: boolean;
   checksum_pinned?: boolean;
   notes: string;
+  companion_files?: ModelCompanion[];
+}
+
+export interface ModelCompanion {
+  filename: string;
+  download_url: string;
+  sha256: string;
+  size: number;
+  format: string;
 }
 
 export interface ModelInstallStatus {

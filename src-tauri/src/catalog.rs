@@ -25,6 +25,17 @@ pub struct ModelRecord {
     pub checksum_pinned: bool,
     #[serde(default)]
     pub notes: String,
+    #[serde(default)]
+    pub companion_files: Vec<ModelCompanion>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ModelCompanion {
+    pub filename: String,
+    pub download_url: String,
+    pub sha256: String,
+    pub size: u64,
+    pub format: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

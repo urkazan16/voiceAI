@@ -14,6 +14,8 @@ use whisper_rs::{
 /// Knobs that change what the recognizer is willing to emit.
 #[derive(Debug, Clone, Default)]
 pub struct DecodeOptions {
+    /// Runtime selected in Settings. Whisper remains the default.
+    pub stt_engine: String,
     /// Vocabulary shown to the model before decoding. Whisper conditions on it,
     /// which is what makes it spell "RestAssured" or "PostgreSQL" instead of a
     /// phonetic guess.
@@ -38,6 +40,7 @@ impl DecodeOptions {
     /// without overlap.
     pub fn long_form_interview() -> Self {
         Self {
+            stt_engine: "whisper".into(),
             prompt: String::new(),
             allow_symbols: false,
             vad_model: None,
@@ -315,13 +318,17 @@ fn worker() -> Sender<WorkerCmd> {
                             let _ = ensure_loaded(&mut loaded, path);
                         }
                         WorkerCmd::Transcribe(job) => {
-                            let result = run_job(
-                                &mut loaded,
-                                job.model_path,
-                                &job.pcm,
-                                &job.language,
-                                &job.options,
-                            );
+                            let result =
+                                crate::error::catch_runtime_panic("Speech recognition", || {
+                                    run_job(
+                                        &mut loaded,
+                                        job.model_path,
+                                        &job.pcm,
+                                        &job.language,
+                                        &job.options,
+                                    )
+                                })
+                                .and_then(|result| result);
                             let _ = job.reply.send(result);
                         }
                     }
@@ -583,8 +590,12 @@ fn decode(
         params.set_temperature_inc(0.0);
         params.set_audio_ctx(audio_ctx_for_samples(pcm.len()));
     } else {
+        // Short dictation is padded with the onset, but should not pay for a
+        // full 30-second encoder window. Keep the same full context for long
+        // recordings only; the lower bound in `audio_ctx_for_samples` avoids
+        // degrading recognition on very short utterances.
         params.set_temperature_inc(0.2);
-        params.set_audio_ctx(FULL_AUDIO_CTX);
+        params.set_audio_ctx(audio_ctx_for_samples(pcm.len()));
     }
     // Deliberately no `set_tokens` call: whisper.cpp ignores `initial_prompt`
     // whenever `prompt_tokens` is non-null, and an empty slice still yields a
@@ -741,7 +752,6 @@ mod tests {
             .next()
             .unwrap();
         assert!(body.contains("set_temperature_inc(0.2)"));
-        assert!(body.contains("set_audio_ctx(FULL_AUDIO_CTX)"));
         assert!(body.contains("set_audio_ctx(audio_ctx_for_samples("));
         assert!(body.contains("set_no_timestamps(!options.timestamps)"));
     }

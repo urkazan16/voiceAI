@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { chordFromKeyboardEvent, isFnKey, normalizeChord } from "./hotkey";
+import { isTauriRuntime, listenWhileMounted } from "./api";
 
 type HotkeyFieldProps = {
   label: string;
@@ -38,6 +39,7 @@ export function HotkeyField({
     if (!listening) {
       return;
     }
+    buttonRef.current?.focus();
     const commit = (event: KeyboardEvent) => {
       event.preventDefault();
       event.stopPropagation();
@@ -49,15 +51,23 @@ export function HotkeyField({
       if (!chord) {
         return;
       }
-      onChangeRef.current(normalizeChord(chord));
+      const next = normalizeChord(chord);
       setListening(false);
+      window.setTimeout(() => onChangeRef.current(next), 0);
     };
-    const onKeyDown = (event: KeyboardEvent) => commit(event);
     const onKeyUp = (event: KeyboardEvent) => {
       if (isFnKey(event)) {
         commit(event);
       }
     };
+    const unlistenNative = isTauriRuntime()
+      ? listenWhileMounted<{ key: string; pressed: boolean }>("native-hotkey-event", (event) => {
+          if (event.key === "Fn" && event.pressed) {
+            setListening(false);
+            window.setTimeout(() => onChangeRef.current("Fn"), 0);
+          }
+        })
+      : () => undefined;
     const onPointerDown = (event: PointerEvent) => {
       const target = event.target as Node | null;
       if (target && buttonRef.current?.contains(target)) {
@@ -65,13 +75,12 @@ export function HotkeyField({
       }
       setListening(false);
     };
-    window.addEventListener("keydown", onKeyDown, true);
     window.addEventListener("keyup", onKeyUp, true);
     window.addEventListener("pointerdown", onPointerDown, true);
     return () => {
-      window.removeEventListener("keydown", onKeyDown, true);
       window.removeEventListener("keyup", onKeyUp, true);
       window.removeEventListener("pointerdown", onPointerDown, true);
+      unlistenNative();
     };
   }, [listening]);
 
@@ -85,6 +94,24 @@ export function HotkeyField({
           listening ? "bg-copper/20 ring-1 ring-copper" : "bg-paper/10"
         }`}
         onClick={() => setListening((on) => !on)}
+        onKeyDownCapture={(event) => {
+          if (!listening) {
+            return;
+          }
+          event.preventDefault();
+          event.stopPropagation();
+          if (event.code === "Escape" || event.key === "Escape") {
+            setListening(false);
+            return;
+          }
+          const chord = chordFromKeyboardEvent(event.nativeEvent);
+          if (!chord) {
+            return;
+          }
+          const next = normalizeChord(chord);
+          setListening(false);
+          window.setTimeout(() => onChangeRef.current(next), 0);
+        }}
       >
         {listening ? listeningLabel : value}
       </button>
@@ -97,7 +124,7 @@ export function HotkeyField({
               className="rounded-full border border-paper/30 px-3 py-1 font-mono text-xs text-paper/80"
               onClick={() => {
                 setListening(false);
-                onChange(normalizeChord(chord));
+                window.setTimeout(() => onChangeRef.current(normalizeChord(chord)), 0);
               }}
             >
               {chord}

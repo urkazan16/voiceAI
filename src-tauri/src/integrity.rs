@@ -55,6 +55,22 @@ pub fn sidecar_matches(path: &Path, record: &ModelRecord) -> bool {
         && side.sha256.eq_ignore_ascii_case(&record.sha256)
 }
 
+pub fn sidecar_matches_digest(path: &Path, size: u64, sha256: &str) -> bool {
+    let Ok(raw) = std::fs::read_to_string(sidecar_path(path)) else {
+        return false;
+    };
+    let Ok(side) = serde_json::from_str::<VerifySidecar>(&raw) else {
+        return false;
+    };
+    let Ok(meta) = std::fs::metadata(path) else {
+        return false;
+    };
+    side.size == meta.len()
+        && (size == 0 || side.size == size)
+        && side.mtime == file_mtime(path)
+        && side.sha256.eq_ignore_ascii_case(sha256)
+}
+
 pub fn peek_magic(path: &Path) -> LfResult<[u8; 4]> {
     let mut file = File::open(path)?;
     let mut magic = [0_u8; 4];
@@ -69,11 +85,17 @@ pub fn magic_matches_format(magic: &[u8; 4], format: &str) -> bool {
             magic,
             b"ggml" | b"ggmf" | b"ggjt" | b"lmgg" | b"fmgg" | b"tjgg" | b"GGUF"
         ),
+        // ONNX is a protobuf container and has no stable four-byte magic.
+        // TEXT is validated by its pinned checksum and expected size.
+        "ONNX" | "TEXT" => true,
         _ => false,
     }
 }
 
 pub fn looks_installed(path: &Path, record: &ModelRecord) -> bool {
+    if matches!(record.format.to_ascii_uppercase().as_str(), "ONNX" | "TEXT") {
+        return sidecar_matches(path, record);
+    }
     let Ok(meta) = std::fs::metadata(path) else {
         return false;
     };
@@ -134,6 +156,7 @@ pub fn validate_format(path: &Path, format: &str) -> LfResult<()> {
                 )));
             }
         }
+        "ONNX" | "TEXT" => {}
         other => {
             return Err(LfError::ModelFormatInvalid(format!(
                 "unsupported format {other}"
@@ -148,9 +171,6 @@ pub fn activate_model(path: &Path, record: &ModelRecord) -> LfResult<()> {
     if !path.exists() {
         return Err(LfError::ModelMissing(record.model_id.clone()));
     }
-    if sidecar_matches(path, record) {
-        return Ok(());
-    }
     verify_checksum(path, &record.sha256)?;
     validate_format(path, &record.format)?;
     let meta = std::fs::metadata(path)?;
@@ -162,6 +182,19 @@ pub fn activate_model(path: &Path, record: &ModelRecord) -> LfResult<()> {
         )));
     }
     write_sidecar(path, &record.sha256)?;
+    if let Some(parent) = path.parent() {
+        for companion in &record.companion_files {
+            let companion_path = parent.join(&companion.filename);
+            if !companion_path.exists() {
+                return Err(LfError::ModelMissing(format!(
+                    "{} companion",
+                    record.model_id
+                )));
+            }
+            verify_checksum(&companion_path, &companion.sha256)?;
+            write_sidecar(&companion_path, &companion.sha256)?;
+        }
+    }
     Ok(())
 }
 
@@ -191,6 +224,7 @@ mod tests {
             network_required_to_obtain: false,
             checksum_pinned: true,
             notes: "".into(),
+            companion_files: Vec::new(),
         }
     }
 

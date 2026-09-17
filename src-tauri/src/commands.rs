@@ -71,6 +71,14 @@ fn commit_settings(
 }
 
 fn ensure_shortcut_parseable(name: &str, chord: &str) -> Result<(), CommandError> {
+    if cfg!(target_os = "macos")
+        && matches!(
+            chord.trim().to_ascii_lowercase().as_str(),
+            "fn" | "function" | "globe"
+        )
+    {
+        return Ok(());
+    }
     if chord.parse::<Shortcut>().is_err() {
         return Err(CommandError {
             code: "CONFIG_INVALID".into(),
@@ -101,7 +109,7 @@ pub fn get_settings(
         let mut eng = lock(&engine)?;
         eng.reload_settings_file();
     }
-    crate::apply_shortcuts(&app, &engine);
+    let _ = crate::apply_shortcuts(&app, &engine);
     Ok(lock(&engine)?.settings.clone())
 }
 
@@ -128,7 +136,9 @@ pub fn save_settings(
         compute_changed = eng.settings.compute_device != settings.compute_device;
         compute = settings.compute_device.clone();
         commit_settings(&mut eng, settings)?;
-        preload_path = eng.ready_model_path("stt");
+        preload_path = (eng.settings.stt_engine == "whisper")
+            .then(|| eng.ready_model_path("stt"))
+            .flatten();
     }
     crate::whisper_stt::set_use_gpu(crate::whisper_stt::use_gpu_from_setting(&compute));
     if compute_changed {
@@ -136,7 +146,14 @@ pub fn save_settings(
             crate::whisper_stt::preload(path);
         }
     }
-    crate::apply_shortcuts(&app, &engine);
+    // The UI resumes capture asynchronously when a key is selected. If the
+    // save request arrives first, apply_shortcuts intentionally does nothing
+    // while capture is active and a valid shortcut gets rejected. Restore the
+    // native registrations before applying the new settings.
+    if crate::shortcut_capture_active() {
+        crate::resume_shortcuts(&app, &engine);
+    }
+    let apply_error = crate::apply_shortcuts(&app, &engine);
     let requested_talk = lock(&engine)?.settings.hotkey.clone();
     let applied_talk = lock(&engine)?.hotkey_registered.clone();
     if previous_settings.hotkey != requested_talk
@@ -148,7 +165,12 @@ pub fn save_settings(
         crate::apply_shortcuts(&app, &engine);
         return Err(CommandError {
             code: "CONFIG_INVALID".into(),
-            message: "The selected talk shortcut could not be registered. The previous working shortcut was restored.".into(),
+            message: format!(
+                "The selected talk shortcut could not be registered. The previous working shortcut was restored.{}",
+                apply_error
+                    .map(|err| format!(" Reason: {err}"))
+                    .unwrap_or_default()
+            ),
         });
     }
     Ok(())
@@ -729,7 +751,7 @@ async fn download_model_inner(
 
     let app_for_progress = app.clone();
     let progress_id = record.model_id.clone();
-    download::download_and_install(
+    download::download_model_bundle(
         &record,
         &dest,
         force,
@@ -760,7 +782,7 @@ async fn download_model_inner(
         let record = eng.catalog.get(&model_id)?.clone();
         (eng.model_path(&record), record.kind)
     };
-    if kind == "stt" {
+    if kind == "stt" && !matches!(model_id.as_str(), "gigaam-v3-ctc" | "parakeet-v3") {
         crate::whisper_stt::preload(path.clone());
     }
     Ok(path.display().to_string())
@@ -777,7 +799,15 @@ pub async fn set_active_model(
         (eng.model_path(&record), record)
     };
     let kind = record.kind.clone();
-    if crate::integrity::looks_installed(&path, &record) {
+    if !(crate::integrity::looks_installed(&path, &record)
+        && crate::download::companions_ready(&record, &path))
+    {
+        return Err(CommandError::from(LfError::ModelMissing(format!(
+            "{} is not fully installed",
+            record.display_name
+        ))));
+    }
+    {
         let verify_path = path.clone();
         tokio::task::spawn_blocking(move || {
             crate::integrity::activate_model(&verify_path, &record)
@@ -796,7 +826,7 @@ pub async fn set_active_model(
             &eng.settings.compute_device,
         ));
     }
-    if kind == "stt" {
+    if kind == "stt" && !matches!(model_id.as_str(), "gigaam-v3-ctc" | "parakeet-v3") {
         crate::whisper_stt::preload(path.clone());
     }
     Ok(path.display().to_string())
@@ -1101,17 +1131,24 @@ fn transcribe_audio_file_sync(
     crate::journal::log("transcribe_file", &hint.display().to_string());
     let (stt_path, lang, vad, options) = {
         let eng = lock(&engine)?;
+        if !crate::config::stt_engine_runtime_available(&eng.settings.stt_engine) {
+            crate::journal::log(
+                "stt_engine_fallback",
+                &format!(
+                    "{} is unavailable; using Whisper for file transcription",
+                    eng.settings.stt_engine
+                ),
+            );
+        }
         let stt_path = eng.ready_model_path("stt").ok_or_else(|| {
-            LfError::ModelMissing(
-                eng.settings
-                    .active_stt_model
-                    .clone()
-                    .unwrap_or_else(|| crate::config::DEFAULT_STT_MODEL.to_string()),
-            )
+            LfError::ModelMissing(eng.settings.active_stt_model.clone().unwrap_or_else(|| {
+                crate::config::stt_model_id_for_engine(&eng.settings.stt_engine).to_string()
+            }))
         })?;
         let mut options = crate::whisper_stt::DecodeOptions::long_form_interview();
         options.vad_model = eng.vad_model_path();
         options.vad_threshold = eng.settings.vad_threshold;
+        options.stt_engine = eng.settings.stt_engine.clone();
         (
             stt_path,
             eng.settings.stt_language.clone(),

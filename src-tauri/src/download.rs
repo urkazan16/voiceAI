@@ -1,4 +1,4 @@
-use crate::catalog::ModelRecord;
+use crate::catalog::{ModelCompanion, ModelRecord};
 use crate::error::{LfError, LfResult};
 use crate::integrity::{
     looks_installed, magic_matches_format, peek_magic, sha256_file, sidecar_matches, sidecar_path,
@@ -39,13 +39,29 @@ pub fn partial_path(dest: &Path) -> PathBuf {
 
 pub fn inspect_install(record: &ModelRecord, dest: &Path) -> ModelInstallStatus {
     if dest.exists() {
-        let bytes_on_disk = std::fs::metadata(dest).map(|m| m.len()).unwrap_or(0);
-        let verified = sidecar_matches(dest, record);
-        let installed = verified || looks_installed(dest, record);
+        let primary_bytes = std::fs::metadata(dest).map(|m| m.len()).unwrap_or(0);
+        let companion_bytes = dest
+            .parent()
+            .into_iter()
+            .flat_map(|parent| {
+                record
+                    .companion_files
+                    .iter()
+                    .map(move |file| parent.join(&file.filename))
+            })
+            .filter_map(|path| std::fs::metadata(path).ok().map(|meta| meta.len()))
+            .sum::<u64>();
+        let bytes_on_disk = primary_bytes.saturating_add(companion_bytes);
+        let primary_verified = sidecar_matches(dest, record);
+        let complete = companions_ready(record, dest);
+        let verified = primary_verified && complete;
+        let installed = (primary_verified || looks_installed(dest, record)) && complete;
         let state = if verified {
             "verified"
         } else if installed {
             "installed"
+        } else if primary_verified || looks_installed(dest, record) {
+            "incomplete"
         } else {
             "unverified"
         };
@@ -56,7 +72,9 @@ pub fn inspect_install(record: &ModelRecord, dest: &Path) -> ModelInstallStatus 
             verified,
             local_path: Some(dest.display().to_string()),
             bytes_on_disk,
-            expected_bytes: record.size,
+            expected_bytes: record
+                .size
+                .saturating_add(record.companion_files.iter().map(|file| file.size).sum()),
             active: false,
         };
     }
@@ -71,7 +89,9 @@ pub fn inspect_install(record: &ModelRecord, dest: &Path) -> ModelInstallStatus 
                 verified: false,
                 local_path: Some(partial.display().to_string()),
                 bytes_on_disk: meta.len(),
-                expected_bytes: record.size,
+                expected_bytes: record
+                    .size
+                    .saturating_add(record.companion_files.iter().map(|file| file.size).sum()),
                 active: false,
             };
         }
@@ -84,9 +104,40 @@ pub fn inspect_install(record: &ModelRecord, dest: &Path) -> ModelInstallStatus 
         verified: false,
         local_path: None,
         bytes_on_disk: 0,
-        expected_bytes: record.size,
+        expected_bytes: record
+            .size
+            .saturating_add(record.companion_files.iter().map(|file| file.size).sum()),
         active: false,
     }
+}
+
+pub fn companions_ready(record: &ModelRecord, dest: &Path) -> bool {
+    let Some(parent) = dest.parent() else {
+        return record.companion_files.is_empty();
+    };
+    record.companion_files.iter().all(|companion| {
+        let path = parent.join(&companion.filename);
+        if !path.exists() {
+            return false;
+        }
+        if crate::integrity::sidecar_matches_digest(&path, companion.size, &companion.sha256) {
+            return true;
+        }
+        // Repair files downloaded by an older manager version that did not
+        // create companion sidecars. This runs only when the sidecar is absent
+        // or stale; subsequent status refreshes are O(1).
+        let Ok(actual) = sha256_file(&path) else {
+            return false;
+        };
+        if !actual.eq_ignore_ascii_case(&companion.sha256)
+            || std::fs::metadata(&path)
+                .map(|m| m.len() != companion.size)
+                .unwrap_or(true)
+        {
+            return false;
+        }
+        crate::integrity::write_sidecar(&path, &actual).is_ok()
+    })
 }
 
 /// Files that are not the ready model currently selected for speech or formatting.
@@ -99,8 +150,23 @@ pub fn can_delete_on_disk(status: &ModelInstallStatus) -> bool {
 }
 
 pub fn remove_install_files(dest: &Path) -> LfResult<u64> {
+    remove_paths([dest.to_path_buf(), sidecar_path(dest), partial_path(dest)])
+}
+
+pub fn remove_install_bundle(record: &ModelRecord, dest: &Path) -> LfResult<u64> {
+    let mut paths = vec![dest.to_path_buf(), sidecar_path(dest), partial_path(dest)];
+    if let Some(parent) = dest.parent() {
+        for companion in &record.companion_files {
+            let path = parent.join(&companion.filename);
+            paths.extend([path.clone(), sidecar_path(&path), partial_path(&path)]);
+        }
+    }
+    remove_paths(paths)
+}
+
+fn remove_paths(paths: impl IntoIterator<Item = PathBuf>) -> LfResult<u64> {
     let mut freed = 0u64;
-    for path in [dest.to_path_buf(), sidecar_path(dest), partial_path(dest)] {
+    for path in paths {
         match std::fs::metadata(&path) {
             Ok(meta) => {
                 freed = freed.saturating_add(meta.len());
@@ -215,6 +281,67 @@ pub async fn download_and_install(
         total_bytes: record.size,
     });
     Ok(())
+}
+
+pub async fn download_model_bundle(
+    record: &ModelRecord,
+    dest: &Path,
+    force: bool,
+    mut on_progress: impl FnMut(ModelDownloadProgress),
+) -> LfResult<()> {
+    let total_bytes = record.size.saturating_add(
+        record
+            .companion_files
+            .iter()
+            .map(|file| file.size)
+            .sum::<u64>(),
+    );
+    let mut completed_bytes = 0u64;
+    download_and_install(record, dest, force, |mut progress| {
+        progress.bytes_downloaded = completed_bytes.saturating_add(progress.bytes_downloaded);
+        progress.total_bytes = total_bytes;
+        on_progress(progress);
+    })
+    .await?;
+    completed_bytes = completed_bytes.saturating_add(record.size);
+    if let Some(parent) = dest.parent() {
+        for companion in &record.companion_files {
+            let companion_record = companion_record(record, companion);
+            let companion_dest = parent.join(&companion.filename);
+            download_and_install(&companion_record, &companion_dest, force, |mut progress| {
+                progress.bytes_downloaded =
+                    completed_bytes.saturating_add(progress.bytes_downloaded);
+                progress.total_bytes = total_bytes;
+                on_progress(progress);
+            })
+            .await?;
+            completed_bytes = completed_bytes.saturating_add(companion.size);
+        }
+    }
+    Ok(())
+}
+
+fn companion_record(parent: &ModelRecord, companion: &ModelCompanion) -> ModelRecord {
+    ModelRecord {
+        model_id: parent.model_id.clone(),
+        display_name: parent.display_name.clone(),
+        version: parent.version.clone(),
+        filename: companion.filename.clone(),
+        format: companion.format.clone(),
+        quantization: parent.quantization.clone(),
+        kind: parent.kind.clone(),
+        source: parent.source.clone(),
+        source_url: parent.source_url.clone(),
+        download_url: companion.download_url.clone(),
+        sha256: companion.sha256.clone(),
+        size: companion.size,
+        license: parent.license.clone(),
+        license_url: parent.license_url.clone(),
+        network_required_to_obtain: parent.network_required_to_obtain,
+        checksum_pinned: parent.checksum_pinned,
+        notes: String::new(),
+        companion_files: Vec::new(),
+    }
 }
 
 async fn fetch_to_file(
@@ -373,6 +500,7 @@ mod tests {
             network_required_to_obtain: true,
             checksum_pinned: true,
             notes: "".into(),
+            companion_files: Vec::new(),
         }
     }
 

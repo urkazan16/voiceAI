@@ -131,6 +131,7 @@ const EN = {
   downloadWait: "Dictation starts when the checksum passes.",
   whisperNotReady:
     "Whisper is not ready. LocalFlow downloads it automatically — stay online, or open Models to retry.",
+  modelNotReady: "is not ready yet. Open Models to download it.",
   openModels: "Open Models",
   currentApp: "Current app",
   profile: "Profile",
@@ -141,11 +142,19 @@ const EN = {
   speechNeeds: "speech still needs",
   hotkeyLabel: "Talk shortcut",
   hotkeyHelp:
-    "Click the field, then press a combination. The current shortcut is released while you record so it cannot steal the key. Escape cancels. Control+C, Command+Space, Option+Space, and Fn (if the OS blocks it) are reserved — use F13 or Control+Shift+Space.",
+    "Click the field, then press a combination. The current shortcut is released while you record so it cannot steal the key. Escape cancels. Fn is supported on macOS through the native keyboard monitor; on Windows/Linux use F13 or a key combination.",
   hotkeyListening: "Press a key or combination…",
   hotkeyPresets: "Suggested",
   hotkeyActiveOther: "OS could not bind this key. Dictation currently uses",
   speechLanguage: "Speech language",
+  speechEngine: "Speech engine",
+  speechEngineHelp:
+    "Choose the installed speech engine. GigaAM is optimized for Russian; Parakeet is multilingual and fast on CPU. Download the corresponding model in Models first.",
+  speechEngineWhisper: "Whisper — multilingual, reliable baseline.",
+  speechEngineGigaam:
+    "GigaAM — Russian-focused model, usually faster and better for Russian speech.",
+  speechEngineParakeet:
+    "Parakeet — fast CPU model for English speech; use GigaAM for Russian dictation.",
   langRussian: "Russian",
   langEnglish: "English",
   langAuto: "Auto-detect",
@@ -318,6 +327,7 @@ const RU: typeof EN = {
   downloadWait: "Диктовка начнётся после проверки контрольной суммы.",
   whisperNotReady:
     "Whisper ещё не готов. LocalFlow скачивает его сам — оставайтесь онлайн или откройте «Модели».",
+  modelNotReady: "ещё не готова. Откройте «Модели», чтобы скачать её.",
   openModels: "Открыть модели",
   currentApp: "Текущее приложение",
   profile: "Профиль",
@@ -333,6 +343,13 @@ const RU: typeof EN = {
   hotkeyPresets: "Варианты",
   hotkeyActiveOther: "Система не взяла эту клавишу. Сейчас диктовка на",
   speechLanguage: "Язык речи",
+  speechEngine: "Движок распознавания",
+  speechEngineHelp:
+    "Whisper доступен сейчас. GigaAM оптимизирован для русского, Parakeet — мультиязычная быстрая модель. До подключения их runtime приложение явно использует Whisper как временный fallback.",
+  speechEngineWhisper: "Whisper — надёжная базовая мультиязычная модель; runtime уже активен.",
+  speechEngineGigaam:
+    "GigaAM — модель для русского языка, обычно быстрее и точнее на русской речи.",
+  speechEngineParakeet: "Parakeet — быстрая мультиязычная модель для CPU, включая русский язык.",
   langRussian: "Русский",
   langEnglish: "Английский",
   langAuto: "Автоопределение",

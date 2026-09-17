@@ -59,6 +59,7 @@ futures-util = "0.3.31"
 regex = "1.11.1"
 libc = "0.2"
 whisper-rs = { version = "0.16.0", default-features = false }
+sherpa-onnx = "1.13.8"
 num_cpus = "1.16"
 
 # Metal is for Apple Silicon. whisper.cpp's Metal path hangs or fails on Intel
@@ -115,5 +116,8 @@ tempfile = "3.16.0"
 codegen-units = 1
 lto = true
 opt-level = 3
-panic = "abort"
+# Dictation and audio work run on background threads.  Keep panics unwindable
+# so a recoverable worker failure cannot terminate the whole GUI (which is
+# especially opaque in the console-less Windows release build).
+panic = "unwind"
 strip = "symbols"

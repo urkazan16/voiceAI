@@ -242,11 +242,18 @@ impl AppEngine {
     pub(crate) fn ready_model_path(&self, kind: &str) -> Option<PathBuf> {
         let id = match kind {
             "llm" => self.settings.active_llm_model.as_ref()?,
-            _ => self.settings.active_stt_model.as_ref()?,
+            _ => {
+                let selected = match self.settings.stt_engine.as_str() {
+                    "gigaam" => Some("gigaam-v3-ctc"),
+                    "parakeet" => Some("parakeet-v3"),
+                    _ => None,
+                };
+                selected.or(self.settings.active_stt_model.as_deref())?
+            }
         };
         let record = self.catalog.get(id).ok()?;
         let path = self.model_path(record);
-        if looks_installed(&path, record) {
+        if looks_installed(&path, record) && crate::download::companions_ready(record, &path) {
             Some(path)
         } else {
             None
@@ -257,10 +264,14 @@ impl AppEngine {
         let record = self.catalog.get(model_id)?;
         let path = self.model_path(record);
         let mut status = crate::download::inspect_install(record, &path);
-        status.active = match record.kind.as_str() {
+        let configured = match record.kind.as_str() {
             "llm" => self.settings.active_llm_model.as_deref() == Some(model_id),
-            _ => self.settings.active_stt_model.as_deref() == Some(model_id),
+            _ => crate::config::stt_model_id_for_engine(&self.settings.stt_engine) == model_id,
         };
+        // A stale settings.json may still point at a deleted or incomplete
+        // model. It must not be reported as active: that both misleads the UI
+        // and prevents cleanup of the unusable files.
+        status.active = configured && (status.installed || status.verified);
         Ok(status)
     }
 
@@ -270,7 +281,16 @@ impl AppEngine {
             "llm" => self.settings.active_llm_model = Some(model_id.to_string()),
             // The VAD model is a helper for whatever speech model is active.
             "vad" => return Ok(()),
-            _ => self.settings.active_stt_model = Some(model_id.to_string()),
+            _ => {
+                self.settings.active_stt_model = Some(model_id.to_string());
+                self.settings.stt_engine = if model_id == "gigaam-v3-ctc" {
+                    "gigaam".into()
+                } else if model_id == "parakeet-v3" {
+                    "parakeet".into()
+                } else {
+                    "whisper".into()
+                };
+            }
         }
         self.persist()?;
         Ok(())
@@ -297,7 +317,7 @@ impl AppEngine {
             return Err(LfError::ModelMissing(model_id.to_string()));
         }
         let record = self.catalog.get(model_id)?;
-        crate::download::remove_install_files(&self.model_path(record))
+        crate::download::remove_install_bundle(record, &self.model_path(record))
     }
 
     pub fn remove_unused_model_files(&self) -> LfResult<Vec<(String, u64)>> {
@@ -412,6 +432,7 @@ impl AppEngine {
             timestamps: false,
             long_form: false,
             vad_threshold: self.settings.vad_threshold,
+            stt_engine: self.settings.stt_engine.clone(),
         }
     }
 
@@ -445,12 +466,9 @@ impl AppEngine {
                 return Err(LfError::Other(msg.into()));
             }
             let path = self.ready_model_path("stt").ok_or_else(|| {
-                LfError::ModelMissing(
-                    self.settings
-                        .active_stt_model
-                        .clone()
-                        .unwrap_or_else(|| crate::config::DEFAULT_STT_MODEL.to_string()),
-                )
+                LfError::ModelMissing(self.settings.active_stt_model.clone().unwrap_or_else(|| {
+                    crate::config::stt_model_id_for_engine(&self.settings.stt_engine).to_string()
+                }))
             })?;
             let options = if self.file_verbatim {
                 let mut options = crate::whisper_stt::DecodeOptions::long_form_interview();

@@ -38,6 +38,7 @@ pub mod llm;
 pub mod macos_activity;
 pub mod macos_stt;
 pub mod media;
+pub mod native_hotkey;
 pub mod paths;
 pub mod permissions;
 pub mod personalization;
@@ -48,6 +49,7 @@ pub mod profiles;
 pub mod runtime;
 pub mod sanitize;
 pub mod screenlock;
+pub mod sherpa_stt;
 pub mod snippets;
 pub mod spoken_tech;
 pub mod stt;
@@ -205,6 +207,8 @@ pub fn run() {
 
             macos_activity::prevent_app_nap();
             crate::platform::current().prompt_accessibility();
+            native_hotkey::set_app_handle(app.handle().clone());
+            native_hotkey::start();
             dictation::start_worker(app.handle().clone(), shared.clone(), capture.clone());
             commands::spawn_required_model_downloads(app.handle().clone(), shared.clone());
 
@@ -411,6 +415,7 @@ pub fn apply_shortcuts(app: &AppHandle, engine: &SharedEngine) -> Option<String>
     dictation::remember_microphone(mic);
     dictation::remember_hands_free(hands_free);
     dictation::remember_vad(vad);
+    native_hotkey::configure(&talk);
     let already = dictation::bound_hotkeys();
     if previous.as_deref() == Some(talk.as_str())
         && already == (talk.clone(), copy.clone(), paste.clone(), edit.clone())
@@ -419,23 +424,27 @@ pub fn apply_shortcuts(app: &AppHandle, engine: &SharedEngine) -> Option<String>
         return None;
     }
     unregister_known_shortcuts(app, previous.as_deref(), &talk, &copy, &paste, &edit);
-    let fallbacks = crate::platform::talk_hotkey_fallbacks();
-    let candidates = [talk.as_str(), fallbacks[0], fallbacks[1]];
     let mut registered = None;
     let mut last_err = None;
-    for shortcut in candidates {
-        match app.global_shortcut().register(shortcut) {
-            Ok(()) => {
-                registered = Some(shortcut.to_string());
-                if shortcut == talk.as_str() {
-                    last_err = None;
+    if native_hotkey::active_for(&talk) {
+        registered = Some(talk.clone());
+    } else {
+        let fallbacks = crate::platform::talk_hotkey_fallbacks();
+        let candidates = [talk.as_str(), fallbacks[0], fallbacks[1]];
+        for shortcut in candidates {
+            match app.global_shortcut().register(shortcut) {
+                Ok(()) => {
+                    registered = Some(shortcut.to_string());
+                    if shortcut == talk.as_str() {
+                        last_err = None;
+                    }
+                    break;
                 }
-                break;
-            }
-            Err(err) => {
-                last_err = Some(format!(
-                    "Hotkey {shortcut} is already used by the OS or another app ({err})"
-                ));
+                Err(err) => {
+                    last_err = Some(format!(
+                        "Hotkey {shortcut} is already used by the OS or another app ({err})"
+                    ));
+                }
             }
         }
     }
@@ -493,6 +502,7 @@ fn unregister_known_shortcuts(
 
 pub fn pause_shortcuts(app: &AppHandle, engine: &SharedEngine) {
     SHORTCUT_CAPTURE.store(true, Ordering::Relaxed);
+    native_hotkey::set_capture(true);
     let _ = apply_shortcuts(app, engine);
     let app = app.clone();
     let engine = engine.clone();
@@ -504,8 +514,13 @@ pub fn pause_shortcuts(app: &AppHandle, engine: &SharedEngine) {
     });
 }
 
+pub(crate) fn shortcut_capture_active() -> bool {
+    SHORTCUT_CAPTURE.load(Ordering::Relaxed)
+}
+
 pub fn resume_shortcuts(app: &AppHandle, engine: &SharedEngine) {
     SHORTCUT_CAPTURE.store(false, Ordering::Relaxed);
+    native_hotkey::set_capture(false);
     if let Ok(mut eng) = engine.lock() {
         eng.hotkey_registered = None;
     }

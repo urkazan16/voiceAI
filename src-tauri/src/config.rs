@@ -8,6 +8,22 @@ use crate::snippets::SnippetBook;
 use serde::{Deserialize, Serialize};
 
 pub const DEFAULT_STT_MODEL: &str = "whisper-medium";
+pub const DEFAULT_STT_ENGINE: &str = "whisper";
+
+pub fn stt_model_id_for_engine(engine: &str) -> &'static str {
+    match engine.trim().to_ascii_lowercase().as_str() {
+        "gigaam" => "gigaam-v3-ctc",
+        "parakeet" => "parakeet-v3",
+        _ => DEFAULT_STT_MODEL,
+    }
+}
+
+pub fn stt_engine_runtime_available(engine: &str) -> bool {
+    matches!(
+        engine.trim().to_ascii_lowercase().as_str(),
+        "whisper" | "gigaam" | "parakeet"
+    )
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
@@ -28,6 +44,8 @@ pub struct AppSettings {
     pub personalization_enabled: bool,
     pub learn_from_corrections: bool,
     pub stt_language: String,
+    #[serde(default = "default_stt_engine")]
+    pub stt_engine: String,
     #[serde(default = "default_insert_delay")]
     pub insert_delay_ms: u64,
     #[serde(default = "default_postprocess_timeout")]
@@ -114,6 +132,10 @@ fn default_ui_language() -> String {
     "en".into()
 }
 
+fn default_stt_engine() -> String {
+    DEFAULT_STT_ENGINE.into()
+}
+
 pub fn clamp_cue_volume(volume: f32) -> f32 {
     if !volume.is_finite() {
         return default_cue_volume();
@@ -147,6 +169,11 @@ impl AppSettings {
         } else {
             self.stt_language = lang;
         }
+        let engine = self.stt_engine.trim().to_ascii_lowercase();
+        self.stt_engine = match engine.as_str() {
+            "gigaam" | "parakeet" => engine,
+            _ => DEFAULT_STT_ENGINE.into(),
+        };
         let ui = self.ui_language.trim().to_ascii_lowercase();
         self.ui_language = if ui == "ru" { "ru".into() } else { "en".into() };
     }
@@ -165,6 +192,14 @@ impl AppSettings {
         {
             return Err(LfError::ConfigInvalid(
                 "Hotkeys cannot be empty. Use Tauri syntax such as Control+Shift+Space.".into(),
+            ));
+        }
+        if !matches!(
+            self.stt_engine.trim().to_ascii_lowercase().as_str(),
+            "whisper" | "gigaam" | "parakeet"
+        ) {
+            return Err(LfError::ConfigInvalid(
+                "Speech engine must be Whisper, GigaAM, or Parakeet.".into(),
             ));
         }
         if let Some(reason) = hotkey_conflict_reason(
@@ -229,28 +264,6 @@ pub(crate) fn hotkey_conflict_reason(
     paste: &str,
     edit: &str,
 ) -> Option<String> {
-    let reserved = [
-        "escape",
-        "tab",
-        "control+c",
-        "control+v",
-        "control+x",
-        "control+a",
-        "control+z",
-        "super+c",
-        "super+v",
-        "super+x",
-        "super+a",
-        "super+z",
-        "super+q",
-        "super+w",
-        "super+tab",
-        "super+space",
-        "control+space",
-        "alt+space",
-        "alt+tab",
-        "control+alt+delete",
-    ];
     for (label, chord) in [
         ("Talk", talk),
         ("Copy last", copy),
@@ -258,15 +271,15 @@ pub(crate) fn hotkey_conflict_reason(
         ("Edit", edit),
     ] {
         let id = canon_hotkey(chord);
-        if matches!(id.as_str(), "fn" | "function" | "globe") {
+        if matches!(id.as_str(), "fn" | "function" | "globe")
+            && (!cfg!(target_os = "macos") || label != "Talk")
+        {
             return Some(format!(
                 "{label} cannot use Fn/Globe as a global shortcut. Choose F13 or a key combination."
             ));
         }
-        if id == "space" || id == "enter" || id == "tab" {
-            return Some(format!(
-                "{label} cannot use {chord} alone. Add Control/Shift or use F13."
-            ));
+        if cfg!(target_os = "macos") && label == "Talk" && id == "fn" {
+            continue;
         }
         let parts: Vec<_> = chord
             .split('+')
@@ -277,68 +290,14 @@ pub(crate) fn hotkey_conflict_reason(
             "control", "ctrl", "alt", "option", "shift", "command", "cmd", "super", "meta", "win",
         ];
         let key = parts.last().map(String::as_str).unwrap_or_default();
-        let has_modifier = parts[..parts.len().saturating_sub(1)]
-            .iter()
-            .any(|part| modifiers.contains(&part.as_str()));
         if key.is_empty() || modifiers.contains(&key) {
             return Some(format!(
                 "{label} must include a non-modifier key. Use a key combination or F13–F24."
             ));
         }
-        if !has_modifier
-            && matches!(
-                key,
-                "f1" | "f2"
-                    | "f3"
-                    | "f4"
-                    | "f5"
-                    | "f6"
-                    | "f7"
-                    | "f8"
-                    | "f9"
-                    | "f10"
-                    | "f11"
-                    | "f12"
-            )
-        {
-            return Some(format!(
-                "{label} cannot use {chord}. Use F13–F24 for an unmodified function key."
-            ));
-        }
-        if !has_modifier
-            && !matches!(
-                key,
-                "f13"
-                    | "f14"
-                    | "f15"
-                    | "f16"
-                    | "f17"
-                    | "f18"
-                    | "f19"
-                    | "f20"
-                    | "f21"
-                    | "f22"
-                    | "f23"
-                    | "f24"
-            )
-        {
-            return Some(format!(
-                "{label} must use Control/Alt/Shift/Command, or F13–F24."
-            ));
-        }
         if id == "escape" {
             return Some(format!(
                 "{label} cannot be Escape — Escape already cancels dictation."
-            ));
-        }
-        if reserved.contains(&id.as_str()) {
-            return Some(format!(
-                "{label} shortcut {chord} is reserved by the OS or by copy/paste. Pick another combination."
-            ));
-        }
-        if !id.contains('+') && id.len() == 1 && id.chars().all(|c| c.is_ascii_alphanumeric()) {
-            return Some(format!(
-                "{label} cannot be {chord} alone — it would fire while typing. Add Control/Shift or use F13 / Space."
             ));
         }
     }
@@ -377,6 +336,7 @@ impl Default for AppSettings {
             personalization_enabled: true,
             learn_from_corrections: true,
             stt_language: "ru".into(),
+            stt_engine: default_stt_engine(),
             insert_delay_ms: default_insert_delay(),
             postprocess_timeout_ms: default_postprocess_timeout(),
             sound_cues: true,
@@ -534,19 +494,19 @@ mod tests {
         assert_eq!(err.code(), "CONFIG_INVALID");
         settings = AppSettings::default();
         settings.hotkey = "Control+C".into();
-        let err = settings.validate().unwrap_err();
-        assert!(
-            err.to_string().to_ascii_lowercase().contains("reserved"),
-            "{err}"
-        );
+        settings.validate().unwrap();
         settings = AppSettings::default();
         settings.hotkey = settings.copy_last_hotkey.clone();
         let err = settings.validate().unwrap_err();
         assert!(err.to_string().contains("same shortcut"), "{err}");
         settings = AppSettings::default();
         settings.hotkey = "Fn".into();
-        let err = settings.validate().unwrap_err();
-        assert!(err.to_string().contains("Fn/Globe"), "{err}");
+        if cfg!(target_os = "macos") {
+            settings.validate().unwrap();
+        } else {
+            let err = settings.validate().unwrap_err();
+            assert!(err.to_string().contains("Fn/Globe"), "{err}");
+        }
     }
 
     #[test]

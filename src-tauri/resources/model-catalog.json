@@ -1,6 +1,76 @@
 {
-  "catalog_version": "0.3.0",
+  "catalog_version": "0.4.0",
   "models": [
+    {
+      "model_id": "gigaam-v3-ctc",
+      "display_name": "GigaAM v3 CTC",
+      "version": "sherpa-onnx CTC INT8",
+      "filename": "gigaam-v3-ctc/model.int8.onnx",
+      "format": "ONNX",
+      "quantization": "INT8",
+      "kind": "stt",
+      "source": "csukuangfj/sherpa-onnx-nemo-ctc-giga-am-v3-russian-2025-12-16",
+      "source_url": "https://huggingface.co/csukuangfj/sherpa-onnx-nemo-ctc-giga-am-v3-russian-2025-12-16",
+      "download_url": "https://huggingface.co/csukuangfj/sherpa-onnx-nemo-ctc-giga-am-v3-russian-2025-12-16/resolve/main/model.int8.onnx?download=true",
+      "sha256": "f86ebfa0429ced91be6054fc344827e9c6c2572f3c318416cd974b06f66437ec",
+      "size": 224721476,
+      "license": "Apache-2.0",
+      "license_url": "https://huggingface.co/csukuangfj/sherpa-onnx-nemo-ctc-giga-am-v3-russian-2025-12-16",
+      "network_required_to_obtain": true,
+      "checksum_pinned": true,
+      "notes": "Russian-focused CTC model. Usually the best choice for Russian-only dictation; requires less orchestration than a transducer.",
+      "companion_files": [
+        {
+          "filename": "tokens.txt",
+          "download_url": "https://huggingface.co/csukuangfj/sherpa-onnx-nemo-ctc-giga-am-v3-russian-2025-12-16/resolve/main/tokens.txt?download=true",
+          "sha256": "17cc514451bcceac9c280068c71502f8448f99e9fb1456b8d0761651fd0392f2",
+          "size": 196,
+          "format": "TEXT"
+        }
+      ]
+    },
+    {
+      "model_id": "parakeet-v3",
+      "display_name": "Parakeet TDT v3",
+      "version": "sherpa-onnx 0.6B INT8",
+      "filename": "parakeet-v3/encoder.int8.onnx",
+      "format": "ONNX",
+      "quantization": "INT8",
+      "kind": "stt",
+      "source": "k2-fsa/sherpa-onnx Nemo Parakeet",
+      "source_url": "https://k2-fsa.github.io/sherpa/onnx/pretrained_models/offline-transducer/nemo-transducer-models.html",
+      "download_url": "https://huggingface.co/csukuangfj/sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8/resolve/main/encoder.int8.onnx?download=true",
+      "sha256": "acfc2b4456377e15d04f0243af540b7fe7c992f8d898d751cf134c3a55fd2247",
+      "size": 652184281,
+      "license": "CC-BY-4.0",
+      "license_url": "https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3",
+      "network_required_to_obtain": true,
+      "checksum_pinned": true,
+      "notes": "Fast multilingual transducer. Best for mixed-language speech; uses encoder, decoder, joiner and tokens files.",
+      "companion_files": [
+        {
+          "filename": "decoder.int8.onnx",
+          "download_url": "https://huggingface.co/csukuangfj/sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8/resolve/main/decoder.int8.onnx?download=true",
+          "sha256": "179e50c43d1a9de79c8a24149a2f9bac6eb5981823f2a2ed88d655b24248db4e",
+          "size": 11845275,
+          "format": "ONNX"
+        },
+        {
+          "filename": "joiner.int8.onnx",
+          "download_url": "https://huggingface.co/csukuangfj/sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8/resolve/main/joiner.int8.onnx?download=true",
+          "sha256": "3164c13fc2821009440d20fcb5fdc78bff28b4db2f8d0f0b329101719c0948b3",
+          "size": 6355277,
+          "format": "ONNX"
+        },
+        {
+          "filename": "tokens.txt",
+          "download_url": "https://huggingface.co/csukuangfj/sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8/resolve/main/tokens.txt?download=true",
+          "sha256": "d58544679ea4bc6ac563d1f545eb7d474bd6cfa467f0a6e2c1dc1c7d37e3c35d",
+          "size": 93939,
+          "format": "TEXT"
+        }
+      ]
+    },
     {
       "model_id": "whisper-base",
       "display_name": "Whisper Base",

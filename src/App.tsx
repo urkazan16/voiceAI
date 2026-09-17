@@ -63,6 +63,7 @@ const fallbackSettings = (): AppSettings => ({
   personalization_enabled: true,
   learn_from_corrections: true,
   stt_language: "ru",
+  stt_engine: "whisper",
   insert_delay_ms: 120,
   postprocess_timeout_ms: 45000,
   sound_cues: true,
@@ -167,6 +168,10 @@ function describeSelectedModel(
 
 function modelFileReady(status: ModelInstallStatus | undefined): boolean {
   return status?.state === "verified" || status?.state === "installed";
+}
+
+function modelBundleBytes(model: ModelRecord): number {
+  return model.size + (model.companion_files ?? []).reduce((sum, file) => sum + file.size, 0);
 }
 
 function downloadedModels(
@@ -879,7 +884,12 @@ export function App() {
           <section>
             <h1 className="text-4xl">{t.homeTitle}</h1>
             {(() => {
-              const sttId = settings.active_stt_model;
+              const sttId =
+                settings.stt_engine === "gigaam"
+                  ? "gigaam-v3-ctc"
+                  : settings.stt_engine === "parakeet"
+                    ? "parakeet-v3"
+                    : settings.active_stt_model;
               const sttRecord = models.find((model) => model.model_id === sttId);
               const sttStatus = modelStatus.find((item) => item.model_id === sttId);
               const sttProgress = sttId ? downloadProgress[sttId] : undefined;
@@ -905,7 +915,9 @@ export function App() {
                 <p className="mt-3 rounded-xl border border-copper/40 bg-copper/10 px-4 py-3 text-sm">
                   {busy
                     ? `${t.downloadBusy} ${sttRecord?.display_name ?? "Whisper"} (${percent}%). ${t.downloadWait}`
-                    : t.whisperNotReady}
+                    : sttRecord
+                      ? `${sttRecord.display_name} ${t.modelNotReady.toLowerCase()}`
+                      : t.whisperNotReady}
                   <button className="ml-3 underline" onClick={() => setView("models")}>
                     {t.openModels}
                   </button>
@@ -1114,6 +1126,47 @@ export function App() {
               </select>
             </label>
             <p className="text-xs text-paper/60">{t.speechLangHelp}</p>
+            <label className="block text-sm text-paper/70">
+              {t.speechEngine}
+              <select
+                className="mt-1 w-full rounded-lg bg-paper/10 p-2"
+                value={settings.stt_engine ?? "whisper"}
+                onChange={(e) => {
+                  const engine = e.target.value;
+                  const modelId =
+                    engine === "gigaam"
+                      ? "gigaam-v3-ctc"
+                      : engine === "parakeet"
+                        ? "parakeet-v3"
+                        : null;
+                  const matching =
+                    modelId && installedSpeech.some((model) => model.model_id === modelId);
+                  if (modelId && !matching) {
+                    setStatus(
+                      `${engine === "gigaam" ? "GigaAM" : "Parakeet"} is not installed. Download it in Models first.`,
+                    );
+                    return;
+                  }
+                  void save({
+                    ...settings,
+                    stt_engine: engine,
+                    ...(matching && modelId ? { active_stt_model: modelId } : {}),
+                  });
+                }}
+              >
+                <option value="whisper">Whisper</option>
+                <option value="gigaam">GigaAM</option>
+                <option value="parakeet">Parakeet</option>
+              </select>
+            </label>
+            <p className="text-xs text-paper/60">{t.speechEngineHelp}</p>
+            <p className="-mt-2 text-xs text-paper/70">
+              {settings.stt_engine === "gigaam"
+                ? t.speechEngineGigaam
+                : settings.stt_engine === "parakeet"
+                  ? t.speechEngineParakeet
+                  : t.speechEngineWhisper}
+            </p>
             <label className="block text-sm text-paper/70">
               {t.speechModel}
               <select
@@ -1753,8 +1806,18 @@ export function App() {
                   const progress = downloadProgress[model.model_id];
                   const state = status?.state ?? "missing";
                   const ready = state === "verified" || state === "installed";
-                  const isSpeechActive = settings.active_stt_model === model.model_id;
-                  const isFormattingActive = settings.active_llm_model === model.model_id;
+                  const effectiveSpeechModel =
+                    settings.stt_engine === "gigaam"
+                      ? "gigaam-v3-ctc"
+                      : settings.stt_engine === "parakeet"
+                        ? "parakeet-v3"
+                        : settings.active_stt_model;
+                  // A stale setting may reference a deleted/incomplete model.
+                  // Show it as active only when the model is actually ready;
+                  // otherwise the user must be able to select another model
+                  // or remove the leftover files.
+                  const isSpeechActive = ready && effectiveSpeechModel === model.model_id;
+                  const isFormattingActive = ready && settings.active_llm_model === model.model_id;
                   const isActive = isSpeechActive || isFormattingActive || Boolean(status?.active);
                   const busy =
                     state === "downloading" ||
@@ -1811,7 +1874,7 @@ export function App() {
                       </div>
                       <p className="mt-2 text-sm text-paper/70">
                         {model.kind === "stt" ? "Speech" : "Formatting"} · {model.version} ·{" "}
-                        {model.format} {model.quantization} · {formatBytes(model.size)}
+                        {model.format} {model.quantization} · {formatBytes(modelBundleBytes(model))}
                         {model.model_id === "whisper-medium" ? " · recommended default" : ""}
                       </p>
                       {(state === "downloading" ||
@@ -1875,7 +1938,7 @@ export function App() {
                                 model_id: model.model_id,
                                 phase: "downloading",
                                 bytes_downloaded: 0,
-                                total_bytes: model.size,
+                                total_bytes: modelBundleBytes(model),
                               },
                             }));
                             setModelMessage(

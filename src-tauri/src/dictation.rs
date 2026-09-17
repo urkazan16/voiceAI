@@ -175,7 +175,7 @@ pub fn start_worker(app: AppHandle, engine: SharedEngine, capture: SharedCapture
         .name("localflow-dictation".into())
         .spawn(move || {
             while let Ok(cmd) = rx.recv() {
-                match cmd {
+                let result = crate::error::catch_runtime_panic("Dictation command", || match cmd {
                     DictationCmd::Pressed => on_hotkey_pressed(&app, &engine, &capture),
                     DictationCmd::Released => on_hotkey_released(&app, &engine, &capture),
                     DictationCmd::Cancel => cancel(&app, &engine, &capture),
@@ -192,6 +192,12 @@ pub fn start_worker(app: AppHandle, engine: SharedEngine, capture: SharedCapture
                             .ok()
                             .and_then(|eng| eng.paste_last_transcript().ok());
                     }
+                });
+                if let Err(err) = result {
+                    CANCEL.store(true, Ordering::Relaxed);
+                    BUSY.store(false, Ordering::Relaxed);
+                    let _ = capture.stop();
+                    fail(&app, &engine, &crate::error::user_guidance(&err), 0);
                 }
             }
         })
@@ -580,7 +586,7 @@ fn spawn_ptt_release_watch(capture: &SharedCapture) {
 
 fn poll_physical_ptt_release(hotkey: &str) -> bool {
     let t = hotkey.trim().to_ascii_lowercase();
-    t.contains("space") || t == "fn" || t == "function" || t == "globe"
+    t.contains("space")
 }
 
 fn spawn_level_meter(app: &AppHandle, capture: &SharedCapture) {
@@ -629,7 +635,7 @@ fn spawn_level_meter(app: &AppHandle, capture: &SharedCapture) {
             .and_then(|g| *g)
             .map(|t| t.elapsed())
             .unwrap_or_default();
-        let quiet = rms < cached_vad() * 0.45;
+        let quiet = rms < crate::vad::soft_threshold(cached_vad()) * 0.45;
         let warn = held > Duration::from_millis(700) && quiet;
         let message = if warn {
             "No mic signal — check the input device.".into()
@@ -724,13 +730,21 @@ fn finish_recording(app: &AppHandle, engine: &SharedEngine, capture: &SharedCapt
     let engine = engine.clone();
     std::thread::spawn(move || {
         let _busy = BusyGuard;
+        let duration_ms = audio::duration_ms(&captured);
         if CANCEL.load(Ordering::Relaxed) {
             emit_cancelled(&app, &engine);
             return;
         }
-        let duration_ms = audio::duration_ms(&captured);
-        let mut pcm =
-            crate::vad::trim_silence_at(&audio::to_whisper_pcm(&captured), 16_000, cached_vad());
+        let source_pcm = audio::to_whisper_pcm(&captured);
+        let configured_vad = cached_vad();
+        let soft_vad = crate::vad::soft_threshold(configured_vad);
+        let mut pcm = crate::vad::trim_silence_at(&source_pcm, 16_000, configured_vad);
+        // Built-in and Bluetooth microphones often produce speech below the
+        // configured UI threshold. Keep the user's threshold as the first
+        // choice, but do one softer pass before declaring the recording empty.
+        if pcm.is_empty() && !source_pcm.is_empty() {
+            pcm = crate::vad::trim_silence_at(&source_pcm, 16_000, soft_vad);
+        }
         drop(captured);
         // Keep the onset so the first phoneme/letter is not trimmed away.
         let mut onset = vec![0.0; 2_400];
@@ -745,7 +759,17 @@ fn finish_recording(app: &AppHandle, engine: &SharedEngine, capture: &SharedCapt
             );
             return;
         }
-        if !crate::vad::had_speech_at(&pcm, 16_000, cached_vad()) {
+        if !crate::vad::had_speech_at(&pcm, 16_000, soft_vad) {
+            crate::journal::log(
+                "record_no_signal",
+                &format!(
+                    "samples={} duration_ms={} rms={:.6} threshold={:.6}",
+                    source_pcm.len(),
+                    duration_ms,
+                    crate::vad::rms(&source_pcm),
+                    configured_vad
+                ),
+            );
             fail(
                 &app,
                 &engine,
@@ -767,6 +791,7 @@ fn finish_recording(app: &AppHandle, engine: &SharedEngine, capture: &SharedCapt
             keep_audio,
             decode_options,
             restore_clipboard,
+            stt_engine,
         ) = match engine.lock() {
             Ok(eng) => {
                 crate::whisper_stt::set_use_gpu(crate::whisper_stt::use_gpu_from_setting(
@@ -785,6 +810,7 @@ fn finish_recording(app: &AppHandle, engine: &SharedEngine, capture: &SharedCapt
                     eng.settings.keep_last_audio,
                     eng.decode_options(),
                     eng.settings.restore_clipboard,
+                    eng.settings.stt_engine.clone(),
                 )
             }
             Err(_) => {
@@ -792,6 +818,12 @@ fn finish_recording(app: &AppHandle, engine: &SharedEngine, capture: &SharedCapt
                 return;
             }
         };
+        if !crate::config::stt_engine_runtime_available(&stt_engine) {
+            crate::journal::log(
+                "stt_engine_fallback",
+                &format!("{} is unavailable; using Whisper", stt_engine),
+            );
+        }
         if keep_audio {
             let _ = crate::media::write_wav_s16le_mono(&last_wav, 16_000, &pcm);
         } else {
@@ -801,7 +833,9 @@ fn finish_recording(app: &AppHandle, engine: &SharedEngine, capture: &SharedCapt
             fail(
                 &app,
                 &engine,
-                &crate::error::user_guidance(&LfError::ModelMissing("whisper-medium".into())),
+                &crate::error::user_guidance(&LfError::ModelMissing(
+                    crate::config::stt_model_id_for_engine(&stt_engine).into(),
+                )),
                 duration_ms,
             );
             return;
@@ -1101,7 +1135,7 @@ mod tests {
         assert!(poll_physical_ptt_release(&talk));
         assert!(!poll_physical_ptt_release("F13"));
         assert!(!poll_physical_ptt_release("Control+Shift+D"));
-        assert!(poll_physical_ptt_release("Fn"));
+        assert!(!poll_physical_ptt_release("Fn"));
     }
 
     #[test]

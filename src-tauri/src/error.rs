@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::any::Any;
 use std::path::PathBuf;
 use thiserror::Error;
 
@@ -75,6 +76,28 @@ impl From<&LfError> for ErrorDto {
 
 pub type LfResult<T> = Result<T, LfError>;
 
+/// Turn an unexpected Rust panic in a background job into an ordinary runtime
+/// error. Release builds must use unwinding for this guard to be effective.
+pub fn catch_runtime_panic<T>(context: &str, job: impl FnOnce() -> T) -> LfResult<T> {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(job)).map_err(|payload| {
+        let detail = panic_payload_message(payload.as_ref());
+        crate::journal::log("worker_panic", &format!("{context}: {detail}"));
+        LfError::RuntimeUnsupported(format!(
+            "{context} failed unexpectedly. LocalFlow is still running; try again or restart it."
+        ))
+    })
+}
+
+fn panic_payload_message(payload: &(dyn Any + Send)) -> String {
+    if let Some(message) = payload.downcast_ref::<&str>() {
+        (*message).to_string()
+    } else if let Some(message) = payload.downcast_ref::<String>() {
+        message.clone()
+    } else {
+        "non-string panic".into()
+    }
+}
+
 pub fn path_buf_error(path: PathBuf) -> String {
     path.display().to_string()
 }
@@ -82,8 +105,24 @@ pub fn path_buf_error(path: PathBuf) -> String {
 /// What to show in the bar / Settings instead of a raw error code.
 pub fn user_guidance(err: &LfError) -> String {
     match err {
+        LfError::ModelMissing(model) if model.to_ascii_lowercase().contains("gigaam") => {
+            "GigaAM is not ready yet. Open Models, download GigaAM v3 CTC, select it for speech, then try again.".into()
+        }
+        LfError::ModelMissing(model) if model.to_ascii_lowercase().contains("parakeet") => {
+            "Parakeet is not ready yet. Open Models, download the complete Parakeet package, select it for speech, then try again.".into()
+        }
+        LfError::ModelFormatInvalid(message) | LfError::ModelNotPinned(message)
+            if message.to_ascii_lowercase().contains("gigaam") =>
+        {
+            "GigaAM is not ready yet. Open Models, download GigaAM v3 CTC, select it for speech, then try again.".into()
+        }
+        LfError::ModelFormatInvalid(message) | LfError::ModelNotPinned(message)
+            if message.to_ascii_lowercase().contains("parakeet") =>
+        {
+            "Parakeet is not ready yet. Open Models, download the complete Parakeet package, select it for speech, then try again.".into()
+        }
         LfError::ModelMissing(_) | LfError::ModelFormatInvalid(_) | LfError::ModelNotPinned(_) => {
-            "Whisper is not ready yet. LocalFlow downloads it on first launch — wait for the progress on Home or Models, then try again.".into()
+            "Whisper is not ready yet. Open Models, download a speech model, select it for speech, then try again.".into()
         }
         LfError::ModelChecksumMismatch { .. } => {
             "Model file is corrupted or incomplete. Delete it in Models and download again.".into()
@@ -190,6 +229,19 @@ mod tests {
     }
 
     #[test]
+    fn user_guidance_keeps_non_whisper_engine_name() {
+        let gigaam = user_guidance(&LfError::ModelFormatInvalid(
+            "Unable to initialize gigaam sherpa-onnx model".into(),
+        ));
+        assert!(gigaam.contains("GigaAM"), "{gigaam}");
+        assert!(!gigaam.contains("Whisper"), "{gigaam}");
+
+        let parakeet = user_guidance(&LfError::ModelNotPinned("parakeet-v3".into()));
+        assert!(parakeet.contains("Parakeet"), "{parakeet}");
+        assert!(!parakeet.contains("Whisper"), "{parakeet}");
+    }
+
+    #[test]
     fn user_guidance_explains_busy_and_disconnected_mics() {
         let busy = user_guidance(&LfError::DeviceUnavailable("busy: device in use".into()));
         assert!(busy.to_lowercase().contains("another app"), "{busy}");
@@ -204,5 +256,12 @@ mod tests {
         ));
         assert!(access.to_lowercase().contains("quit"), "{access}");
         assert!(access.contains("Accessibility"), "{access}");
+    }
+
+    #[test]
+    fn worker_panics_become_runtime_errors() {
+        let err = catch_runtime_panic("speech worker", || panic!("decoder panic")).unwrap_err();
+        assert_eq!(err.code(), "RUNTIME_UNSUPPORTED");
+        assert!(err.to_string().contains("LocalFlow is still running"));
     }
 }

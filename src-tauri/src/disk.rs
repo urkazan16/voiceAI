@@ -116,21 +116,26 @@ pub fn report(
     llm: Option<(&ModelRecord, &ModelInstallStatus)>,
     all_status: &[ModelInstallStatus],
 ) -> DiskUsage {
+    let bundle_size = |record: &ModelRecord| {
+        record
+            .size
+            .saturating_add(record.companion_files.iter().map(|file| file.size).sum())
+    };
     let free = volume_free_bytes(data_root);
     let used_models_bytes = all_status.iter().map(|s| s.bytes_on_disk).sum();
     let (stt_name, stt_required, stt_on_disk) = match stt {
         Some((rec, status)) => (
             rec.display_name.clone(),
-            rec.size,
-            status.bytes_on_disk.min(rec.size),
+            bundle_size(rec),
+            status.bytes_on_disk.min(bundle_size(rec)),
         ),
         None => ("Not selected".into(), 0, 0),
     };
     let (llm_name, llm_required, llm_on_disk) = match llm {
         Some((rec, status)) => (
             rec.display_name.clone(),
-            rec.size,
-            status.bytes_on_disk.min(rec.size),
+            bundle_size(rec),
+            status.bytes_on_disk.min(bundle_size(rec)),
         ),
         None => ("Not selected".into(), 0, 0),
     };

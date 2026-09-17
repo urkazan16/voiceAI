@@ -12,6 +12,14 @@ pub fn clamp_threshold(value: f32) -> f32 {
     value.clamp(0.002, 0.08)
 }
 
+/// A conservative fallback for quiet microphones. This is intentionally not
+/// used for normal trimming, only when the configured threshold found no voice.
+pub fn soft_threshold(value: f32) -> f32 {
+    // Keep this below the normal UI minimum: quiet laptop microphones can
+    // legitimately produce sub-0.002 RMS speech after the device conversion.
+    (value * 0.20).clamp(0.0008, 0.02)
+}
+
 pub fn trim_silence(pcm: &[f32], sample_rate: u32) -> Vec<f32> {
     trim_silence_at(pcm, sample_rate, default_threshold())
 }
@@ -270,6 +278,12 @@ mod tests {
         assert!(had_speech(&[0.2; 8_000], 16_000));
         assert_eq!(clamp_threshold(0.0), 0.002);
         assert_eq!(clamp_threshold(1.0), 0.08);
+    }
+
+    #[test]
+    fn soft_threshold_is_lower_but_never_below_safe_floor() {
+        assert!((soft_threshold(0.012) - 0.0024).abs() < f32::EPSILON);
+        assert_eq!(soft_threshold(0.002), 0.0008);
     }
 
     #[test]

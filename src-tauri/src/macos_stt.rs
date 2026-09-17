@@ -53,7 +53,7 @@ mod macos {
                 }
             }
             6 => Err(LfError::PermissionDenied(
-                "Whisper is not ready. Download a speech model in Models.".into(),
+                "Speech model is not ready. Download a speech model in Models.".into(),
             )),
             5 => Err(LfError::RuntimeUnsupported(
                 "on-device speech recognizer is unavailable for the current language".into(),

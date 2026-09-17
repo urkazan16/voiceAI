@@ -23,6 +23,12 @@ impl SpeechToText for NativeStt {
         options: &DecodeOptions,
     ) -> LfResult<String> {
         if let Some(path) = model_path {
+            if matches!(
+                options.stt_engine.trim().to_ascii_lowercase().as_str(),
+                "gigaam" | "parakeet"
+            ) {
+                return crate::sherpa_stt::transcribe(&options.stt_engine, path, pcm);
+            }
             match crate::whisper_stt::transcribe(
                 path,
                 pcm,

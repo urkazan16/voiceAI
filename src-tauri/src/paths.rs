@@ -25,7 +25,23 @@ impl DataPaths {
 
     pub fn ensure(&self) -> std::io::Result<()> {
         std::fs::create_dir_all(self.models_whisper())?;
+        std::fs::create_dir_all(self.models_stt())?;
         std::fs::create_dir_all(self.models_llm())?;
+        // Speech models used to be stored in `models/whisper`, including the
+        // new sherpa bundles. Move them once into the engine-neutral speech
+        // directory so the manager path matches the model type.
+        if let Ok(entries) = std::fs::read_dir(self.models_whisper()) {
+            for entry in entries.flatten() {
+                let source = entry.path();
+                let Some(name) = source.file_name() else {
+                    continue;
+                };
+                let target = self.models_stt().join(name);
+                if !target.exists() {
+                    let _ = std::fs::rename(source, target);
+                }
+            }
+        }
         std::fs::create_dir_all(self.database_dir())?;
         std::fs::create_dir_all(self.logs())?;
         std::fs::create_dir_all(self.config_dir())?;
@@ -40,6 +56,7 @@ impl DataPaths {
                 self.config_dir(),
                 self.models(),
                 self.models_whisper(),
+                self.models_stt(),
                 self.models_llm(),
                 self.database_dir(),
             ] {
@@ -54,6 +71,9 @@ impl DataPaths {
     }
     pub fn models_whisper(&self) -> PathBuf {
         self.models().join("whisper")
+    }
+    pub fn models_stt(&self) -> PathBuf {
+        self.models().join("stt")
     }
     pub fn models_llm(&self) -> PathBuf {
         self.models().join("llm")
@@ -92,7 +112,7 @@ impl DataPaths {
     pub fn model_file(&self, kind: &str, filename: &str) -> PathBuf {
         match kind {
             "llm" => self.models_llm().join(filename),
-            _ => self.models_whisper().join(filename),
+            _ => self.models_stt().join(filename),
         }
     }
 }
@@ -175,6 +195,7 @@ mod tests {
                 paths.config_dir(),
                 paths.models(),
                 paths.models_whisper(),
+                paths.models_stt(),
                 paths.models_llm(),
                 paths.database_dir(),
             ] {

@@ -164,13 +164,11 @@ describe("chordFromKeyboardEvent", () => {
     ).toBe("F13");
   });
 
-  it("rejects Fn and bare Space as unsafe global shortcuts", () => {
+  it("rejects Fn on non-macOS but allows ordinary single keys", () => {
     expect(reservedHotkeyReason("Fn")).toMatch(/Fn\/Globe/);
-    expect(reservedHotkeyReason("Space")).toMatch(/alone/);
-  });
-
-  it("rejects unsupported bare function keys", () => {
-    expect(reservedHotkeyReason("F12")).toMatch(/F13/);
+    expect(reservedHotkeyReason("Space")).toBeNull();
+    expect(reservedHotkeyReason("A")).toBeNull();
+    expect(reservedHotkeyReason("F12")).toBeNull();
     expect(reservedHotkeyReason("F13")).toBeNull();
     expect(reservedHotkeyReason("Control+F12")).toBeNull();
   });
@@ -178,9 +176,9 @@ describe("chordFromKeyboardEvent", () => {
 
 describe("hotkey validation", () => {
   it("rejects Control+C and Command+Space as talk keys", () => {
-    expect(reservedHotkeyReason("Control+C")).toMatch(/reserved/i);
-    expect(reservedHotkeyReason("Command+Space")).toMatch(/reserved/i);
-    expect(reservedHotkeyReason("A")).toMatch(/typing/);
+    expect(reservedHotkeyReason("Control+C")).toBeNull();
+    expect(reservedHotkeyReason("Command+Space")).toBeNull();
+    expect(reservedHotkeyReason("A")).toBeNull();
     expect(reservedHotkeyReason("Control+Shift+Space")).toBeNull();
   });
 
