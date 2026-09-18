@@ -186,6 +186,13 @@ function downloadedModels(
   );
 }
 
+function selectedMicrophone(saved: string | null | undefined, devices: AudioDevice[]): string {
+  if (!saved) {
+    return "";
+  }
+  return devices.some((device) => device.name === saved) ? saved : "";
+}
+
 function sherpaSpeechModelId(engine: string | undefined): string | null {
   switch (engine) {
     case "gigaam":
@@ -979,7 +986,7 @@ export function App() {
               {t.microphone}
               <select
                 className="mt-1 w-full rounded-lg bg-paper/10 p-2 text-paper"
-                value={settings.microphone_name ?? ""}
+                value={selectedMicrophone(settings.microphone_name, microphones)}
                 onChange={(e) =>
                   void save({
                     microphone_name: e.target.value === "" ? null : e.target.value,
@@ -1340,7 +1347,11 @@ export function App() {
                   void save({
                     stt_engine: engine,
                     active_stt_model: matching && modelId ? modelId : whisperFallback,
-                    ...(engine === "tone" ? { hands_free: false } : {}),
+                    ...(engine === "tone"
+                      ? { hands_free: false }
+                      : engine === "whisper"
+                        ? { hands_free: true }
+                        : {}),
                   });
                 }}
               >
@@ -1531,7 +1542,7 @@ export function App() {
               {t.microphone}
               <select
                 className="mt-1 w-full rounded-lg bg-paper/10 p-2"
-                value={settings.microphone_name ?? ""}
+                value={selectedMicrophone(settings.microphone_name, microphones)}
                 onChange={(e) =>
                   void save({
                     microphone_name: e.target.value === "" ? null : e.target.value,
@@ -1772,9 +1783,11 @@ export function App() {
               />
               {t.handsFree}
             </label>
-            {settings.stt_engine === "tone" && (
+            {settings.stt_engine === "tone" ? (
               <p className="-mt-2 text-xs text-paper/60">{t.handsFreeTone}</p>
-            )}
+            ) : settings.stt_engine === "whisper" ? (
+              <p className="-mt-2 text-xs text-paper/60">{t.handsFreeWhisper}</p>
+            ) : null}
             <label className="flex items-center gap-2 text-sm">
               <input
                 type="checkbox"

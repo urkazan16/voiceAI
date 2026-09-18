@@ -150,7 +150,8 @@ const EN = {
   speechEngine: "Speech engine",
   speechEngineHelp:
     "Choose the installed speech engine. GigaAM is optimized for Russian; Parakeet is multilingual and fast on CPU; T-One streams Russian speech for long dictation. Download the corresponding model in Models first.",
-  speechEngineWhisper: "Whisper — multilingual, reliable baseline.",
+  speechEngineWhisper:
+    "Whisper — multilingual baseline for long dictation. Enable Hands-free: press the talk key to start, press again to stop. One take is up to 20 minutes and is decoded in 30-second windows.",
   speechEngineGigaam:
     "GigaAM — Russian-focused model, usually faster and better for Russian speech.",
   speechEngineParakeet: "Parakeet — fast multilingual CPU model, including Russian.",
@@ -206,6 +207,8 @@ const EN = {
   handsFree:
     "Hands-free (press to start, press again to stop). Hold-to-talk stays the default when this is off.",
   handsFreeTone: "T-One finalizes on hotkey release, so hands-free is unavailable in this mode.",
+  handsFreeWhisper:
+    "Needed for long Whisper dictation: first press starts the mic, second press transcribes and inserts. Uncheck to go back to hold-to-talk.",
   spokenDigits: "Write spoken numbers as digits",
   dateFormat: "Date format",
   acceleration: "Acceleration",
@@ -352,7 +355,8 @@ const RU: typeof EN = {
   speechEngine: "Движок распознавания",
   speechEngineHelp:
     "Выберите установленный движок. GigaAM оптимизирован для русского, Parakeet — мультиязычная быстрая модель для CPU, T-One распознаёт русскую речь потоком для долгой диктовки. Сначала скачайте нужную модель в разделе «Модели».",
-  speechEngineWhisper: "Whisper — надёжная базовая мультиязычная модель; runtime уже активен.",
+  speechEngineWhisper:
+    "Whisper — длинная диктовка без стрима: включите Hands-free, нажмите хоткей, говорите, нажмите снова. Одна реплика до 20 минут, распознавание окнами по 30 с.",
   speechEngineGigaam:
     "GigaAM — модель для русского языка, обычно быстрее и точнее на русской речи.",
   speechEngineParakeet: "Parakeet — быстрая мультиязычная модель для CPU, включая русский язык.",
@@ -408,6 +412,8 @@ const RU: typeof EN = {
     "Hands-free (нажали — запись, нажали снова — стоп). Если выключено, работает удержание хоткея.",
   handsFreeTone:
     "T-One завершает фразу при отпускании хоткея, поэтому hands-free в этом режиме недоступен.",
+  handsFreeWhisper:
+    "Нужен для длинной диктовки Whisper: первое нажатие хоткея включает микрофон, второе — распознаёт и вставляет текст. Снимите галочку, чтобы снова удерживать клавишу.",
   spokenDigits: "Писать произнесённые числа цифрами",
   dateFormat: "Формат даты",
   acceleration: "Ускорение",

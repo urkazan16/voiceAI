@@ -8,8 +8,10 @@ use std::sync::{mpsc, Arc, Mutex, OnceLock};
 use std::time::Duration;
 
 /// Hands-free can leave the mic open; stop appending after this many seconds
-/// of native samples so RAM cannot grow without bound.
-pub const MAX_CAPTURE_SECS: u32 = 120;
+/// of native samples so RAM cannot grow without bound. Whisper decodes in
+/// 30-second windows, so a long dictation session is limited here, not by
+/// the encoder.
+pub const MAX_CAPTURE_SECS: u32 = 20 * 60;
 /// At a typical 20 ms callback this retains about two minutes of audio while
 /// the streaming decoder catches up. The queue is bounded so a 45 minute
 /// session cannot grow RAM indefinitely.
@@ -161,6 +163,20 @@ impl CaptureHub {
                                     max_samples,
                                     rolling,
                                 );
+                            }
+                            if result.is_err() {
+                                if let Some(wanted) = name.as_deref() {
+                                    crate::journal::log(
+                                        "microphone_fallback",
+                                        &format!("{wanted} failed; using the OS default input"),
+                                    );
+                                    result = start_capture_with_tap(
+                                        None,
+                                        tap.clone(),
+                                        max_samples,
+                                        rolling,
+                                    );
+                                }
                             }
                             let result = result.map(|capture| {
                                 live = Some(capture);
@@ -500,11 +516,25 @@ fn map_capture_error(message: String) -> LfError {
 
 fn select_input_device(host: &cpal::Host, preferred_name: Option<&str>) -> LfResult<cpal::Device> {
     use cpal::traits::{DeviceTrait, HostTrait};
+    let default = host.default_input_device();
+    let default_name = default.as_ref().and_then(|device| device.name().ok());
     if let Some(name) = preferred_name {
-        if let Ok(mut devices) = host.input_devices() {
-            if let Some(device) = devices.find(|d| d.name().ok().as_deref() == Some(name)) {
+        if default_name.as_deref() == Some(name) {
+            if let Some(device) = default {
                 return Ok(device);
             }
+        }
+        if let Ok(devices) = host.input_devices() {
+            let matches: Vec<_> = devices
+                .filter(|d| d.name().ok().as_deref() == Some(name))
+                .collect();
+            if let Some(device) = matches.into_iter().next() {
+                return Ok(device);
+            }
+            crate::journal::log(
+                "microphone_missing",
+                &format!("{name} is not connected; using the OS default input"),
+            );
         }
     }
     host.default_input_device()
@@ -555,8 +585,14 @@ mod tests {
 
     #[test]
     fn max_capture_samples_is_rate_times_channels_times_cap() {
-        assert_eq!(max_capture_samples(16_000, 1), 16_000 * 120);
-        assert_eq!(max_capture_samples(48_000, 2), 48_000 * 2 * 120);
+        assert_eq!(
+            max_capture_samples(16_000, 1),
+            16_000 * MAX_CAPTURE_SECS as usize
+        );
+        assert_eq!(
+            max_capture_samples(48_000, 2),
+            48_000 * 2 * MAX_CAPTURE_SECS as usize
+        );
     }
 
     #[test]
@@ -573,5 +609,12 @@ mod tests {
         let gone = map_capture_error("device disconnected".into());
         assert_eq!(gone.code(), "DEVICE_UNAVAILABLE");
         assert!(gone.to_string().to_lowercase().contains("disconnect"));
+    }
+
+    #[test]
+    fn named_microphone_falls_back_to_os_default_when_it_will_not_open() {
+        let src = include_str!("audio.rs");
+        assert!(src.contains("microphone_fallback"));
+        assert!(src.contains("using the OS default input"));
     }
 }
