@@ -1,5 +1,6 @@
 {
   "bundle": {
+    "resources": ["resources/model-catalog.json", "sherpa-onnx-c-api.dll", "onnxruntime.dll"],
     "windows": {
       "nsis": {
         "installMode": "currentUser"

@@ -646,4 +646,22 @@ mod tests {
             "the lib harness is not an [[test]] target; rustc-link-arg-tests would miss it"
         );
     }
+
+    #[test]
+    fn windows_installer_ships_sherpa_shared_dlls_next_to_the_exe() {
+        let build = include_str!("../build.rs");
+        let windows = include_str!("../tauri.windows.conf.json");
+        assert!(
+            build.contains("bundle_sherpa_windows_dlls"),
+            "shared sherpa-onnx must copy DLLs out of target/ before NSIS runs"
+        );
+        assert!(
+            windows.contains("sherpa-onnx-c-api.dll"),
+            "NSIS only includes files listed in bundle.resources"
+        );
+        assert!(
+            windows.contains("onnxruntime.dll"),
+            "sherpa-onnx-c-api.dll depends on onnxruntime.dll at process start"
+        );
+    }
 }

@@ -327,7 +327,11 @@ fn worker() -> Sender<WorkerCmd> {
                             let _ = done.send(());
                         }
                         WorkerCmd::Preload(path) => {
-                            let _ = ensure_loaded(&mut loaded, path);
+                            if crate::dictation::tone_engine_active() {
+                                loaded = None;
+                            } else {
+                                let _ = ensure_loaded(&mut loaded, path);
+                            }
                         }
                         WorkerCmd::Transcribe(job) => {
                             let result =
@@ -479,6 +483,12 @@ fn decode_loaded(
 }
 
 fn ensure_loaded(loaded: &mut Option<Loaded>, model_path: PathBuf) -> LfResult<()> {
+    if crate::dictation::tone_engine_active() {
+        *loaded = None;
+        return Err(LfError::RuntimeUnsupported(
+            "Whisper is paused while T-One streaming is active.".into(),
+        ));
+    }
     let use_gpu = USE_GPU.load(Ordering::Relaxed) && gpu_compiled();
     let needs_reload = match loaded {
         Some(l) => l.path != model_path || l.gpu != use_gpu,

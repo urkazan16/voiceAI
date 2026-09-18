@@ -62,6 +62,7 @@ fn commit_settings(
         crate::autostart::apply(next_autostart)?;
     }
     eng.settings = settings;
+    crate::dictation::remember_stt_engine(&eng.settings.stt_engine);
     if let Err(err) = eng.persist() {
         if previous_autostart != next_autostart {
             let _ = crate::autostart::apply(previous_autostart);

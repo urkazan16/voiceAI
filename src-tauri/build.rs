@@ -42,6 +42,7 @@ fn main() {
             .compile("localflow_speech");
     }
 
+    bundle_sherpa_windows_dlls();
     tauri_build::try_build(tauri_build::Attributes::new()).expect("tauri build");
     embed_comctl32_v6_for_windows_tests();
 }
@@ -54,6 +55,62 @@ fn main() {
 /// `rustc-link-arg` (not `-tests`) is required: the lib unit-test harness is
 /// not an `[[test]]` target. The extra dependency is merged into the shipped
 /// exe, which already declares v6.
+/// Windows links sherpa-onnx as `sherpa-onnx-c-api.dll` + `onnxruntime.dll`.
+/// The crate copies those next to the Cargo profile exe (`cargo run` works),
+/// but the NSIS installer only ships files listed in `bundle.resources`.
+/// Flatten them into `src-tauri/` so they sit beside `localflow.exe` after install.
+fn bundle_sherpa_windows_dlls() {
+    let windows = std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows");
+    if !windows {
+        return;
+    }
+    println!("cargo:rerun-if-env-changed=OUT_DIR");
+    println!("cargo:rerun-if-env-changed=CARGO_MANIFEST_DIR");
+    let Ok(out_dir) = std::env::var("OUT_DIR") else {
+        return;
+    };
+    let out_dir = std::path::PathBuf::from(out_dir);
+    let Some(profile_dir) = out_dir.ancestors().find(|path| {
+        matches!(
+            path.file_name().and_then(|name| name.to_str()),
+            Some("debug" | "release")
+        )
+    }) else {
+        return;
+    };
+    let Ok(manifest) = std::env::var("CARGO_MANIFEST_DIR") else {
+        return;
+    };
+    let dest_dir = std::path::PathBuf::from(manifest);
+    let mut copied = 0usize;
+    if let Ok(entries) = std::fs::read_dir(profile_dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+                continue;
+            };
+            let lower = name.to_ascii_lowercase();
+            if !lower.ends_with(".dll") {
+                continue;
+            }
+            if !(lower.contains("sherpa") || lower.contains("onnxruntime")) {
+                continue;
+            }
+            let dest = dest_dir.join(name);
+            if std::fs::copy(&path, &dest).is_ok() {
+                copied += 1;
+                println!("cargo:rerun-if-changed={}", path.display());
+            }
+        }
+    }
+    if copied == 0 {
+        println!(
+            "cargo:warning=No sherpa-onnx Windows DLLs found in {} to bundle next to localflow.exe",
+            profile_dir.display()
+        );
+    }
+}
+
 fn embed_comctl32_v6_for_windows_tests() {
     let windows = std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows");
     if !windows {

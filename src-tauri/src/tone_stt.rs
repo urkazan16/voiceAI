@@ -12,10 +12,15 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, OnceLock};
 
-/// Official T-One CTC models are trained at 8 kHz. Feeding 16 kHz as if it
-/// were the feature rate produces empty or garbled transcripts.
+/// Official T-One CTC models are trained at 8 kHz. Microphone PCM is 16 kHz
+/// and is resampled by sherpa when `accept_waveform` is given that rate.
 const TONE_SAMPLE_RATE: i32 = 8_000;
-const PCM_SAMPLE_RATE: u32 = 16_000;
+const PCM_SAMPLE_RATE: i32 = 16_000;
+/// Official `online-t-one-ctc-decode-files.py`: 0.3 s lead-in, 0.66 s tail.
+const LEFT_PAD_MS: u32 = 300;
+const TAIL_PAD_MS: u32 = 660;
+const DECODE_STEPS_PER_CHUNK: u32 = 8;
+const DECODE_STEPS_FINAL: u32 = 64;
 
 struct Loaded {
     path: PathBuf,
@@ -146,23 +151,81 @@ fn worker() -> Sender<WorkerCmd> {
     .clone()
 }
 
+fn silence_pcm(ms: u32) -> Vec<f32> {
+    let n = (PCM_SAMPLE_RATE as u32).saturating_mul(ms) / 1000;
+    vec![0.0; n as usize]
+}
+
 fn run_once(loaded: &mut Option<Loaded>, model_path: PathBuf, pcm: &[f32]) -> LfResult<String> {
     ensure_loaded(loaded, model_path)?;
     let recognizer = &loaded.as_ref().expect("T-One recognizer").recognizer;
     let stream = recognizer.create_stream();
-    stream.accept_waveform(TONE_SAMPLE_RATE, &pcm_for_tone(pcm));
+    let idle = AtomicBool::new(false);
+    stream.accept_waveform(PCM_SAMPLE_RATE, &silence_pcm(LEFT_PAD_MS));
+    stream.accept_waveform(PCM_SAMPLE_RATE, pcm);
+    stream.accept_waveform(PCM_SAMPLE_RATE, &silence_pcm(TAIL_PAD_MS));
     stream.input_finished();
-    while recognizer.is_ready(&stream) {
-        recognizer.decode(&stream);
-    }
+    decode_ready(recognizer, &stream, &idle, DECODE_STEPS_FINAL);
     Ok(recognizer
         .get_result(&stream)
         .map(|result| result.text)
         .unwrap_or_default())
 }
 
-fn pcm_for_tone(pcm_16k: &[f32]) -> Vec<f32> {
-    crate::audio::resample_linear(pcm_16k, PCM_SAMPLE_RATE, TONE_SAMPLE_RATE as u32)
+fn decode_ready(
+    recognizer: &OnlineRecognizer,
+    stream: &sherpa_onnx::OnlineStream,
+    cancel: &AtomicBool,
+    max_steps: u32,
+) {
+    let mut steps = 0u32;
+    while recognizer.is_ready(stream) {
+        if cancel.load(Ordering::Relaxed) {
+            return;
+        }
+        if steps >= max_steps {
+            crate::journal::log(
+                "tone_decode_cap",
+                &format!("stopped after {max_steps} decode steps"),
+            );
+            return;
+        }
+        recognizer.decode(stream);
+        steps += 1;
+        if recognizer.is_endpoint(stream) {
+            return;
+        }
+    }
+}
+
+fn handle_endpoint(
+    recognizer: &OnlineRecognizer,
+    stream: &sherpa_onnx::OnlineStream,
+    events: &Sender<StreamEvent>,
+    last_partial: &mut String,
+    duration_samples: u64,
+) {
+    if recognizer.is_endpoint(stream) {
+        emit_result(
+            recognizer,
+            stream,
+            events,
+            last_partial,
+            duration_samples,
+            true,
+        );
+        recognizer.reset(stream);
+        last_partial.clear();
+    } else {
+        emit_result(
+            recognizer,
+            stream,
+            events,
+            last_partial,
+            duration_samples,
+            false,
+        );
+    }
 }
 
 fn run_session(loaded: &mut Option<Loaded>, job: SessionJob) {
@@ -173,48 +236,42 @@ fn run_session(loaded: &mut Option<Loaded>, job: SessionJob) {
         let stream = recognizer.create_stream();
         let mut duration_samples = 0u64;
         let mut last_partial = String::new();
+        stream.accept_waveform(PCM_SAMPLE_RATE, &silence_pcm(LEFT_PAD_MS));
 
-        while let Ok(chunk) = job.audio.recv() {
+        loop {
             if job.cancellation.load(Ordering::Relaxed) {
                 return Err(LfError::Other("cancelled".into()));
             }
-            let pcm = crate::audio::to_whisper_pcm(&chunk);
-            duration_samples = duration_samples.saturating_add(pcm.len() as u64);
-            let tone_pcm = pcm_for_tone(&pcm);
-            stream.accept_waveform(TONE_SAMPLE_RATE, &tone_pcm);
-            while recognizer.is_ready(&stream) {
-                recognizer.decode(&stream);
-            }
-            if recognizer.is_endpoint(&stream) {
-                emit_result(
-                    recognizer,
-                    &stream,
-                    &job.events,
-                    &mut last_partial,
-                    duration_samples,
-                    true,
-                );
-                recognizer.reset(&stream);
-                last_partial.clear();
-            } else {
-                emit_result(
-                    recognizer,
-                    &stream,
-                    &job.events,
-                    &mut last_partial,
-                    duration_samples,
-                    false,
-                );
+            match job.audio.recv_timeout(std::time::Duration::from_millis(40)) {
+                Ok(chunk) => {
+                    let pcm = crate::audio::to_whisper_pcm(&chunk);
+                    duration_samples = duration_samples.saturating_add(pcm.len() as u64);
+                    stream.accept_waveform(PCM_SAMPLE_RATE, &pcm);
+                    decode_ready(
+                        recognizer,
+                        &stream,
+                        &job.cancellation,
+                        DECODE_STEPS_PER_CHUNK,
+                    );
+                    handle_endpoint(
+                        recognizer,
+                        &stream,
+                        &job.events,
+                        &mut last_partial,
+                        duration_samples,
+                    );
+                }
+                Err(mpsc::RecvTimeoutError::Timeout) => {}
+                Err(mpsc::RecvTimeoutError::Disconnected) => break,
             }
         }
         if job.cancellation.load(Ordering::Relaxed) {
             return Err(LfError::Other("cancelled".into()));
         }
         crate::journal::log("tone_audio_closed", "input closed; final decode started");
+        stream.accept_waveform(PCM_SAMPLE_RATE, &silence_pcm(TAIL_PAD_MS));
         stream.input_finished();
-        while recognizer.is_ready(&stream) {
-            recognizer.decode(&stream);
-        }
+        decode_ready(recognizer, &stream, &job.cancellation, DECODE_STEPS_FINAL);
         emit_result(
             recognizer,
             &stream,
@@ -295,7 +352,8 @@ fn ensure_loaded(loaded: &mut Option<Loaded>, model_path: PathBuf) -> LfResult<(
     config.feat_config.sample_rate = TONE_SAMPLE_RATE;
     config.model_config.t_one_ctc.model = Some(model_path.to_string_lossy().into_owned());
     config.model_config.tokens = Some(tokens.to_string_lossy().into_owned());
-    config.model_config.num_threads = num_cpus::get_physical().clamp(1, 8) as i32;
+    // T-One's streaming state is large; extra ONNX threads have hung decode.
+    config.model_config.num_threads = 1;
     config.model_config.provider = Some("cpu".into());
     config.decoding_method = Some("greedy_search".into());
     config.enable_endpoint = true;
@@ -332,8 +390,13 @@ mod tests {
             src.contains("feat_config.sample_rate = TONE_SAMPLE_RATE"),
             "T-One CTC expects 8 kHz features"
         );
-        assert!(src.contains("pcm_for_tone"), "16 kHz capture must be resampled");
-        assert!(src.contains("accept_waveform(TONE_SAMPLE_RATE"));
+        assert!(
+            src.contains("accept_waveform(PCM_SAMPLE_RATE"),
+            "16 kHz capture is passed through; sherpa resamples to 8 kHz"
+        );
+        assert!(src.contains("LEFT_PAD_MS"), "T-One needs 300 ms lead-in");
+        assert!(src.contains("TAIL_PAD_MS"), "T-One needs 660 ms tail padding");
+        assert!(src.contains("DECODE_STEPS_FINAL"), "is_ready must be capped");
     }
 
     #[test]

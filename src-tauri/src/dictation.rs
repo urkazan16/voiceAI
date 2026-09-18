@@ -151,6 +151,10 @@ pub fn remember_stt_engine(engine: &str) {
     TONE_MODE.store(engine.trim().eq_ignore_ascii_case("tone"), Ordering::Relaxed);
 }
 
+pub fn tone_engine_active() -> bool {
+    TONE_MODE.load(Ordering::Relaxed)
+}
+
 fn cached_hands_free() -> bool {
     HANDS_FREE.load(Ordering::Relaxed)
 }
