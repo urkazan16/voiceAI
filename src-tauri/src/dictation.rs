@@ -148,7 +148,10 @@ pub fn remember_hands_free(enabled: bool) {
 }
 
 pub fn remember_stt_engine(engine: &str) {
-    TONE_MODE.store(engine.trim().eq_ignore_ascii_case("tone"), Ordering::Relaxed);
+    TONE_MODE.store(
+        engine.trim().eq_ignore_ascii_case("tone"),
+        Ordering::Relaxed,
+    );
 }
 
 pub fn tone_engine_active() -> bool {

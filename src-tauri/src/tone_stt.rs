@@ -395,8 +395,14 @@ mod tests {
             "16 kHz capture is passed through; sherpa resamples to 8 kHz"
         );
         assert!(src.contains("LEFT_PAD_MS"), "T-One needs 300 ms lead-in");
-        assert!(src.contains("TAIL_PAD_MS"), "T-One needs 660 ms tail padding");
-        assert!(src.contains("DECODE_STEPS_FINAL"), "is_ready must be capped");
+        assert!(
+            src.contains("TAIL_PAD_MS"),
+            "T-One needs 660 ms tail padding"
+        );
+        assert!(
+            src.contains("DECODE_STEPS_FINAL"),
+            "is_ready must be capped"
+        );
     }
 
     #[test]

@@ -139,8 +139,10 @@ mod tests {
 
     #[test]
     fn native_stt_without_path_names_the_selected_engine() {
-        let mut options = DecodeOptions::default();
-        options.stt_engine = "tone".into();
+        let options = DecodeOptions {
+            stt_engine: "tone".into(),
+            ..DecodeOptions::default()
+        };
         let err = NativeStt
             .transcribe(&[0.1; 800], None, "ru", &options)
             .unwrap_err();

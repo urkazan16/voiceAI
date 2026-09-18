@@ -30,6 +30,7 @@
     "download:stt": "node scripts/run-with-toolchain.mjs cargo run --manifest-path src-tauri/Cargo.toml --quiet -- download",
     "measure:block0": "bash scripts/block0-measure.sh",
     "check": "npm run check:gate && npm run check:rust",
+    "check:ci": "npm run check:js && npm run check:rust && npm run test:all && npm run check:license && npm run check:security",
     "check:js": "tsc --noEmit && eslint . && prettier --check .",
     "check:license": "npm run license:check && npm run uniqueness:check",
     "check:security": "npm audit --omit=dev --audit-level=high",

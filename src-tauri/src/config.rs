@@ -503,7 +503,10 @@ mod tests {
             ..AppSettings::default()
         };
         settings.apply_shipped_stt_default();
-        assert_eq!(settings.active_stt_model.as_deref(), Some(DEFAULT_STT_MODEL));
+        assert_eq!(
+            settings.active_stt_model.as_deref(),
+            Some(DEFAULT_STT_MODEL)
+        );
         assert_eq!(
             settings.active_llm_model.as_deref(),
             Some(DEFAULT_LLM_MODEL)

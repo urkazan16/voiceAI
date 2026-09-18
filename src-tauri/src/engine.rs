@@ -1307,7 +1307,8 @@ mod tests {
         assert!(!body.contains("ClipboardInjector"));
         assert!(body.contains("file_verbatim = true"));
         assert!(
-            include_str!("engine.rs").contains("options.stt_engine = self.settings.stt_engine.clone()"),
+            include_str!("engine.rs")
+                .contains("options.stt_engine = self.settings.stt_engine.clone()"),
             "Repeat/file decode must keep GigaAM/Parakeet/T-One instead of defaulting to Whisper"
         );
     }
