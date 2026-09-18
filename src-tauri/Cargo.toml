@@ -59,8 +59,10 @@ futures-util = "0.3.31"
 regex = "1.11.1"
 libc = "0.2"
 whisper-rs = { version = "0.16.0", default-features = false }
-sherpa-onnx = "1.13.8"
 num_cpus = "1.16"
+
+[target.'cfg(not(windows))'.dependencies]
+sherpa-onnx = { version = "1.13.8", default-features = false, features = ["static"] }
 
 # Metal is for Apple Silicon. whisper.cpp's Metal path hangs or fails on Intel
 # GPUs (and when the x64 .dmg is cross-compiled on an arm64 runner). Intel
@@ -69,6 +71,7 @@ num_cpus = "1.16"
 whisper-rs = { version = "0.16.0", default-features = false, features = ["metal"] }
 
 [target.'cfg(windows)'.dependencies]
+sherpa-onnx = { version = "1.13.8", default-features = false, features = ["shared"] }
 windows-sys = { version = "0.59.0", features = [
     "Win32_Foundation",
     "Win32_Graphics_Gdi",

@@ -43,9 +43,6 @@ jobs:
         shell: bash
         run: |
           echo 'LIBCLANG_PATH=C:\Program Files\LLVM\lib' >> "$GITHUB_ENV"
-          # sherpa-onnx's Windows prebuilt archive uses /MT. Build whisper.cpp
-          # with the same CRT to avoid MSVC LNK2038 RuntimeLibrary conflicts.
-          echo 'CMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded' >> "$GITHUB_ENV"
       - uses: actions/setup-node@v4
         with:
           node-version-file: .nvmrc
@@ -77,7 +74,6 @@ jobs:
         shell: bash
         run: |
           echo 'LIBCLANG_PATH=C:\Program Files\LLVM\lib' >> "$GITHUB_ENV"
-          echo 'CMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded' >> "$GITHUB_ENV"
       - uses: actions/setup-node@v4
         with:
           node-version-file: .nvmrc
@@ -160,7 +156,6 @@ jobs:
         shell: bash
         run: |
           echo 'LIBCLANG_PATH=C:\Program Files\LLVM\lib' >> "$GITHUB_ENV"
-          echo 'CMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded' >> "$GITHUB_ENV"
       - uses: actions/setup-node@v4
         with:
           node-version-file: .nvmrc
@@ -243,7 +238,6 @@ jobs:
         shell: bash
         run: |
           echo 'LIBCLANG_PATH=C:\Program Files\LLVM\lib' >> "$GITHUB_ENV"
-          echo 'CMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded' >> "$GITHUB_ENV"
       - uses: actions/setup-node@v4
         with:
           node-version-file: .nvmrc
