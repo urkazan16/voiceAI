@@ -454,6 +454,29 @@ impl AppEngine {
         injector: &dyn TextInjector,
         pcm: &[f32],
     ) -> LfResult<PipelineOutput> {
+        self.run_text_pipeline_with_prior_elapsed(
+            transcript,
+            stt,
+            llm,
+            injector,
+            pcm,
+            std::time::Duration::ZERO,
+        )
+    }
+
+    /// Runs formatting/insertion while preserving time already spent in an
+    /// upstream recognizer. Live dictation performs STT outside the engine lock,
+    /// so without this offset history used to report only the final few
+    /// milliseconds of formatting instead of user-visible processing latency.
+    pub fn run_text_pipeline_with_prior_elapsed(
+        &mut self,
+        transcript: &str,
+        stt: &dyn SpeechToText,
+        llm: &dyn LanguageModel,
+        injector: &dyn TextInjector,
+        pcm: &[f32],
+        prior_elapsed: std::time::Duration,
+    ) -> LfResult<PipelineOutput> {
         let started = Instant::now();
         self.snapshot.reset();
         self.snapshot.mode = self.settings.mode;
@@ -687,7 +710,7 @@ impl AppEngine {
             application: resolved.app_name.clone(),
             profile: resolved.profile_name.clone(),
             model: self.settings.active_stt_model.clone().unwrap_or_default(),
-            processing_time_ms: started.elapsed().as_millis() as u64,
+            processing_time_ms: prior_elapsed.saturating_add(started.elapsed()).as_millis() as u64,
             timecodes,
         };
         if self.settings.history_enabled {
@@ -1247,6 +1270,30 @@ mod tests {
     }
 
     #[test]
+    fn live_pipeline_history_includes_time_spent_before_formatting() {
+        let (_dir, mut eng) = engine();
+        let prior = std::time::Duration::from_millis(250);
+        eng.run_text_pipeline_with_prior_elapsed(
+            "привет",
+            &ScriptedStt {
+                transcript: "привет".into(),
+            },
+            &ScriptedLlm,
+            &MemoryInjector::default(),
+            &[],
+            prior,
+        )
+        .unwrap();
+        let history = eng.store.list_history().unwrap();
+        assert_eq!(history.len(), 1);
+        assert!(
+            history[0].processing_time_ms >= 250,
+            "upstream STT time disappeared from history: {} ms",
+            history[0].processing_time_ms
+        );
+    }
+
+    #[test]
     fn file_audio_pipeline_disables_clipboard_paste() {
         let body = include_str!("engine.rs")
             .split("pub fn process_file_audio")
@@ -1297,7 +1344,7 @@ mod tests {
     #[test]
     fn stt_does_not_eat_postprocess_budget() {
         let body = include_str!("engine.rs")
-            .split("pub fn run_text_pipeline")
+            .split("pub fn run_text_pipeline_with_prior_elapsed")
             .nth(1)
             .unwrap()
             .split("pub fn delete_history")

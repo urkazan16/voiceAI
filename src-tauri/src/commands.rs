@@ -126,8 +126,9 @@ pub fn save_settings(
     ensure_shortcut_parseable("Paste last", &settings.paste_last_hotkey)?;
     ensure_shortcut_parseable("Edit", &settings.edit_hotkey)?;
     let compute_changed;
+    let stt_changed;
     let compute;
-    let preload_path;
+    let preload;
     let previous_settings;
     {
         let mut eng = lock(&engine)?;
@@ -136,14 +137,16 @@ pub fn save_settings(
         compute_changed = eng.settings.compute_device != settings.compute_device;
         compute = settings.compute_device.clone();
         commit_settings(&mut eng, settings)?;
-        preload_path = (eng.settings.stt_engine == "whisper")
-            .then(|| eng.ready_model_path("stt"))
-            .flatten();
+        stt_changed = previous_settings.stt_engine != eng.settings.stt_engine
+            || previous_settings.active_stt_model != eng.settings.active_stt_model;
+        preload = eng
+            .ready_model_path("stt")
+            .map(|path| (eng.settings.stt_engine.clone(), path));
     }
     crate::whisper_stt::set_use_gpu(crate::whisper_stt::use_gpu_from_setting(&compute));
-    if compute_changed {
-        if let Some(path) = preload_path {
-            crate::whisper_stt::preload(path);
+    if compute_changed || stt_changed {
+        if let Some((stt_engine, path)) = preload {
+            preload_stt(&stt_engine, path);
         }
     }
     // The UI resumes capture asynchronously when a key is selected. If the
@@ -646,6 +649,19 @@ pub fn spawn_required_model_downloads(app: AppHandle, engine: SharedEngine) {
     spawn_vad_model_download(app, engine);
 }
 
+fn preload_stt(engine: &str, path: PathBuf) {
+    match engine.trim().to_ascii_lowercase().as_str() {
+        "gigaam" | "parakeet" => {
+            crate::whisper_stt::unload();
+            crate::sherpa_stt::preload(engine.to_string(), path);
+        }
+        _ => {
+            crate::sherpa_stt::unload();
+            crate::whisper_stt::preload(path);
+        }
+    }
+}
+
 /// Silero VAD is under 1 MB and lets whisper.cpp encode only speech. Fetch it
 /// once next to the speech model; dictation works without it in the meantime.
 fn spawn_vad_model_download(app: AppHandle, engine: SharedEngine) {
@@ -685,9 +701,10 @@ fn spawn_required_kind_download(app: AppHandle, engine: SharedEngine, kind: &'st
                 &eng.settings.compute_device,
             ));
             eng.ready_model_path(kind)
+                .map(|path| (eng.settings.stt_engine.clone(), path))
         });
-        if let Some(path) = ready {
-            crate::whisper_stt::preload(path);
+        if let Some((stt_engine, path)) = ready {
+            preload_stt(&stt_engine, path);
             return;
         }
         if skip_auto_model_download() {
@@ -782,8 +799,15 @@ async fn download_model_inner(
         let record = eng.catalog.get(&model_id)?.clone();
         (eng.model_path(&record), record.kind)
     };
-    if kind == "stt" && !matches!(model_id.as_str(), "gigaam-v3-ctc" | "parakeet-v3") {
-        crate::whisper_stt::preload(path.clone());
+    if kind == "stt" {
+        let stt_engine = if model_id == crate::config::stt_model_id_for_engine("gigaam") {
+            "gigaam"
+        } else if model_id == crate::config::stt_model_id_for_engine("parakeet") {
+            "parakeet"
+        } else {
+            "whisper"
+        };
+        preload_stt(stt_engine, path.clone());
     }
     Ok(path.display().to_string())
 }
@@ -826,8 +850,15 @@ pub async fn set_active_model(
             &eng.settings.compute_device,
         ));
     }
-    if kind == "stt" && !matches!(model_id.as_str(), "gigaam-v3-ctc" | "parakeet-v3") {
-        crate::whisper_stt::preload(path.clone());
+    if kind == "stt" {
+        let stt_engine = if model_id == crate::config::stt_model_id_for_engine("gigaam") {
+            "gigaam"
+        } else if model_id == crate::config::stt_model_id_for_engine("parakeet") {
+            "parakeet"
+        } else {
+            "whisper"
+        };
+        preload_stt(stt_engine, path.clone());
     }
     Ok(path.display().to_string())
 }
@@ -1348,6 +1379,7 @@ pub fn uninstall_localflow(
     keep_history: bool,
 ) -> Result<crate::uninstall::UninstallReport, CommandError> {
     crate::whisper_stt::unload();
+    crate::sherpa_stt::unload();
     lock(&engine)?.release_files_for_uninstall()?;
     crate::instance::release_gui_lock();
     let report = crate::uninstall::uninstall(keep_history)?;

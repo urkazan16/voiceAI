@@ -16,6 +16,8 @@ static CANCEL: AtomicBool = AtomicBool::new(false);
 static BUSY: AtomicBool = AtomicBool::new(false);
 static PRESS_AT: Mutex<Option<Instant>> = Mutex::new(None);
 static WORKER: OnceLock<Sender<DictationCmd>> = OnceLock::new();
+type AudioPersistJob = (std::path::PathBuf, bool, Vec<f32>);
+static AUDIO_WRITER: OnceLock<Sender<AudioPersistJob>> = OnceLock::new();
 static BOUND_HOTKEYS: Mutex<(String, String, String, String)> =
     Mutex::new((String::new(), String::new(), String::new(), String::new()));
 static MICROPHONE: Mutex<Option<String>> = Mutex::new(None);
@@ -683,6 +685,7 @@ fn discard_short_hold(app: &AppHandle, engine: &SharedEngine, capture: &SharedCa
 }
 
 fn finish_recording(app: &AppHandle, engine: &SharedEngine, capture: &SharedCapture) {
+    let processing_started = Instant::now();
     if let Ok(mut slot) = PRESS_AT.lock() {
         *slot = None;
     }
@@ -824,11 +827,6 @@ fn finish_recording(app: &AppHandle, engine: &SharedEngine, capture: &SharedCapt
                 &format!("{stt_engine} is unavailable; using Whisper"),
             );
         }
-        if keep_audio {
-            let _ = crate::media::write_wav_s16le_mono(&last_wav, 16_000, &pcm);
-        } else {
-            let _ = std::fs::remove_file(&last_wav);
-        }
         let Some(stt_path) = stt_path else {
             let model_id = if stt_engine.eq_ignore_ascii_case("whisper") {
                 engine
@@ -847,14 +845,16 @@ fn finish_recording(app: &AppHandle, engine: &SharedEngine, capture: &SharedCapt
             );
             return;
         };
-        let raw = match crate::stt::transcribe_with_paragraph_pauses(
+        let transcription = crate::stt::transcribe_with_paragraph_pauses(
             &NativeStt,
             &pcm,
             Some(&stt_path),
             &lang,
             cached_vad(),
             &decode_options,
-        ) {
+        );
+        persist_last_audio_async(last_wav, keep_audio, pcm);
+        let raw = match transcription {
             Ok(text) => crate::sanitize::strip_model_tags(&text),
             Err(err) => {
                 fail(
@@ -875,7 +875,14 @@ fn finish_recording(app: &AppHandle, engine: &SharedEngine, capture: &SharedCapt
         std::thread::spawn(move || {
             let mem = MemoryInjector::default();
             let result = match engine_for_pipe.lock() {
-                Ok(mut eng) => eng.run_text_pipeline(&raw, &NativeStt, &NativeLlm, &mem, &[]),
+                Ok(mut eng) => eng.run_text_pipeline_with_prior_elapsed(
+                    &raw,
+                    &NativeStt,
+                    &NativeLlm,
+                    &mem,
+                    &[],
+                    processing_started.elapsed(),
+                ),
                 Err(_) => Err(LfError::Other("engine lock poisoned".into())),
             };
             let paste = mem.last.lock().ok().and_then(|slot| slot.clone());
@@ -884,19 +891,16 @@ fn finish_recording(app: &AppHandle, engine: &SharedEngine, capture: &SharedCapt
         let (mut result, paste) =
             match rx.recv_timeout(Duration::from_millis(timeout_ms.max(1_000))) {
                 Ok(r) => r,
-                Err(_) => match rx.recv_timeout(Duration::from_secs(5)) {
-                    Ok(r) => r,
-                    Err(_) => {
-                        CANCEL.store(true, Ordering::Relaxed);
-                        fail(
-                            &app,
-                            &engine,
-                            "Post-processing timed out. Raise the timeout in Settings.",
-                            duration_ms,
-                        );
-                        return;
-                    }
-                },
+                Err(_) => {
+                    CANCEL.store(true, Ordering::Relaxed);
+                    fail(
+                        &app,
+                        &engine,
+                        "Post-processing timed out. Raise the timeout in Settings.",
+                        duration_ms,
+                    );
+                    return;
+                }
             };
         if CANCEL.load(Ordering::Relaxed)
             || matches!(&result, Err(LfError::Other(m)) if m == "cancelled")
@@ -1004,6 +1008,26 @@ fn finish_recording(app: &AppHandle, engine: &SharedEngine, capture: &SharedCapt
             ),
         }
     });
+}
+
+fn persist_last_audio_async(path: std::path::PathBuf, keep: bool, pcm: Vec<f32>) {
+    let writer = AUDIO_WRITER.get_or_init(|| {
+        let (tx, rx) = std::sync::mpsc::channel::<AudioPersistJob>();
+        std::thread::Builder::new()
+            .name("localflow-audio-writer".into())
+            .spawn(move || {
+                while let Ok((path, keep, pcm)) = rx.recv() {
+                    if keep {
+                        let _ = crate::media::write_wav_s16le_mono(&path, 16_000, &pcm);
+                    } else {
+                        let _ = std::fs::remove_file(path);
+                    }
+                }
+            })
+            .expect("start audio persistence worker");
+        tx
+    });
+    let _ = writer.send((path, keep, pcm));
 }
 
 fn emit_cancelled(app: &AppHandle, engine: &SharedEngine) {
@@ -1272,6 +1296,18 @@ mod tests {
         assert!(
             !window.contains("CANCEL.store(false"),
             "clearing CANCEL on timeout lets the orphan thread paste into the wrong field"
+        );
+        let receive = src
+            .split("let (mut result, paste)")
+            .nth(1)
+            .unwrap()
+            .split("if CANCEL.load")
+            .next()
+            .unwrap();
+        assert_eq!(
+            receive.matches("recv_timeout").count(),
+            1,
+            "the configured timeout must be one deadline, not timeout plus a hidden grace period"
         );
     }
 

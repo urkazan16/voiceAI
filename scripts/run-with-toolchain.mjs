@@ -13,9 +13,18 @@ if (args.length === 0) {
 }
 
 const [cmd, ...rest] = args;
-const result = spawnSync(cmd, rest, {
+// Passing an argument array through a shell makes paths containing spaces split
+// again (for example "Application Support/.../audio.wav"). Invoke executables
+// directly. Tauri's npm entry point is JavaScript, which also avoids the `.cmd`
+// launcher requirement on Windows.
+const executable = cmd === "tauri" ? process.execPath : cmd;
+const commandArgs =
+  cmd === "tauri"
+    ? [path.join(process.cwd(), "node_modules", "@tauri-apps", "cli", "tauri.js"), ...rest]
+    : rest;
+const result = spawnSync(executable, commandArgs, {
   stdio: "inherit",
   env: process.env,
-  shell: true,
+  shell: false,
 });
 process.exit(result.status ?? 1);
