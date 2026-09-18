@@ -97,6 +97,10 @@ if (!skipBuild) {
     }
   }
 
+  if (host === "win32") {
+    stageWindowsSherpaRuntime();
+  }
+
   // One compile: tauri build already runs cargo --release. --locked keeps CI
   // on Cargo.lock; --target is required when packaging Intel from Apple silicon.
   const bundles = host === "darwin" ? "app,dmg" : host === "win32" ? "nsis" : "deb,appimage";
@@ -168,6 +172,70 @@ function stableInstallerName(fileName, arch) {
   if (lower.endsWith(".deb")) return `LocalFlow-linux-${cpu}.deb`;
   if (lower.endsWith(".appimage")) return `LocalFlow-linux-${cpu}.AppImage`;
   return null;
+}
+
+function isSherpaRuntimeDll(name) {
+  const lower = name.toLowerCase();
+  return lower.endsWith(".dll") && (lower.includes("sherpa") || lower.includes("onnxruntime"));
+}
+
+function collectSherpaRuntimeDlls(dir, recursive, into, depth = 0) {
+  if (!existsSync(dir) || depth > 8) {
+    return;
+  }
+  for (const name of readdirSync(dir)) {
+    const from = path.join(dir, name);
+    let st;
+    try {
+      st = lstatSync(from);
+    } catch {
+      continue;
+    }
+    if (st.isDirectory()) {
+      if (recursive) {
+        collectSherpaRuntimeDlls(from, true, into, depth + 1);
+      }
+      continue;
+    }
+    if (isSherpaRuntimeDll(name)) {
+      into.set(name, from);
+    }
+  }
+}
+
+function stageWindowsSherpaRuntime() {
+  const cargoArgs = [
+    "build",
+    "--manifest-path",
+    "src-tauri/Cargo.toml",
+    "--release",
+    "--locked",
+    "--bin",
+    "localflow",
+  ];
+  if (cargoTarget) {
+    cargoArgs.push("--target", cargoTarget);
+  }
+  run("node", ["scripts/run-with-toolchain.mjs", "cargo", ...cargoArgs]);
+
+  const found = new Map();
+  collectSherpaRuntimeDlls(rustReleaseDir(), false, found);
+  collectSherpaRuntimeDlls(path.join(root, "src-tauri/target/sherpa-onnx-prebuilt"), true, found);
+  for (const required of ["sherpa-onnx-c-api.dll", "onnxruntime.dll"]) {
+    if (!found.has(required)) {
+      console.error(`missing Windows sherpa runtime DLL ${required} after the release compile`);
+      process.exit(1);
+    }
+  }
+
+  const runtimeDir = path.join(root, "src-tauri/resources/runtime");
+  mkdirSync(runtimeDir, { recursive: true });
+  const resources = ["resources/model-catalog.json"];
+  for (const [name, from] of found) {
+    copyFileSync(from, path.join(runtimeDir, name));
+    resources.push(`resources/runtime/${name}`);
+  }
+  process.env.TAURI_CONFIG = JSON.stringify({ bundle: { resources } });
 }
 
 /** GitHub-hosted macOS installers must be Developer ID signed and notarized. */

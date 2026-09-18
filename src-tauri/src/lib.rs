@@ -653,19 +653,20 @@ mod tests {
         let windows = include_str!("../tauri.windows.conf.json");
         assert!(
             build.contains("bundle_sherpa_windows_dlls"),
-            "shared sherpa-onnx must copy DLLs out of target/ before NSIS runs"
+            "shared sherpa-onnx must copy DLLs next to the profile exe when they exist"
         );
         assert!(
             build.contains("sherpa-onnx-prebuilt"),
-            "cold CI caches leave profile/*.dll empty; copy from the sherpa extract dir"
+            "copy from the sherpa extract dir after a release compile"
         );
         assert!(
-            windows.contains("sherpa-onnx-c-api.dll"),
-            "NSIS only includes files listed in bundle.resources"
+            !windows.contains("sherpa-onnx-c-api.dll"),
+            "tauri_build runs on cargo check before sherpa-onnx-sys extracts DLLs"
         );
+        let packager = include_str!("../../scripts/build-release.mjs");
         assert!(
-            windows.contains("onnxruntime.dll"),
-            "sherpa-onnx-c-api.dll depends on onnxruntime.dll at process start"
+            packager.contains("resources/runtime") && packager.contains("sherpa-onnx-c-api.dll"),
+            "NSIS must stage sherpa DLLs after the Windows release compile"
         );
     }
 }

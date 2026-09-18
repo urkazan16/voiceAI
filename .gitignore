@@ -6,6 +6,7 @@ src-tauri/native/build/
 src-tauri/sherpa-onnx-c-api.dll
 src-tauri/onnxruntime.dll
 src-tauri/onnxruntime_*.dll
+src-tauri/resources/runtime/*.dll
 src-tauri/gen/
 third_party/
 release-artifacts/

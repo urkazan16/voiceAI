@@ -56,11 +56,10 @@ fn main() {
 /// not an `[[test]]` target. The extra dependency is merged into the shipped
 /// exe, which already declares v6.
 /// Windows links sherpa-onnx as `sherpa-onnx-c-api.dll` + `onnxruntime.dll`.
-/// sherpa-onnx-sys extracts the shared archive under `target/sherpa-onnx-prebuilt`
-/// and may copy DLLs next to the profile exe. `tauri.windows.conf.json` lists
-/// those names as `bundle.resources`, so they must exist in `src-tauri/` before
-/// `tauri_build` runs — including on a cold CI cache where the profile folder
-/// is still empty.
+/// sherpa-onnx-sys may extract those under `target/sherpa-onnx-prebuilt` and
+/// copy them next to the profile exe. This crate's `build.rs` runs *before*
+/// that extract on `cargo check`, so missing DLLs are a warning, not a panic.
+/// NSIS picks them up from `scripts/build-release.mjs` after a release compile.
 fn bundle_sherpa_windows_dlls() {
     let windows = std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows");
     if !windows {
@@ -80,34 +79,14 @@ fn bundle_sherpa_windows_dlls() {
     }) else {
         return;
     };
-    let Ok(manifest) = std::env::var("CARGO_MANIFEST_DIR") else {
-        return;
-    };
-    let dest_dir = std::path::PathBuf::from(manifest);
-    copy_sherpa_runtime_dlls(profile_dir, &dest_dir, false);
-    copy_sherpa_runtime_dlls(&profile_dir.join("examples"), &dest_dir, false);
-    let mut searched = vec![profile_dir.display().to_string()];
+    copy_sherpa_runtime_dlls(profile_dir.join("examples").as_path(), profile_dir, false);
     if let Some(target_dir) = out_dir
         .ancestors()
         .find(|path| path.file_name().and_then(|name| name.to_str()) == Some("target"))
     {
         let prebuilt = target_dir.join("sherpa-onnx-prebuilt");
         println!("cargo:rerun-if-changed={}", prebuilt.display());
-        copy_sherpa_runtime_dlls(&prebuilt, &dest_dir, true);
-        searched.push(prebuilt.display().to_string());
-    }
-    let missing: Vec<_> = ["sherpa-onnx-c-api.dll", "onnxruntime.dll"]
-        .iter()
-        .copied()
-        .filter(|name| !dest_dir.join(name).is_file())
-        .collect();
-    if !missing.is_empty() {
-        panic!(
-            "Windows sherpa-onnx runtime DLLs missing ({}) after searching {}. \
-             sherpa-onnx-sys should extract them under target/sherpa-onnx-prebuilt.",
-            missing.join(", "),
-            searched.join(", ")
-        );
+        copy_sherpa_runtime_dlls(&prebuilt, profile_dir, true);
     }
 }
 
