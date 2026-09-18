@@ -358,7 +358,7 @@ async function call<T>(command: string, args?: Record<string, unknown>): Promise
 export const api = {
   getBuildInfo: () => call<BuildInfo>("get_build_info"),
   getSettings: () => call<AppSettings>("get_settings"),
-  saveSettings: (settings: AppSettings) => call<void>("save_settings", { settings }),
+  saveSettings: (settings: AppSettings) => call<AppSettings>("save_settings", { settings }),
   resetSettings: () => call<AppSettings>("reset_settings"),
   listModels: () => call<ModelRecord[]>("list_models"),
   listMicrophones: () => call<AudioDevice[]>("list_microphones"),
@@ -395,7 +395,8 @@ export const api = {
     call<PipelineOutput>("process_transcript", { transcript }),
   completeOnboarding: () => call<void>("complete_onboarding"),
   dictationStop: () => call<void>("dictation_stop"),
-  dictationCancel: () => call<void>("dictation_cancel"),
+  dictationCancel: (source: "bar_cancel" | "bar_dismiss" = "bar_cancel") =>
+    call<void>("dictation_cancel", { source }),
   getLastTranscript: () => call<PipelineOutput | null>("get_last_transcript"),
   copyLastTranscript: () => call<string>("copy_last_transcript"),
   pasteLastTranscript: () => call<string>("paste_last_transcript"),

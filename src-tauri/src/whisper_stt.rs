@@ -175,12 +175,24 @@ pub fn transcribe_wait(n_samples: usize) -> Duration {
 }
 
 pub const WINDOW_SAMPLES: usize = 16_000 * 30;
-/// Dictation used a 3 s overlap to hide window seams. Interview cleanup now
-/// stitches those seams in text, so long files step by a full 30 s window.
+/// Long-form file transcription steps by a full window. Dictation uses the
+/// smaller overlap below because it must preserve words at an utterance seam.
 pub const HOP_SAMPLES: usize = WINDOW_SAMPLES;
+/// A held hotkey recording can be longer than one Whisper encoder window.
+/// Keep a small overlap there so a word spoken across a 30-second boundary is
+/// decoded in a complete context. The text stitcher removes only a matching
+/// prefix, never a merely similar sentence.
+pub const DICTATION_OVERLAP_SAMPLES: usize = 16_000 * 2;
 
 pub fn window_ranges(len: usize) -> Vec<(usize, usize)> {
     window_ranges_with_hop(len, HOP_SAMPLES)
+}
+
+pub fn dictation_window_ranges(len: usize) -> Vec<(usize, usize)> {
+    window_ranges_with_hop(
+        len,
+        WINDOW_SAMPLES.saturating_sub(DICTATION_OVERLAP_SAMPLES),
+    )
 }
 
 pub fn window_ranges_with_hop(len: usize, hop: usize) -> Vec<(usize, usize)> {
@@ -348,7 +360,11 @@ fn run_job(
     options: &DecodeOptions,
 ) -> LfResult<String> {
     ensure_loaded(loaded, model_path)?;
-    let windows = window_ranges(pcm.len());
+    let windows = if options.long_form {
+        window_ranges(pcm.len())
+    } else {
+        dictation_window_ranges(pcm.len())
+    };
     CHUNK_COUNT.store(windows.len().max(1) as u32, Ordering::Relaxed);
     CHUNK_INDEX.store(0, Ordering::Relaxed);
     let mut texts: Vec<String> = Vec::new();
@@ -394,6 +410,14 @@ fn run_job(
                 }
                 continue;
             }
+            let stitched = crate::sanitize::strip_overlapping_prefix(prev, &trimmed);
+            if stitched.is_empty() {
+                note_inner_progress(100);
+                continue;
+            }
+            texts.push(stitched);
+            note_inner_progress(100);
+            continue;
         }
         for mut cue in window_cues {
             cue.start_ms = cue.start_ms.saturating_add(offset_ms);
@@ -714,6 +738,15 @@ mod tests {
                 (WINDOW_SAMPLES * 2, 16_000 * 90),
             ]
         );
+    }
+
+    #[test]
+    fn dictation_windows_overlap_at_the_thirty_second_seam() {
+        let windows = dictation_window_ranges(16_000 * 40);
+        assert_eq!(windows.len(), 2);
+        assert_eq!(windows[0], (0, WINDOW_SAMPLES));
+        assert_eq!(windows[1].0, 16_000 * 28);
+        assert_eq!(windows[1].1, 16_000 * 40);
     }
 
     #[test]

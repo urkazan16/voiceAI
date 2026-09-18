@@ -29,6 +29,15 @@ impl SpeechToText for NativeStt {
             ) {
                 return crate::sherpa_stt::transcribe(&options.stt_engine, path, pcm);
             }
+            if options.stt_engine.trim().eq_ignore_ascii_case("tone") {
+                return match crate::tone_stt::transcribe(path, pcm) {
+                    Ok(text) if !text.trim().is_empty() => Ok(text),
+                    Ok(_) => Err(LfError::Other(
+                        "No speech detected. Nothing was inserted.".into(),
+                    )),
+                    Err(err) => Err(err),
+                };
+            }
             match crate::whisper_stt::transcribe(
                 path,
                 pcm,
@@ -43,9 +52,18 @@ impl SpeechToText for NativeStt {
                 Err(err) => Err(err),
             }
         } else {
-            Err(LfError::ModelMissing(
-                "Whisper is not installed. Open Models and download the speech model.".into(),
-            ))
+            let engine = options.stt_engine.trim().to_ascii_lowercase();
+            let message = match engine.as_str() {
+                "tone" => {
+                    "T-One is not installed. Open Models and download T-One Streaming Russian."
+                }
+                "gigaam" => "GigaAM is not installed. Open Models and download GigaAM v3 CTC.",
+                "parakeet" => {
+                    "Parakeet is not installed. Open Models and download the Parakeet package."
+                }
+                _ => "Whisper is not installed. Open Models and download the speech model.",
+            };
+            Err(LfError::ModelMissing(message.into()))
         }
     }
 }
@@ -117,6 +135,16 @@ mod tests {
             .transcribe(&[0.1; 800], None, "ru", &DecodeOptions::default())
             .unwrap_err();
         assert_eq!(err.code(), "MODEL_MISSING");
+    }
+
+    #[test]
+    fn native_stt_without_path_names_the_selected_engine() {
+        let mut options = DecodeOptions::default();
+        options.stt_engine = "tone".into();
+        let err = NativeStt
+            .transcribe(&[0.1; 800], None, "ru", &options)
+            .unwrap_err();
+        assert!(err.to_string().to_lowercase().contains("t-one"), "{err}");
     }
 
     #[test]

@@ -138,7 +138,7 @@ export function Bar() {
               className="rounded-full border border-paper/30 px-3 py-1 text-xs"
               onClick={() => {
                 void api.clearLastTranscript();
-                void api.dictationCancel();
+                void api.dictationCancel("bar_dismiss");
               }}
             >
               {t.barDismiss}
@@ -147,7 +147,7 @@ export function Bar() {
         )}
         <button
           className="rounded-full border border-paper/30 px-3 py-1 text-xs"
-          onClick={() => void api.dictationCancel()}
+          onClick={() => void api.dictationCancel("bar_cancel")}
         >
           {t.barCancel}
         </button>

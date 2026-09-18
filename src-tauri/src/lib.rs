@@ -21,6 +21,7 @@ pub mod commands;
 pub mod config;
 pub mod cues;
 pub mod db;
+pub mod diagnostics;
 pub mod dictation;
 pub mod dictionary;
 pub mod disk;
@@ -54,6 +55,7 @@ pub mod snippets;
 pub mod spoken_tech;
 pub mod stt;
 pub mod textscan;
+pub mod tone_stt;
 pub mod uninstall;
 pub mod uttlog;
 pub mod vad;
@@ -61,14 +63,22 @@ pub mod whisper_stt;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    crate::diagnostics::startup();
     let paths = DataPaths::detect();
     if let Err(err) = instance::acquire_gui_lock(&paths) {
+        crate::diagnostics::error("startup_lock", &err.to_string());
         if !err.to_string().contains("(activated)") {
             instance::notify_already_running(&err.to_string());
         }
         std::process::exit(0);
     }
-    let engine = engine::AppEngine::open(paths).expect("open LocalFlow data directory");
+    let engine = match engine::AppEngine::open(paths) {
+        Ok(engine) => engine,
+        Err(err) => {
+            crate::diagnostics::error("startup", &format!("code={} detail={err}", err.code()));
+            std::process::exit(1);
+        }
+    };
     let shared: SharedEngine = Arc::new(Mutex::new(engine));
     let capture = audio::CaptureHub::spawn();
 
@@ -149,6 +159,14 @@ pub fn run() {
             commands::read_journal
         ])
         .setup(move |app| {
+            let permissions = crate::permissions::status();
+            crate::journal::log(
+                "permission_status",
+                &format!(
+                    "microphone_devices={} accessibility_trusted={}",
+                    permissions.microphone_device_count, permissions.accessibility_trusted
+                ),
+            );
             let show = MenuItem::with_id(app, "show", "Open LocalFlow", true, None::<&str>)?;
             let copy_last =
                 MenuItem::with_id(app, "copy-last", "Copy Last Transcript", true, None::<&str>)?;
@@ -179,7 +197,9 @@ pub fn run() {
                     "copy-last" => dictation::enqueue(dictation::DictationCmd::CopyLast),
                     "paste-last" => dictation::enqueue(dictation::DictationCmd::PasteLast),
                     "cancel-dictation" => {
-                        dictation::enqueue(dictation::DictationCmd::Cancel);
+                        dictation::enqueue(dictation::DictationCmd::Cancel(
+                            dictation::CancelSource::TrayMenu,
+                        ));
                     }
                     _ => {}
                 });
@@ -194,7 +214,9 @@ pub fn run() {
                         "copy-last" => dictation::enqueue(dictation::DictationCmd::CopyLast),
                         "paste-last" => dictation::enqueue(dictation::DictationCmd::PasteLast),
                         "cancel-dictation" => {
-                            dictation::enqueue(dictation::DictationCmd::Cancel);
+                            dictation::enqueue(dictation::DictationCmd::Cancel(
+                                dictation::CancelSource::TrayMenu,
+                            ));
                         }
                         _ => {}
                     })
@@ -210,6 +232,16 @@ pub fn run() {
             native_hotkey::set_app_handle(app.handle().clone());
             native_hotkey::start();
             dictation::start_worker(app.handle().clone(), shared.clone(), capture.clone());
+            let tone_model = shared.lock().ok().and_then(|eng| {
+                eng.settings
+                    .stt_engine
+                    .eq_ignore_ascii_case("tone")
+                    .then(|| eng.ready_model_path("stt"))
+                    .flatten()
+            });
+            if let Some(model) = tone_model {
+                crate::tone_stt::preload(model);
+            }
             commands::spawn_required_model_downloads(app.handle().clone(), shared.clone());
 
             app.handle().plugin(
@@ -223,7 +255,9 @@ pub fn run() {
                         let released =
                             event.state == tauri_plugin_global_shortcut::ShortcutState::Released;
                         if shortcut_matches(shortcut, "Escape") && pressed {
-                            dictation::enqueue(dictation::DictationCmd::Cancel);
+                            dictation::enqueue(dictation::DictationCmd::Cancel(
+                                dictation::CancelSource::EscapeShortcut,
+                            ));
                             return;
                         }
                         let (talk, copy, paste, edit) = dictation::bound_hotkeys();
@@ -393,21 +427,22 @@ fn shortcut_matches(event: &Shortcut, configured: &str) -> bool {
 }
 
 pub fn apply_shortcuts(app: &AppHandle, engine: &SharedEngine) -> Option<String> {
-    let (talk, copy, paste, edit, previous, hands_free, vad, mic, pending_err) = match engine.lock()
-    {
-        Ok(eng) => (
-            eng.settings.hotkey.clone(),
-            eng.settings.copy_last_hotkey.clone(),
-            eng.settings.paste_last_hotkey.clone(),
-            eng.settings.edit_hotkey.clone(),
-            eng.hotkey_registered.clone(),
-            eng.settings.hands_free,
-            eng.settings.vad_threshold,
-            eng.settings.microphone_name.clone(),
-            eng.hotkey_error.clone(),
-        ),
-        Err(_) => return Some("engine lock poisoned".into()),
-    };
+    let (talk, copy, paste, edit, previous, hands_free, vad, mic, stt_engine, pending_err) =
+        match engine.lock() {
+            Ok(eng) => (
+                eng.settings.hotkey.clone(),
+                eng.settings.copy_last_hotkey.clone(),
+                eng.settings.paste_last_hotkey.clone(),
+                eng.settings.edit_hotkey.clone(),
+                eng.hotkey_registered.clone(),
+                eng.settings.hands_free,
+                eng.settings.vad_threshold,
+                eng.settings.microphone_name.clone(),
+                eng.settings.stt_engine.clone(),
+                eng.hotkey_error.clone(),
+            ),
+            Err(_) => return Some("engine lock poisoned".into()),
+        };
     if SHORTCUT_CAPTURE.load(Ordering::Relaxed) {
         unregister_known_shortcuts(app, previous.as_deref(), &talk, &copy, &paste, &edit);
         return None;
@@ -415,6 +450,7 @@ pub fn apply_shortcuts(app: &AppHandle, engine: &SharedEngine) -> Option<String>
     dictation::remember_microphone(mic);
     dictation::remember_hands_free(hands_free);
     dictation::remember_vad(vad);
+    dictation::remember_stt_engine(&stt_engine);
     native_hotkey::configure(&talk);
     let already = dictation::bound_hotkeys();
     if previous.as_deref() == Some(talk.as_str())

@@ -43,6 +43,10 @@ fn journal_paths() -> Option<DataPaths> {
 }
 
 pub fn log(event: &str, detail: &str) {
+    // Mirror the same privacy-filtered metadata to `npm run tauri dev`.
+    // This makes a failed microphone, model or insertion operation visible
+    // immediately, while the rotated on-disk journal remains available too.
+    crate::diagnostics::event(event, detail);
     let Some(paths) = journal_paths() else {
         return;
     };

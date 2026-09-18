@@ -6,14 +6,17 @@ use crate::llm::NativeLlm;
 use crate::pipeline::PipelineState;
 use crate::stt::NativeStt;
 use serde::Serialize;
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Sender};
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock, Weak};
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter, Manager};
 
 static CANCEL: AtomicBool = AtomicBool::new(false);
-static BUSY: AtomicBool = AtomicBool::new(false);
+/// Number of active pipelines. T-One may briefly have a finishing phrase and
+/// the next captured phrase at once; a counter prevents the first listener
+/// from making the second one look idle.
+static BUSY: AtomicUsize = AtomicUsize::new(0);
 static PRESS_AT: Mutex<Option<Instant>> = Mutex::new(None);
 static WORKER: OnceLock<Sender<DictationCmd>> = OnceLock::new();
 type AudioPersistJob = (std::path::PathBuf, bool, Vec<f32>);
@@ -23,9 +26,13 @@ static BOUND_HOTKEYS: Mutex<(String, String, String, String)> =
 static MICROPHONE: Mutex<Option<String>> = Mutex::new(None);
 static VAD_BITS: AtomicU32 = AtomicU32::new(0);
 static HANDS_FREE: AtomicBool = AtomicBool::new(false);
+static TONE_MODE: AtomicBool = AtomicBool::new(false);
 static TRAY_MARK: Mutex<String> = Mutex::new(String::new());
 static TRAY_TIP: Mutex<String> = Mutex::new(String::new());
 static APP: Mutex<Option<AppHandle>> = Mutex::new(None);
+/// Each T-One decoding job owns a durable cancellation flag. The shared flag
+/// is reset for the next utterance, so it cannot safely control an older job.
+static TONE_CANCELLATIONS: Mutex<Vec<Weak<AtomicBool>>> = Mutex::new(Vec::new());
 
 /// Holds shorter than this are discarded. A 320 ms tap used to enter hands-free
 /// and leave the microphone open.
@@ -140,6 +147,10 @@ pub fn remember_hands_free(enabled: bool) {
     HANDS_FREE.store(enabled, Ordering::Relaxed);
 }
 
+pub fn remember_stt_engine(engine: &str) {
+    TONE_MODE.store(engine.trim().eq_ignore_ascii_case("tone"), Ordering::Relaxed);
+}
+
 fn cached_hands_free() -> bool {
     HANDS_FREE.load(Ordering::Relaxed)
 }
@@ -161,10 +172,34 @@ fn cached_microphone() -> Option<String> {
 pub enum DictationCmd {
     Pressed,
     Released,
-    Cancel,
+    Cancel(CancelSource),
     Stop,
     CopyLast,
     PasteLast,
+}
+
+/// Explicitly preserve the origin of a cancellation. It is the quickest way
+/// to distinguish an Escape event, a UI action and a programmatic stop when a
+/// user reports an unexpected `Cancelled.` state.
+#[derive(Debug, Clone, Copy)]
+pub enum CancelSource {
+    EscapeShortcut,
+    TrayMenu,
+    FlowBarCancel,
+    FlowBarDismiss,
+    UserInterface,
+}
+
+impl CancelSource {
+    fn label(self) -> &'static str {
+        match self {
+            Self::EscapeShortcut => "escape_shortcut",
+            Self::TrayMenu => "tray_menu",
+            Self::FlowBarCancel => "flow_bar_cancel",
+            Self::FlowBarDismiss => "flow_bar_dismiss",
+            Self::UserInterface => "user_interface",
+        }
+    }
 }
 
 pub fn start_worker(app: AppHandle, engine: SharedEngine, capture: SharedCapture) {
@@ -180,7 +215,13 @@ pub fn start_worker(app: AppHandle, engine: SharedEngine, capture: SharedCapture
                 let result = crate::error::catch_runtime_panic("Dictation command", || match cmd {
                     DictationCmd::Pressed => on_hotkey_pressed(&app, &engine, &capture),
                     DictationCmd::Released => on_hotkey_released(&app, &engine, &capture),
-                    DictationCmd::Cancel => cancel(&app, &engine, &capture),
+                    DictationCmd::Cancel(source) => {
+                        crate::journal::log(
+                            "dictation_cancel",
+                            &format!("source={}", source.label()),
+                        );
+                        cancel(&app, &engine, &capture)
+                    }
                     DictationCmd::Stop => stop_and_process(&app, &engine, &capture),
                     DictationCmd::CopyLast => {
                         let _ = engine
@@ -197,7 +238,8 @@ pub fn start_worker(app: AppHandle, engine: SharedEngine, capture: SharedCapture
                 });
                 if let Err(err) = result {
                     CANCEL.store(true, Ordering::Relaxed);
-                    BUSY.store(false, Ordering::Relaxed);
+                    cancel_tone_sessions();
+                    BUSY.store(0, Ordering::Relaxed);
                     let _ = capture.stop();
                     fail(&app, &engine, &crate::error::user_guidance(&err), 0);
                 }
@@ -221,19 +263,43 @@ pub fn is_cancelled() -> bool {
 }
 
 pub fn is_busy() -> bool {
-    BUSY.load(Ordering::Relaxed)
+    BUSY.load(Ordering::Relaxed) > 0
 }
 
 struct BusyGuard;
 
 impl Drop for BusyGuard {
     fn drop(&mut self) {
-        BUSY.store(false, Ordering::Relaxed);
+        let _ = BUSY.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |count| {
+            count.checked_sub(1)
+        });
     }
 }
 
 pub fn clear_cancel() {
     CANCEL.store(false, Ordering::Relaxed);
+}
+
+fn new_tone_cancellation() -> Arc<AtomicBool> {
+    let token = Arc::new(AtomicBool::new(false));
+    if let Ok(mut tokens) = TONE_CANCELLATIONS.lock() {
+        tokens.retain(|weak| weak.strong_count() > 0);
+        tokens.push(Arc::downgrade(&token));
+    }
+    token
+}
+
+fn cancel_tone_sessions() {
+    if let Ok(mut tokens) = TONE_CANCELLATIONS.lock() {
+        tokens.retain(|weak| {
+            if let Some(token) = weak.upgrade() {
+                token.store(true, Ordering::Relaxed);
+                true
+            } else {
+                false
+            }
+        });
+    }
 }
 
 #[derive(Clone, Serialize)]
@@ -380,7 +446,7 @@ pub fn hide_bar_later(app: &AppHandle) {
         if CANCEL.load(Ordering::Relaxed) {
             return;
         }
-        if BUSY.load(Ordering::Relaxed) {
+        if is_busy() {
             return;
         }
         if let Some(capture) = app.try_state::<SharedCapture>() {
@@ -394,6 +460,7 @@ pub fn hide_bar_later(app: &AppHandle) {
 
 pub fn on_hotkey_pressed(app: &AppHandle, engine: &SharedEngine, capture: &SharedCapture) {
     if crate::screenlock::screen_is_locked() {
+        crate::diagnostics::error("record_start", "SCREEN_LOCKED");
         emit_state(
             app,
             DictationState {
@@ -409,11 +476,14 @@ pub fn on_hotkey_pressed(app: &AppHandle, engine: &SharedEngine, capture: &Share
         );
         return;
     }
-    if BUSY.load(Ordering::Relaxed) && !capture.is_recording() {
+    // T-One sessions are queued by its worker. Let the next hold begin while
+    // the previous phrase is finalizing so normal repeated dictation is not
+    // ignored and its microphone audio is retained in the bounded queue.
+    if is_busy() && !capture.is_recording() && !engine_is_tone(engine) {
         return;
     }
     if capture.is_recording() {
-        if cached_hands_free() {
+        if cached_hands_free() && !engine_is_tone(engine) {
             let too_soon = PRESS_AT
                 .lock()
                 .ok()
@@ -439,16 +509,24 @@ pub fn on_hotkey_pressed(app: &AppHandle, engine: &SharedEngine, capture: &Share
     if let Ok(mut slot) = PRESS_AT.lock() {
         *slot = Some(Instant::now());
     }
-    let mic = match engine.try_lock() {
+    let (mic, tone_path) = match engine.try_lock() {
         Ok(mut eng) => {
             remember_microphone(eng.settings.microphone_name.clone());
             remember_vad(eng.settings.vad_threshold);
             remember_hands_free(eng.settings.hands_free);
+            remember_stt_engine(&eng.settings.stt_engine);
             eng.snapshot.reset();
             let _ = eng.snapshot.transition(PipelineState::Recording);
-            eng.settings.microphone_name.clone()
+            (
+                eng.settings.microphone_name.clone(),
+                eng.settings
+                    .stt_engine
+                    .eq_ignore_ascii_case("tone")
+                    .then(|| eng.ready_model_path("stt"))
+                    .flatten(),
+            )
         }
-        Err(_) => cached_microphone(),
+        Err(_) => (cached_microphone(), None),
     };
     // Capture Chrome/etc. before the overlay is shown. Showing the bar with
     // Tauri's show() makes LocalFlow frontmost, so a delayed NSWorkspace
@@ -460,8 +538,49 @@ pub fn on_hotkey_pressed(app: &AppHandle, engine: &SharedEngine, capture: &Share
             eng.insert_target_app = name;
         }
     }
-    match capture.start(mic) {
-        Ok(()) => {
+    if engine_is_tone(engine) && tone_path.is_none() {
+        emit_state(
+            app,
+            dictation_state(
+                "error",
+                "T-One is not installed. Download T-One Streaming Russian in Models first.",
+                last_processed(engine),
+                last_raw(engine),
+                0,
+                true,
+            ),
+        );
+        return;
+    }
+    let tone_cancellation = tone_path.as_ref().map(|_| new_tone_cancellation());
+    let start = if let Some(path) = tone_path {
+        capture
+            .start_streaming(mic)
+            .and_then(|audio| {
+                crate::tone_stt::start_session(
+                    path,
+                    audio,
+                    tone_cancellation
+                        .as_ref()
+                        .expect("T-One session has a cancellation token")
+                        .clone(),
+                )
+            })
+            .map(Some)
+    } else {
+        capture.start(mic).map(|()| None)
+    };
+    match start {
+        Ok(tone_events) => {
+            if let Some(events) = tone_events {
+                BUSY.fetch_add(1, Ordering::Relaxed);
+                spawn_tone_listener(
+                    app,
+                    engine,
+                    events,
+                    tone_cancellation.expect("T-One listener has a cancellation token"),
+                );
+            }
             crate::journal::log("record_start", "microphone on");
             if let Ok(eng) = engine.try_lock() {
                 if eng.settings.sound_cues {
@@ -486,6 +605,9 @@ pub fn on_hotkey_pressed(app: &AppHandle, engine: &SharedEngine, capture: &Share
             );
         }
         Err(err) => {
+            crate::diagnostics::error("record_start", &format!("code={} detail={err}", err.code()));
+            crate::journal::log("record_start_failed", &format!("code={} {err}", err.code()));
+            let _ = capture.stop();
             if let Ok(mut eng) = engine.lock() {
                 eng.snapshot.fail(err.to_string());
             }
@@ -513,19 +635,37 @@ pub fn on_hotkey_released(app: &AppHandle, engine: &SharedEngine, capture: &Shar
         .and_then(|g| *g)
         .map(|t| t.elapsed())
         .unwrap_or(Duration::from_secs(1));
-    match classify_release_ex(held, capture.is_recording(), cached_hands_free()) {
+    // A T-One stream must be closed on release so its last decoder frames are
+    // flushed and inserted. The setting is normalized to false as well, but
+    // this guard also handles a live settings change without a restart.
+    let hands_free = cached_hands_free() && !engine_is_tone(engine);
+    match classify_release_ex(held, capture.is_recording(), hands_free) {
+        ReleaseAction::DiscardTooShort if engine_is_tone(engine) => {
+            crate::journal::log("tone_discard", "hotkey hold was under 500 ms");
+            CANCEL.store(true, Ordering::Relaxed);
+            cancel_tone_sessions();
+            discard_short_hold(app, engine, capture);
+        }
         ReleaseAction::DiscardTooShort => discard_short_hold(app, engine, capture),
+        ReleaseAction::Process if engine_is_tone(engine) => {
+            finish_tone_recording(app, engine, capture)
+        }
         ReleaseAction::Process => finish_recording(app, engine, capture),
         ReleaseAction::StayRecording => {}
     }
 }
 
 pub fn stop_and_process(app: &AppHandle, engine: &SharedEngine, capture: &SharedCapture) {
-    finish_recording(app, engine, capture);
+    if engine_is_tone(engine) {
+        finish_tone_recording(app, engine, capture);
+    } else {
+        finish_recording(app, engine, capture);
+    }
 }
 
 pub fn cancel(app: &AppHandle, engine: &SharedEngine, capture: &SharedCapture) {
     CANCEL.store(true, Ordering::Relaxed);
+    cancel_tone_sessions();
     if let Ok(mut slot) = PRESS_AT.lock() {
         *slot = None;
     }
@@ -610,7 +750,10 @@ fn spawn_level_meter(app: &AppHandle, capture: &SharedCapture) {
         };
         let rms = crate::vad::rms(window);
         if let Some(err) = crate::audio::take_stream_error() {
+            crate::journal::log("audio_stream_error", &err);
+            crate::diagnostics::error("audio_stream", &err);
             CANCEL.store(true, Ordering::Relaxed);
+            cancel_tone_sessions();
             if let Ok(mut slot) = PRESS_AT.lock() {
                 *slot = None;
             }
@@ -684,6 +827,202 @@ fn discard_short_hold(app: &AppHandle, engine: &SharedEngine, capture: &SharedCa
     hide_bar(app);
 }
 
+fn engine_is_tone(_engine: &SharedEngine) -> bool {
+    TONE_MODE.load(Ordering::Relaxed)
+}
+
+fn finish_tone_recording(app: &AppHandle, engine: &SharedEngine, capture: &SharedCapture) {
+    if let Ok(mut slot) = PRESS_AT.lock() {
+        *slot = None;
+    }
+    if CANCEL.load(Ordering::Relaxed) {
+        let _ = capture.stop();
+        return;
+    }
+    let Some(captured) = capture.stop() else {
+        return;
+    };
+    let (last_wav, keep_audio) = match engine.try_lock() {
+        Ok(eng) => (eng.paths.last_utterance(), eng.settings.keep_last_audio),
+        Err(_) => {
+            crate::journal::log("record_stop", "T-One microphone off; finalizing stream");
+            emit_state(
+                app,
+                dictation_state(
+                    "processing",
+                    "Finalizing T-One stream…",
+                    None,
+                    None,
+                    0,
+                    true,
+                ),
+            );
+            return;
+        }
+    };
+    persist_last_audio_async(last_wav, keep_audio, audio::to_whisper_pcm(&captured));
+    crate::journal::log("record_stop", "T-One microphone off; finalizing stream");
+    emit_state(
+        app,
+        dictation_state(
+            "processing",
+            "Finalizing T-One stream…",
+            None,
+            None,
+            0,
+            true,
+        ),
+    );
+}
+
+fn spawn_tone_listener(
+    app: &AppHandle,
+    engine: &SharedEngine,
+    events: mpsc::Receiver<crate::tone_stt::StreamEvent>,
+    cancellation: Arc<AtomicBool>,
+) {
+    let app = app.clone();
+    let engine = engine.clone();
+    std::thread::spawn(move || {
+        let _busy = BusyGuard;
+        let mut last_final = String::new();
+        while let Ok(event) = events.recv() {
+            if cancellation.load(Ordering::Relaxed) {
+                break;
+            }
+            match event {
+                crate::tone_stt::StreamEvent::Partial { text, duration_ms } => {
+                    emit_state(
+                        &app,
+                        dictation_state(
+                            "recording",
+                            format!("Listening… {text}"),
+                            Some(text.clone()),
+                            Some(text),
+                            duration_ms,
+                            true,
+                        ),
+                    );
+                }
+                crate::tone_stt::StreamEvent::Final { text, duration_ms } => {
+                    crate::journal::log("tone_final", &format!("{duration_ms} ms"));
+                    match process_tone_final(&engine, &text) {
+                        Ok(Some(final_text)) => {
+                            last_final = final_text.clone();
+                            emit_state(
+                                &app,
+                                dictation_state(
+                                    "recording",
+                                    format!("T-One: {final_text}"),
+                                    Some(final_text),
+                                    Some(text),
+                                    duration_ms,
+                                    true,
+                                ),
+                            );
+                        }
+                        Ok(None) => {}
+                        Err(message) => {
+                            cancellation.store(true, Ordering::Relaxed);
+                            fail(&app, &engine, &message, duration_ms);
+                            break;
+                        }
+                    }
+                }
+                crate::tone_stt::StreamEvent::Finished { duration_ms } => {
+                    crate::journal::log("tone_finished", &format!("{duration_ms} ms"));
+                    if cancellation.load(Ordering::Relaxed) {
+                        break;
+                    }
+                    if last_final.is_empty() {
+                        fail(
+                            &app,
+                            &engine,
+                            "No speech detected. Nothing was inserted.",
+                            duration_ms,
+                        );
+                    } else {
+                        emit_state(
+                            &app,
+                            dictation_state(
+                                "done",
+                                format!("Inserted: {last_final}"),
+                                Some(last_final.clone()),
+                                None,
+                                duration_ms,
+                                true,
+                            ),
+                        );
+                        hide_bar_later(&app);
+                    }
+                    break;
+                }
+                crate::tone_stt::StreamEvent::Error(message) => {
+                    crate::journal::log("tone_error", &message);
+                    fail(&app, &engine, &message, 0);
+                    break;
+                }
+            }
+        }
+    });
+}
+
+fn process_tone_final(engine: &SharedEngine, raw: &str) -> Result<Option<String>, String> {
+    let raw = crate::sanitize::strip_model_tags(raw);
+    if raw.is_empty() {
+        return Ok(None);
+    }
+    // Formatting changes engine state, but posting Cmd+V can synchronously
+    // touch the UI on macOS. Keep that operation outside the engine mutex.
+    let (mut output, paste, target_pid, target_app, insert_delay_ms, restore_clipboard) = {
+        let mut eng = engine
+            .lock()
+            .map_err(|_| "engine lock poisoned".to_string())?;
+        let mem = MemoryInjector::default();
+        let result = eng.run_text_pipeline(&raw, &NativeStt, &NativeLlm, &mem, &[]);
+        let paste = mem.last.lock().ok().and_then(|slot| slot.clone());
+        match result {
+            Ok(output) => (
+                output,
+                paste,
+                eng.insert_target_pid,
+                eng.insert_target_app.clone(),
+                eng.settings.insert_delay_ms,
+                eng.settings.restore_clipboard,
+            ),
+            Err(err) if err.to_string() == "cancelled" => return Ok(None),
+            Err(err) => {
+                crate::journal::log("tone_pipeline", &err.to_string());
+                return Err(crate::error::user_guidance(&err));
+            }
+        }
+    };
+    if let Some(text) = paste.filter(|text| !text.is_empty()) {
+        if let Err(err) = (ClipboardInjector {
+            target_pid,
+            target_app,
+            insert_delay_ms,
+        })
+        .insert_text(&text, restore_clipboard)
+        {
+            output.insert_ok = false;
+            output.insert_error = Some(crate::error::user_guidance(&err));
+            crate::journal::log("tone_insert_failed", &err.to_string());
+            if let Ok(mut eng) = engine.lock() {
+                if eng.session_text.ends_with(&text) {
+                    let keep = eng.session_text.len() - text.len();
+                    eng.session_text.truncate(keep);
+                }
+                if let Some(last) = eng.last_output.as_mut() {
+                    last.insert_ok = false;
+                    last.insert_error = output.insert_error.clone();
+                }
+            }
+        }
+    }
+    Ok(Some(output.final_text))
+}
+
 fn finish_recording(app: &AppHandle, engine: &SharedEngine, capture: &SharedCapture) {
     let processing_started = Instant::now();
     if let Ok(mut slot) = PRESS_AT.lock() {
@@ -695,7 +1034,7 @@ fn finish_recording(app: &AppHandle, engine: &SharedEngine, capture: &SharedCapt
     }
     let Some(captured) = capture.stop() else {
         crate::journal::log("record_stop", "microphone off (empty)");
-        if BUSY.load(Ordering::Relaxed) {
+        if is_busy() {
             return;
         }
         emit_state(
@@ -715,7 +1054,7 @@ fn finish_recording(app: &AppHandle, engine: &SharedEngine, capture: &SharedCapt
         return;
     };
     crate::journal::log("record_stop", "microphone off");
-    BUSY.store(true, Ordering::Relaxed);
+    BUSY.store(1, Ordering::Relaxed);
     emit_state(
         app,
         DictationState {
@@ -822,21 +1161,23 @@ fn finish_recording(app: &AppHandle, engine: &SharedEngine, capture: &SharedCapt
             }
         };
         if !crate::config::stt_engine_runtime_available(&stt_engine) {
-            crate::journal::log(
-                "stt_engine_fallback",
-                &format!("{stt_engine} is unavailable; using Whisper"),
+            fail(
+                &app,
+                &engine,
+                &format!("Speech engine {stt_engine} is not available in this build."),
+                duration_ms,
             );
+            return;
         }
         let Some(stt_path) = stt_path else {
-            let model_id = if stt_engine.eq_ignore_ascii_case("whisper") {
+            let model_id = crate::config::effective_stt_model_id(
+                &stt_engine,
                 engine
                     .lock()
                     .ok()
                     .and_then(|eng| eng.settings.active_stt_model.clone())
-                    .unwrap_or_else(|| crate::config::DEFAULT_STT_MODEL.to_string())
-            } else {
-                crate::config::stt_model_id_for_engine(&stt_engine).to_string()
-            };
+                    .as_deref(),
+            );
             fail(
                 &app,
                 &engine,
@@ -1031,6 +1372,7 @@ fn persist_last_audio_async(path: std::path::PathBuf, keep: bool, pcm: Vec<f32>)
 }
 
 fn emit_cancelled(app: &AppHandle, engine: &SharedEngine) {
+    crate::journal::log("dictation_cancelled", "pipeline observed cancellation flag");
     emit_state(
         app,
         DictationState {
@@ -1048,6 +1390,10 @@ fn emit_cancelled(app: &AppHandle, engine: &SharedEngine) {
 }
 
 fn fail(app: &AppHandle, engine: &SharedEngine, message: &str, duration_ms: u64) {
+    crate::diagnostics::error(
+        "dictation_failed",
+        &format!("duration_ms={duration_ms} detail={message}"),
+    );
     if let Ok(mut eng) = engine.lock() {
         eng.snapshot.fail(message.to_string());
     }
@@ -1276,10 +1622,27 @@ mod tests {
         let mem = src
             .find("MemoryInjector::default()")
             .expect("pipeline uses MemoryInjector");
-        let clip = src
+        let clip = src[mem..]
             .find("ClipboardInjector {")
+            .map(|offset| mem + offset)
             .expect("paste once the pipeline lock is dropped");
         assert!(mem < clip, "paste once the pipeline lock is dropped");
+    }
+
+    #[test]
+    fn tone_pipeline_releases_the_engine_lock_before_pasting() {
+        let src = include_str!("dictation.rs");
+        let tone = src
+            .split("fn process_tone_final")
+            .nth(1)
+            .expect("T-One pipeline");
+        let mem = tone
+            .find("MemoryInjector::default()")
+            .expect("memory injector");
+        let clipboard = tone
+            .find("ClipboardInjector {")
+            .expect("clipboard injector");
+        assert!(mem < clipboard, "T-One must paste after engine formatting");
     }
 
     #[test]
@@ -1309,6 +1672,100 @@ mod tests {
             1,
             "the configured timeout must be one deadline, not timeout plus a hidden grace period"
         );
+    }
+
+    #[test]
+    fn tone_mode_uses_streaming_capture_instead_of_finish_recording() {
+        let src = include_str!("dictation.rs");
+        let body = src
+            .split("pub fn on_hotkey_pressed")
+            .nth(1)
+            .unwrap()
+            .split("pub fn on_hotkey_released")
+            .next()
+            .unwrap();
+        assert!(body.contains("start_streaming"));
+        assert!(body.contains("tone_stt::start_session"));
+    }
+
+    #[test]
+    fn tone_allows_a_followup_phrase_while_the_previous_one_finalizes() {
+        let src = include_str!("dictation.rs");
+        let press = src
+            .split("pub fn on_hotkey_pressed")
+            .nth(1)
+            .unwrap()
+            .split("CANCEL.store(false")
+            .next()
+            .unwrap();
+        assert!(
+            press.contains("!engine_is_tone(engine)"),
+            "T-One must queue a follow-up hold instead of silently ignoring it"
+        );
+        assert!(
+            src.contains("BUSY.fetch_add(1"),
+            "each queued T-One session must keep the busy counter active"
+        );
+    }
+
+    #[test]
+    fn tone_release_ignores_hands_free_and_finishes_the_stream() {
+        let src = include_str!("dictation.rs");
+        let release = src
+            .split("pub fn on_hotkey_released")
+            .nth(1)
+            .unwrap()
+            .split("pub fn stop_and_process")
+            .next()
+            .unwrap();
+        assert!(release.contains("cached_hands_free() && !engine_is_tone(engine)"));
+        assert!(release.contains("finish_tone_recording"));
+    }
+
+    #[test]
+    fn tone_mode_is_cached_outside_the_engine_lock() {
+        let src = include_str!("dictation.rs");
+        assert!(src.contains("static TONE_MODE"));
+        assert!(src.contains("remember_stt_engine"));
+        let is_tone = src
+            .split("fn engine_is_tone")
+            .nth(1)
+            .unwrap()
+            .split("fn finish_tone_recording")
+            .next()
+            .unwrap();
+        assert!(
+            is_tone.contains("TONE_MODE.load"),
+            "T-One follow-up holds must not wait on the engine mutex"
+        );
+        assert!(!is_tone.contains("try_lock"));
+    }
+
+    #[test]
+    fn tone_empty_stream_is_an_error_not_success() {
+        let src = include_str!("dictation.rs");
+        let finished = src
+            .split("StreamEvent::Finished")
+            .nth(1)
+            .unwrap()
+            .split("StreamEvent::Error")
+            .next()
+            .unwrap();
+        assert!(finished.contains("No speech detected"));
+        assert!(!finished.contains("Processed {duration_ms} ms of streaming audio"));
+    }
+
+    #[test]
+    fn tone_stop_persists_the_utterance_for_repeat() {
+        let src = include_str!("dictation.rs");
+        let finish = src
+            .split("fn finish_tone_recording")
+            .nth(1)
+            .unwrap()
+            .split("fn spawn_tone_listener")
+            .next()
+            .unwrap();
+        assert!(finish.contains("persist_last_audio_async"));
     }
 
     #[test]
@@ -1345,7 +1802,7 @@ mod tests {
             .unwrap();
         assert!(src.contains("is_recording()"), "do not hide mid-hold");
         assert!(
-            src.contains("BUSY.load"),
+            src.contains("is_busy()"),
             "do not hide while insert still runs"
         );
     }

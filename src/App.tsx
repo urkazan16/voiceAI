@@ -186,6 +186,35 @@ function downloadedModels(
   );
 }
 
+function sherpaSpeechModelId(engine: string | undefined): string | null {
+  switch (engine) {
+    case "gigaam":
+      return "gigaam-v3-ctc";
+    case "parakeet":
+      return "parakeet-v3";
+    case "tone":
+      return "tone-streaming-ru";
+    default:
+      return null;
+  }
+}
+
+function isSherpaSpeechModel(modelId: string | null | undefined): boolean {
+  return (
+    modelId === "gigaam-v3-ctc" || modelId === "parakeet-v3" || modelId === "tone-streaming-ru"
+  );
+}
+
+function effectiveSpeechModelId(
+  engine: string | undefined,
+  active: string | null | undefined,
+): string | null {
+  return (
+    sherpaSpeechModelId(engine) ??
+    (isSherpaSpeechModel(active) ? "whisper-medium" : (active ?? "whisper-medium"))
+  );
+}
+
 export function App() {
   const [view, setView] = useState<ViewId>("onboarding");
   const [settings, setSettings] = useState<AppSettings>(fallbackSettings);
@@ -236,30 +265,21 @@ export function App() {
   const audioFileRef = useRef<HTMLInputElement | null>(null);
   const audioBusyRef = useRef(false);
   const autoDownloadStarted = useRef<Record<string, boolean>>({});
+  const settingsRef = useRef(settings);
+  const saveChain = useRef(Promise.resolve());
+  const [editingDictId, setEditingDictId] = useState<string | null>(null);
+  const [editingSnippetId, setEditingSnippetId] = useState<string | null>(null);
   const [audioBusy, setAudioBusy] = useState(false);
   const [fileProgress, setFileProgress] = useState<TranscribeProgress | null>(null);
   const [fileElapsed, setFileElapsed] = useState(0);
 
   async function refresh() {
     try {
-      const [
-        nextSettings,
-        nextModels,
-        nextDict,
-        nextHistory,
-        nextBuild,
-        nextPrivacy,
-        hotkey,
-        nextStatus,
-        nextSnippets,
-        nextProfiles,
-        nextContext,
-        nextSuggestions,
-      ] = await Promise.all([
+      const results = await Promise.allSettled([
         api.getSettings(),
         api.listModels(),
         api.listDictionary(),
-        api.listHistory().catch(() => [] as HistoryItem[]),
+        api.listHistory(),
         api.getBuildInfo(),
         api.privacySummary(),
         api.getHotkeyStatus(),
@@ -269,6 +289,23 @@ export function App() {
         api.getActiveContext(),
         api.listSuggestions(),
       ]);
+      const value = <T,>(index: number, fallback: T): T => {
+        const item = results[index];
+        return item?.status === "fulfilled" ? (item.value as T) : fallback;
+      };
+      const nextSettings = value(0, settingsRef.current);
+      const nextModels = value(1, bundledCatalog);
+      const nextDict = value(2, [] as DictionaryEntry[]);
+      const nextHistory = value(3, [] as HistoryItem[]);
+      const nextBuild = value(4, build);
+      const nextPrivacy = value(5, privacy);
+      const hotkey = value(6, hotkeyStatus);
+      const nextStatus = value(7, modelStatus);
+      const nextSnippets = value(8, [] as Snippet[]);
+      const nextProfiles = value(9, [] as Profile[]);
+      const nextContext = value(10, context);
+      const nextSuggestions = value(11, [] as LearnedCandidate[]);
+      settingsRef.current = nextSettings;
       setSettings(nextSettings);
       setModels(nextModels);
       setModelStatus(nextStatus);
@@ -278,8 +315,12 @@ export function App() {
       setProfiles(nextProfiles);
       setContext(nextContext);
       setSuggestions(nextSuggestions);
-      setBuild(nextBuild);
-      setPrivacy(nextPrivacy);
+      if (nextBuild) {
+        setBuild(nextBuild);
+      }
+      if (nextPrivacy) {
+        setPrivacy(nextPrivacy);
+      }
       setHotkeyStatus(hotkey);
       try {
         setMicrophones(await api.listMicrophones());
@@ -294,11 +335,11 @@ export function App() {
       } catch {
         /* preview */
       }
-      if (hotkey.registered) {
+      if (hotkey?.registered) {
         setStatus(
           `Hold ${hotkey.registered.replace("Control", "Ctrl").replace("Command", "⌘")}, speak, release.`,
         );
-      } else if (hotkey.error) {
+      } else if (hotkey?.error) {
         setStatus(`Hotkey not registered: ${hotkey.error}`);
       }
       setView((current) => {
@@ -313,9 +354,13 @@ export function App() {
   }
 
   useEffect(() => {
-    // Shared reload path; hydrate once after the window mounts.
-    // eslint-disable-next-line react-hooks/set-state-in-effect -- mount hydrate
+    settingsRef.current = settings;
+  }, [settings]);
+
+  useEffect(() => {
     void refresh();
+    // Hydrate once after the window mounts.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => {
@@ -345,6 +390,16 @@ export function App() {
         setStatus(payload.message);
         if (payload.transcript) {
           setDraft(payload.transcript);
+        }
+        if (payload.phase === "done" || payload.phase === "error") {
+          void api
+            .listHistory()
+            .then(setHistory)
+            .catch(() => undefined);
+          void api
+            .lastUtteranceReady()
+            .then(setLastUtteranceReady)
+            .catch(() => undefined);
         }
         if (payload.insert_ok === false && payload.transcript) {
           void api.getLastTranscript().then((last) => {
@@ -468,9 +523,10 @@ export function App() {
     if (!isTauriRuntime() || modelStatus.length === 0) {
       return;
     }
-    const ids = [settings.active_stt_model, settings.active_llm_model].filter((id): id is string =>
-      Boolean(id),
-    );
+    const ids = [
+      effectiveSpeechModelId(settings.stt_engine, settings.active_stt_model),
+      settings.active_llm_model,
+    ].filter((id): id is string => Boolean(id));
     for (const id of ids) {
       if (autoDownloadStarted.current[id]) {
         continue;
@@ -490,7 +546,7 @@ export function App() {
         setModelMessage(message);
       });
     }
-  }, [settings.active_stt_model, settings.active_llm_model, modelStatus]);
+  }, [settings.stt_engine, settings.active_stt_model, settings.active_llm_model, modelStatus]);
 
   useEffect(() => {
     if ((view !== "settings" && view !== "onboarding") || !isTauriRuntime()) {
@@ -544,21 +600,97 @@ export function App() {
       .catch(() => undefined);
   }, [view]);
 
-  async function save(next: AppSettings) {
+  useEffect(() => {
+    if (!isTauriRuntime()) {
+      return;
+    }
+    let cancelled = false;
+    async function take<T>(job: Promise<T>, apply: (value: T) => void) {
+      try {
+        const value = await job;
+        if (!cancelled) {
+          apply(value);
+        }
+      } catch (error) {
+        if (!cancelled) {
+          setStatus(error instanceof Error ? error.message : String(error));
+        }
+      }
+    }
+    async function loadPanel() {
+      if (view === "home") {
+        await Promise.all([
+          take(api.getActiveContext(), setContext),
+          take(api.getLastTranscript(), (last) => {
+            if (last) {
+              setPipelineOut(last);
+            }
+          }),
+          take(
+            api.lastUtteranceReady().catch(() => false),
+            setLastUtteranceReady,
+          ),
+        ]);
+      } else if (view === "settings" || view === "onboarding") {
+        await Promise.all([
+          take(api.listMicrophones(), setMicrophones),
+          take(api.permissionStatus(), setPermissions),
+          take(api.listProfiles(), setProfiles),
+          take(api.getHotkeyStatus(), setHotkeyStatus),
+          take(api.listModelStatus(), setModelStatus),
+          take(api.diskUsage(), setDiskUsage),
+        ]);
+      } else if (view === "history") {
+        await take(api.listHistory(), setHistory);
+      } else if (view === "dictionary") {
+        await take(api.searchDictionary(dictQuery), setDictionary);
+      } else if (view === "snippets") {
+        await take(api.listSnippets(), setSnippets);
+      } else if (view === "profiles") {
+        await Promise.all([
+          take(api.listProfiles(), setProfiles),
+          take(api.getActiveContext(), setContext),
+        ]);
+      } else if (view === "personalization") {
+        await take(api.listSuggestions(), setSuggestions);
+      } else if (view === "logs") {
+        await take(api.readJournal(), setJournal);
+      } else if (view === "diagnostics") {
+        await Promise.all([
+          take(api.getBuildInfo(), setBuild),
+          take(api.getStats(), setStats),
+          take(api.permissionStatus(), setPermissions),
+        ]);
+      } else if (view === "privacy") {
+        await take(api.privacySummary(), setPrivacy);
+      }
+    }
+    void loadPanel();
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- view-scoped panel fetch
+  }, [view]);
+
+  async function persistSettings(patch: Partial<AppSettings>) {
     const problem = validateTalkHotkey(
-      next.hotkey,
-      next.copy_last_hotkey,
-      next.paste_last_hotkey,
-      next.edit_hotkey ?? fallbackEditHotkey(),
+      patch.hotkey ?? settingsRef.current.hotkey,
+      patch.copy_last_hotkey ?? settingsRef.current.copy_last_hotkey,
+      patch.paste_last_hotkey ?? settingsRef.current.paste_last_hotkey,
+      patch.edit_hotkey ?? settingsRef.current.edit_hotkey ?? fallbackEditHotkey(),
     );
     if (problem) {
       setStatus(problem);
       return;
     }
-    const previous = settings;
+    const previous = settingsRef.current;
+    const next = { ...previous, ...patch };
+    settingsRef.current = next;
     setSettings(next);
     try {
-      await api.saveSettings(next);
+      const saved = await api.saveSettings(next);
+      settingsRef.current = saved;
+      setSettings(saved);
       if (isTauriRuntime()) {
         const bound = await api.getHotkeyStatus();
         setHotkeyStatus(bound);
@@ -569,17 +701,70 @@ export function App() {
             `Hold ${bound.registered.replace("Control", "Ctrl").replace("Command", "⌘")}, speak, release.`,
           );
         }
+        if (
+          previous.stt_engine !== saved.stt_engine ||
+          previous.active_stt_model !== saved.active_stt_model ||
+          previous.active_llm_model !== saved.active_llm_model
+        ) {
+          setModelStatus(await api.listModelStatus());
+        }
       }
     } catch (err) {
+      settingsRef.current = previous;
       setSettings(previous);
       setStatus(err instanceof Error ? err.message : String(err));
+    }
+  }
+
+  function save(patch: Partial<AppSettings>) {
+    const pending = saveChain.current.then(
+      () => persistSettings(patch),
+      () => persistSettings(patch),
+    );
+    saveChain.current = pending.then(
+      () => undefined,
+      () => undefined,
+    );
+    return pending;
+  }
+
+  function previewSettings(patch: Partial<AppSettings>) {
+    const next = { ...settingsRef.current, ...patch };
+    settingsRef.current = next;
+    setSettings(next);
+  }
+
+  async function runAction(job: () => Promise<void>) {
+    try {
+      await job();
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : String(error));
+    }
+  }
+
+  async function persistProfiles(next: Profile[]) {
+    setProfiles(next);
+    try {
+      await api.saveProfiles(next);
+      if (
+        settingsRef.current.profile_override &&
+        !next.some((profile) => profile.id === settingsRef.current.profile_override)
+      ) {
+        await save({ profile_override: null });
+      }
+      setContext(await api.getActiveContext());
+      setStatus("Profiles saved.");
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : String(error));
+      setProfiles(await api.listProfiles().catch(() => next));
     }
   }
 
   const host = hostKindFrom(build?.platform);
   const macOnly = showMacOnlyControls(host);
   const t = copy(settings.ui_language, host);
-  const sttStatusForHome = modelStatus.find((item) => item.model_id === settings.active_stt_model);
+  const speechModelId = effectiveSpeechModelId(settings.stt_engine, settings.active_stt_model);
+  const sttStatusForHome = modelStatus.find((item) => item.model_id === speechModelId);
   const speechReady =
     Boolean(sttStatusForHome) &&
     (sttStatusForHome?.verified || sttStatusForHome?.state === "installed") &&
@@ -705,16 +890,18 @@ export function App() {
   }
   const installedSpeech = downloadedModels(models, modelStatus, "stt");
   const installedFormatting = downloadedModels(models, modelStatus, "llm");
-  const speechChoices =
+  const engineSpeechId = sherpaSpeechModelId(settings.stt_engine);
+  const speechChoices = (
+    engineSpeechId
+      ? installedSpeech.filter((model) => model.model_id === engineSpeechId)
+      : installedSpeech.filter((model) => !isSherpaSpeechModel(model.model_id))
+  ).concat(
     settings.active_stt_model &&
-    !installedSpeech.some((model) => model.model_id === settings.active_stt_model)
-      ? [
-          ...(models.find((model) => model.model_id === settings.active_stt_model)
-            ? [models.find((model) => model.model_id === settings.active_stt_model)!]
-            : []),
-          ...installedSpeech,
-        ]
-      : installedSpeech;
+      !installedSpeech.some((model) => model.model_id === settings.active_stt_model) &&
+      (!engineSpeechId || settings.active_stt_model === engineSpeechId)
+      ? models.filter((model) => model.model_id === settings.active_stt_model)
+      : [],
+  );
 
   async function activateDownloaded(modelId: string) {
     try {
@@ -795,7 +982,6 @@ export function App() {
                 value={settings.microphone_name ?? ""}
                 onChange={(e) =>
                   void save({
-                    ...settings,
                     microphone_name: e.target.value === "" ? null : e.target.value,
                   })
                 }
@@ -810,7 +996,7 @@ export function App() {
               </select>
             </label>
             {(() => {
-              const sttId = settings.active_stt_model;
+              const sttId = effectiveSpeechModelId(settings.stt_engine, settings.active_stt_model);
               const sttRecord = models.find((model) => model.model_id === sttId);
               const sttStatus = modelStatus.find((item) => item.model_id === sttId);
               const sttProgress = sttId ? downloadProgress[sttId] : undefined;
@@ -863,12 +1049,16 @@ export function App() {
               onClick={async () => {
                 try {
                   await api.completeOnboarding();
-                  setSettings((current) => ({ ...current, onboarding_complete: true }));
+                  const next = { ...settingsRef.current, onboarding_complete: true };
+                  settingsRef.current = next;
+                  setSettings(next);
                   setView("home");
                   await refresh();
                 } catch (error) {
                   if (!isTauriRuntime()) {
-                    setSettings((current) => ({ ...current, onboarding_complete: true }));
+                    const next = { ...settingsRef.current, onboarding_complete: true };
+                    settingsRef.current = next;
+                    setSettings(next);
                     setView("home");
                     return;
                   }
@@ -884,12 +1074,7 @@ export function App() {
           <section>
             <h1 className="text-4xl">{t.homeTitle}</h1>
             {(() => {
-              const sttId =
-                settings.stt_engine === "gigaam"
-                  ? "gigaam-v3-ctc"
-                  : settings.stt_engine === "parakeet"
-                    ? "parakeet-v3"
-                    : settings.active_stt_model;
+              const sttId = effectiveSpeechModelId(settings.stt_engine, settings.active_stt_model);
               const sttRecord = models.find((model) => model.model_id === sttId);
               const sttStatus = modelStatus.find((item) => item.model_id === sttId);
               const sttProgress = sttId ? downloadProgress[sttId] : undefined;
@@ -1032,9 +1217,10 @@ export function App() {
                     <button
                       className="rounded-full border border-paper/30 px-3 py-1"
                       onClick={() =>
-                        void api
-                          .copyLastTranscript()
-                          .then(() => setStatus("Copied last transcript."))
+                        void runAction(async () => {
+                          await api.copyLastTranscript();
+                          setStatus("Copied last transcript.");
+                        })
                       }
                     >
                       Copy
@@ -1042,20 +1228,23 @@ export function App() {
                     <button
                       className="rounded-full border border-paper/30 px-3 py-1"
                       onClick={() =>
-                        void api
-                          .pasteLastTranscript()
-                          .then(() => setStatus("Pasted last transcript."))
+                        void runAction(async () => {
+                          await api.pasteLastTranscript();
+                          setStatus("Pasted last transcript.");
+                        })
                       }
                     >
                       {t.pasteLast}
                     </button>
                     <button
                       className="rounded-full border border-paper/30 px-3 py-1"
-                      onClick={() => {
-                        void api.clearLastTranscript();
-                        setPipelineOut(null);
-                        setStatus("Dismissed last transcript.");
-                      }}
+                      onClick={() =>
+                        void runAction(async () => {
+                          await api.clearLastTranscript();
+                          setPipelineOut(null);
+                          setStatus("Dismissed last transcript.");
+                        })
+                      }
                     >
                       Dismiss
                     </button>
@@ -1105,7 +1294,7 @@ export function App() {
                   : undefined
               }
               onListeningChange={captureHotkey}
-              onChange={(hotkey) => void save({ ...settings, hotkey })}
+              onChange={(hotkey) => void save({ hotkey })}
             />
             <p className="mt-1 text-xs text-paper/60">
               {hotkeyStatus?.registered
@@ -1118,14 +1307,17 @@ export function App() {
               <select
                 className="mt-1 w-full rounded-lg bg-paper/10 p-2"
                 value={settings.stt_language}
-                onChange={(e) => void save({ ...settings, stt_language: e.target.value })}
+                disabled={settings.stt_engine === "tone"}
+                onChange={(e) => void save({ stt_language: e.target.value })}
               >
                 <option value="ru">{t.langRussian}</option>
                 <option value="en">{t.langEnglish}</option>
                 <option value="auto">{t.langAuto}</option>
               </select>
             </label>
-            <p className="text-xs text-paper/60">{t.speechLangHelp}</p>
+            <p className="text-xs text-paper/60">
+              {settings.stt_engine === "tone" ? t.speechLangTone : t.speechLangHelp}
+            </p>
             <label className="block text-sm text-paper/70">
               {t.speechEngine}
               <select
@@ -1133,30 +1325,29 @@ export function App() {
                 value={settings.stt_engine ?? "whisper"}
                 onChange={(e) => {
                   const engine = e.target.value;
-                  const modelId =
-                    engine === "gigaam"
-                      ? "gigaam-v3-ctc"
-                      : engine === "parakeet"
-                        ? "parakeet-v3"
-                        : null;
+                  const modelId = sherpaSpeechModelId(engine);
                   const matching =
                     modelId && installedSpeech.some((model) => model.model_id === modelId);
                   if (modelId && !matching) {
                     setStatus(
-                      `${engine === "gigaam" ? "GigaAM" : "Parakeet"} is not installed. Download it in Models first.`,
+                      `${engine === "gigaam" ? "GigaAM" : engine === "parakeet" ? "Parakeet" : "T-One"} is not installed. Download it in Models first.`,
                     );
                     return;
                   }
+                  const whisperFallback =
+                    installedSpeech.find((model) => !isSherpaSpeechModel(model.model_id))
+                      ?.model_id ?? "whisper-medium";
                   void save({
-                    ...settings,
                     stt_engine: engine,
-                    ...(matching && modelId ? { active_stt_model: modelId } : {}),
+                    active_stt_model: matching && modelId ? modelId : whisperFallback,
+                    ...(engine === "tone" ? { hands_free: false } : {}),
                   });
                 }}
               >
                 <option value="whisper">Whisper</option>
                 <option value="gigaam">GigaAM</option>
                 <option value="parakeet">Parakeet</option>
+                <option value="tone">T-One — streaming</option>
               </select>
             </label>
             <p className="text-xs text-paper/60">{t.speechEngineHelp}</p>
@@ -1165,14 +1356,16 @@ export function App() {
                 ? t.speechEngineGigaam
                 : settings.stt_engine === "parakeet"
                   ? t.speechEngineParakeet
-                  : t.speechEngineWhisper}
+                  : settings.stt_engine === "tone"
+                    ? t.speechEngineTone
+                    : t.speechEngineWhisper}
             </p>
             <label className="block text-sm text-paper/70">
               {t.speechModel}
               <select
                 className="mt-1 w-full rounded-lg bg-paper/10 p-2"
-                value={settings.active_stt_model ?? ""}
-                disabled={speechChoices.length === 0}
+                value={speechModelId ?? ""}
+                disabled={speechChoices.length === 0 || Boolean(engineSpeechId)}
                 onChange={(e) => {
                   if (e.target.value) {
                     void activateDownloaded(e.target.value);
@@ -1218,18 +1411,17 @@ export function App() {
                 onChange={(e) => {
                   if (e.target.value) {
                     void activateDownloaded(e.target.value);
+                  } else {
+                    void save({ active_llm_model: null });
                   }
                 }}
               >
-                {installedFormatting.length === 0 ? (
-                  <option value="">{t.noDownloadedFormatting}</option>
-                ) : (
-                  installedFormatting.map((model) => (
-                    <option key={model.model_id} value={model.model_id}>
-                      {model.display_name}
-                    </option>
-                  ))
-                )}
+                <option value="">{t.noDownloadedFormatting}</option>
+                {installedFormatting.map((model) => (
+                  <option key={model.model_id} value={model.model_id}>
+                    {model.display_name}
+                  </option>
+                ))}
               </select>
             </label>
             <p className="text-xs text-paper/60">{t.formattingModelHelp}</p>
@@ -1329,7 +1521,7 @@ export function App() {
               <select
                 className="mt-1 w-full rounded-lg bg-paper/10 p-2"
                 value={settings.ui_language ?? "en"}
-                onChange={(e) => void save({ ...settings, ui_language: e.target.value })}
+                onChange={(e) => void save({ ui_language: e.target.value })}
               >
                 <option value="en">English</option>
                 <option value="ru">Русский</option>
@@ -1342,7 +1534,6 @@ export function App() {
                 value={settings.microphone_name ?? ""}
                 onChange={(e) =>
                   void save({
-                    ...settings,
                     microphone_name: e.target.value === "" ? null : e.target.value,
                   })
                 }
@@ -1410,7 +1601,7 @@ export function App() {
               <input
                 type="checkbox"
                 checked={settings.autostart}
-                onChange={(e) => void save({ ...settings, autostart: e.target.checked })}
+                onChange={(e) => void save({ autostart: e.target.checked })}
               />
               {t.launchAtLogin}
             </label>
@@ -1418,7 +1609,7 @@ export function App() {
               <input
                 type="checkbox"
                 checked={settings.history_enabled}
-                onChange={(e) => void save({ ...settings, history_enabled: e.target.checked })}
+                onChange={(e) => void save({ history_enabled: e.target.checked })}
               />
               {t.keepHistory}
             </label>
@@ -1426,7 +1617,7 @@ export function App() {
               <input
                 type="checkbox"
                 checked={settings.keep_last_audio ?? true}
-                onChange={(e) => void save({ ...settings, keep_last_audio: e.target.checked })}
+                onChange={(e) => void save({ keep_last_audio: e.target.checked })}
               />
               {t.keepLastWav}
             </label>
@@ -1435,7 +1626,9 @@ export function App() {
               onClick={async () => {
                 try {
                   const next = await api.resetSettings();
+                  settingsRef.current = next;
                   setSettings(next);
+                  setHotkeyStatus(await api.getHotkeyStatus());
                   setStatus(t.settingsReset);
                 } catch (err) {
                   setStatus(err instanceof Error ? err.message : String(err));
@@ -1460,9 +1653,14 @@ export function App() {
                 max={10000}
                 value={settings.history_max_items}
                 onChange={(e) =>
+                  previewSettings({ history_max_items: Number(e.target.value) || 0 })
+                }
+                onBlur={() =>
                   void save({
-                    ...settings,
-                    history_max_items: Number(e.target.value) || 500,
+                    history_max_items: Math.min(
+                      10_000,
+                      Math.max(50, settings.history_max_items || 500),
+                    ),
                   })
                 }
               />
@@ -1476,7 +1674,7 @@ export function App() {
                 max={0.08}
                 step={0.001}
                 value={settings.vad_threshold ?? 0.012}
-                onChange={(e) => void save({ ...settings, vad_threshold: Number(e.target.value) })}
+                onChange={(e) => void save({ vad_threshold: Number(e.target.value) })}
               />
               <span className="text-xs text-paper/50">{t.vadHelp}</span>
             </label>
@@ -1485,9 +1683,7 @@ export function App() {
               <select
                 className="mt-1 w-full rounded-lg bg-paper/10 p-2"
                 value={settings.mode}
-                onChange={(e) =>
-                  void save({ ...settings, mode: e.target.value as AppSettings["mode"] })
-                }
+                onChange={(e) => void save({ mode: e.target.value as AppSettings["mode"] })}
               >
                 <option value="raw">Raw</option>
                 <option value="normal">Normal</option>
@@ -1502,7 +1698,6 @@ export function App() {
                 value={settings.profile_override ?? ""}
                 onChange={(e) =>
                   void save({
-                    ...settings,
                     profile_override: e.target.value === "" ? null : e.target.value,
                   })
                 }
@@ -1519,7 +1714,7 @@ export function App() {
               <input
                 type="checkbox"
                 checked={settings.restore_clipboard}
-                onChange={(e) => void save({ ...settings, restore_clipboard: e.target.checked })}
+                onChange={(e) => void save({ restore_clipboard: e.target.checked })}
               />
               {t.restoreClipboard}
             </label>
@@ -1528,7 +1723,7 @@ export function App() {
               <input
                 type="checkbox"
                 checked={settings.show_flow_bar}
-                onChange={(e) => void save({ ...settings, show_flow_bar: e.target.checked })}
+                onChange={(e) => void save({ show_flow_bar: e.target.checked })}
               />
               {t.showFlowBar}
             </label>
@@ -1536,7 +1731,7 @@ export function App() {
               <input
                 type="checkbox"
                 checked={settings.sound_cues}
-                onChange={(e) => void save({ ...settings, sound_cues: e.target.checked })}
+                onChange={(e) => void save({ sound_cues: e.target.checked })}
               />
               {t.playCues}
             </label>
@@ -1549,9 +1744,7 @@ export function App() {
                 max={1}
                 step={0.05}
                 value={settings.sound_cue_volume}
-                onChange={(e) =>
-                  void save({ ...settings, sound_cue_volume: Number(e.target.value) || 0.25 })
-                }
+                onChange={(e) => void save({ sound_cue_volume: Number(e.target.value) || 0.25 })}
               />
             </label>
             <label className="block text-sm text-paper/70">
@@ -1562,8 +1755,11 @@ export function App() {
                 min={40}
                 max={800}
                 value={settings.insert_delay_ms}
-                onChange={(e) =>
-                  void save({ ...settings, insert_delay_ms: Number(e.target.value) || 120 })
+                onChange={(e) => previewSettings({ insert_delay_ms: Number(e.target.value) || 0 })}
+                onBlur={() =>
+                  void save({
+                    insert_delay_ms: Math.min(5000, Math.max(40, settings.insert_delay_ms || 120)),
+                  })
                 }
               />
             </label>
@@ -1571,15 +1767,19 @@ export function App() {
               <input
                 type="checkbox"
                 checked={settings.hands_free}
-                onChange={(e) => void save({ ...settings, hands_free: e.target.checked })}
+                disabled={settings.stt_engine === "tone"}
+                onChange={(e) => void save({ hands_free: e.target.checked })}
               />
               {t.handsFree}
             </label>
+            {settings.stt_engine === "tone" && (
+              <p className="-mt-2 text-xs text-paper/60">{t.handsFreeTone}</p>
+            )}
             <label className="flex items-center gap-2 text-sm">
               <input
                 type="checkbox"
                 checked={settings.digits_from_speech}
-                onChange={(e) => void save({ ...settings, digits_from_speech: e.target.checked })}
+                onChange={(e) => void save({ digits_from_speech: e.target.checked })}
               />
               {t.spokenDigits}
             </label>
@@ -1588,7 +1788,7 @@ export function App() {
               <select
                 className="mt-1 w-full rounded-lg bg-paper/10 p-2"
                 value={settings.date_format}
-                onChange={(e) => void save({ ...settings, date_format: e.target.value })}
+                onChange={(e) => void save({ date_format: e.target.value })}
               >
                 <option value="DMY">DD.MM.YYYY</option>
                 <option value="ISO">YYYY-MM-DD</option>
@@ -1605,7 +1805,7 @@ export function App() {
                     ? settings.compute_device
                     : "auto"
                 }
-                onChange={(e) => void save({ ...settings, compute_device: e.target.value })}
+                onChange={(e) => void save({ compute_device: e.target.value })}
               >
                 <option value="auto">{t.computeAuto}</option>
                 <option value="gpu" disabled={!build?.gpu_available}>
@@ -1624,20 +1824,45 @@ export function App() {
                 max={180000}
                 value={settings.postprocess_timeout_ms}
                 onChange={(e) =>
+                  previewSettings({ postprocess_timeout_ms: Number(e.target.value) || 0 })
+                }
+                onBlur={() =>
                   void save({
-                    ...settings,
-                    postprocess_timeout_ms: Number(e.target.value) || 45000,
+                    postprocess_timeout_ms: Math.min(
+                      180000,
+                      Math.max(5000, settings.postprocess_timeout_ms || 45000),
+                    ),
                   })
                 }
               />
             </label>
+            <label className="block text-sm text-paper/70">
+              {t.logMaxBytes}
+              <select
+                className="mt-1 w-full rounded-lg bg-paper/10 p-2"
+                value={String(settings.log_max_bytes ?? 2097152)}
+                onChange={(e) => void save({ log_max_bytes: Number(e.target.value) })}
+              >
+                {![1048576, 2097152, 8388608, 33554432].includes(settings.log_max_bytes) && (
+                  <option value={String(settings.log_max_bytes)}>
+                    {formatBytes(settings.log_max_bytes)}
+                  </option>
+                )}
+                <option value="1048576">1 MB</option>
+                <option value="2097152">2 MB</option>
+                <option value="8388608">8 MB</option>
+                <option value="33554432">32 MB</option>
+              </select>
+            </label>
             {macOnly && (
               <button
                 className="rounded-full border border-paper/30 px-4 py-2"
-                onClick={async () => {
-                  const path = await api.installDictateMacro();
-                  setStatus(`Macro installed: ${path}. Double-click it to fire the talk hotkey.`);
-                }}
+                onClick={() =>
+                  void runAction(async () => {
+                    const path = await api.installDictateMacro();
+                    setStatus(`Macro installed: ${path}. Double-click it to fire the talk hotkey.`);
+                  })
+                }
               >
                 {t.installMacro}
               </button>
@@ -1647,21 +1872,21 @@ export function App() {
               value={settings.copy_last_hotkey}
               listeningLabel={t.hotkeyListening}
               onListeningChange={captureHotkey}
-              onChange={(copy_last_hotkey) => void save({ ...settings, copy_last_hotkey })}
+              onChange={(copy_last_hotkey) => void save({ copy_last_hotkey })}
             />
             <HotkeyField
               label={t.pasteLastHotkey}
               value={settings.paste_last_hotkey}
               listeningLabel={t.hotkeyListening}
               onListeningChange={captureHotkey}
-              onChange={(paste_last_hotkey) => void save({ ...settings, paste_last_hotkey })}
+              onChange={(paste_last_hotkey) => void save({ paste_last_hotkey })}
             />
             <HotkeyField
               label={t.editHotkey}
               value={settings.edit_hotkey ?? fallbackEditHotkey()}
               listeningLabel={t.hotkeyListening}
               onListeningChange={captureHotkey}
-              onChange={(edit_hotkey) => void save({ ...settings, edit_hotkey })}
+              onChange={(edit_hotkey) => void save({ edit_hotkey })}
             />
             <div className="flex gap-3">
               <button
@@ -1692,16 +1917,23 @@ export function App() {
             <div className="flex gap-3">
               <button
                 className="rounded-full border border-paper/30 px-4 py-2"
-                onClick={async () => setConfigText(await api.exportConfiguration())}
+                onClick={() =>
+                  void runAction(async () => {
+                    setConfigText(await api.exportConfiguration());
+                  })
+                }
               >
                 {t.exportConfig}
               </button>
               <button
                 className="rounded-full border border-paper/30 px-4 py-2"
-                onClick={async () => {
-                  await api.importConfiguration(configText);
-                  await refresh();
-                }}
+                onClick={() =>
+                  void runAction(async () => {
+                    await api.importConfiguration(configText);
+                    await refresh();
+                    setStatus("Configuration imported.");
+                  })
+                }
               >
                 {t.importConfig}
               </button>
@@ -1721,7 +1953,7 @@ export function App() {
             <p className="mt-2 max-w-2xl text-paper/70">{t.modelsHelp}</p>
             {(() => {
               const speech = describeSelectedModel(
-                settings.active_stt_model,
+                speechModelId,
                 models,
                 modelStatus,
                 settings.ui_language,
@@ -1806,12 +2038,10 @@ export function App() {
                   const progress = downloadProgress[model.model_id];
                   const state = status?.state ?? "missing";
                   const ready = state === "verified" || state === "installed";
-                  const effectiveSpeechModel =
-                    settings.stt_engine === "gigaam"
-                      ? "gigaam-v3-ctc"
-                      : settings.stt_engine === "parakeet"
-                        ? "parakeet-v3"
-                        : settings.active_stt_model;
+                  const effectiveSpeechModel = effectiveSpeechModelId(
+                    settings.stt_engine,
+                    settings.active_stt_model,
+                  );
                   // A stale setting may reference a deleted/incomplete model.
                   // Show it as active only when the model is actually ready;
                   // otherwise the user must be able to select another model
@@ -2060,8 +2290,8 @@ export function App() {
                 setDictQuery(query);
                 try {
                   setDictionary(await api.searchDictionary(query));
-                } catch {
-                  /* preview */
+                } catch (error) {
+                  setStatus(error instanceof Error ? error.message : String(error));
                 }
               }}
             />
@@ -2094,31 +2324,52 @@ export function App() {
               />
               <button
                 className="rounded-lg bg-moss px-3 py-2 text-ink"
-                onClick={async () => {
-                  const extra = aliases
-                    .split(",")
-                    .map((item) => item.trim())
-                    .filter(Boolean);
-                  const allAliases = [term, ...extra].filter(Boolean);
-                  await api.upsertDictionary({
-                    id: crypto.randomUUID(),
-                    kind: dictKind,
-                    canonical: replacement,
-                    aliases: allAliases,
-                    source: term,
-                    replacement,
-                    case_sensitive: false,
-                    enabled: true,
-                    builtin: false,
-                  });
-                  setDictionary(await api.searchDictionary(dictQuery));
-                  setTerm("");
-                  setReplacement("");
-                  setAliases("");
-                }}
+                onClick={() =>
+                  void runAction(async () => {
+                    const extra = aliases
+                      .split(",")
+                      .map((item) => item.trim())
+                      .filter(Boolean);
+                    const allAliases = [term, ...extra].filter(Boolean);
+                    if (!replacement.trim() || allAliases.length === 0) {
+                      setStatus("Enter a spoken form and a replacement.");
+                      return;
+                    }
+                    await api.upsertDictionary({
+                      id: editingDictId ?? crypto.randomUUID(),
+                      kind: dictKind,
+                      canonical: replacement,
+                      aliases: allAliases,
+                      source: term,
+                      replacement,
+                      case_sensitive: false,
+                      enabled: true,
+                      builtin: false,
+                    });
+                    setDictionary(await api.searchDictionary(dictQuery));
+                    setTerm("");
+                    setReplacement("");
+                    setAliases("");
+                    setEditingDictId(null);
+                    setStatus("Dictionary entry saved.");
+                  })
+                }
               >
-                Add
+                {editingDictId ? "Save" : "Add"}
               </button>
+              {editingDictId && (
+                <button
+                  className="rounded-lg border border-paper/30 px-3 py-2"
+                  onClick={() => {
+                    setEditingDictId(null);
+                    setTerm("");
+                    setReplacement("");
+                    setAliases("");
+                  }}
+                >
+                  Cancel
+                </button>
+              )}
             </div>
             <textarea
               className="mt-4 h-24 w-full rounded-lg bg-paper/10 p-2 text-sm"
@@ -2154,16 +2405,40 @@ export function App() {
                       {(entry.aliases.length ? entry.aliases : [entry.source]).join(" / ")} →{" "}
                       {entry.canonical || entry.replacement}
                     </span>
-                    {!entry.builtin && (
-                      <button
-                        onClick={async () => {
-                          await api.removeDictionary(entry.id);
-                          setDictionary(await api.searchDictionary(dictQuery));
-                        }}
-                      >
-                        Remove
-                      </button>
-                    )}
+                    <span className="flex gap-3">
+                      {!entry.builtin && (
+                        <button
+                          onClick={() => {
+                            setEditingDictId(entry.id);
+                            setDictKind(entry.kind);
+                            setReplacement(entry.canonical || entry.replacement);
+                            setTerm(entry.source || entry.aliases[0] || "");
+                            setAliases(
+                              entry.aliases
+                                .filter((alias) => alias !== (entry.source || entry.aliases[0]))
+                                .join(", "),
+                            );
+                          }}
+                        >
+                          Edit
+                        </button>
+                      )}
+                      {!entry.builtin && (
+                        <button
+                          onClick={() =>
+                            void runAction(async () => {
+                              await api.removeDictionary(entry.id);
+                              if (editingDictId === entry.id) {
+                                setEditingDictId(null);
+                              }
+                              setDictionary(await api.searchDictionary(dictQuery));
+                            })
+                          }
+                        >
+                          Remove
+                        </button>
+                      )}
+                    </span>
                   </div>
                 </li>
               ))}
@@ -2189,37 +2464,73 @@ export function App() {
             />
             <button
               className="mt-3 rounded-lg bg-moss px-3 py-2 text-ink"
-              onClick={async () => {
-                await api.upsertSnippet({
-                  id: crypto.randomUUID(),
-                  trigger: snippetTrigger,
-                  content: snippetContent,
-                  language: "",
-                  profile: "",
-                  enabled: true,
-                  created_at: "",
-                  updated_at: "",
-                });
-                setSnippets(await api.listSnippets());
-                setSnippetTrigger("");
-                setSnippetContent("");
-              }}
+              onClick={() =>
+                void runAction(async () => {
+                  if (!snippetTrigger.trim() || !snippetContent.trim()) {
+                    setStatus("Enter a trigger and snippet content.");
+                    return;
+                  }
+                  await api.upsertSnippet({
+                    id: editingSnippetId ?? crypto.randomUUID(),
+                    trigger: snippetTrigger,
+                    content: snippetContent,
+                    language: "",
+                    profile: "",
+                    enabled: true,
+                    created_at: "",
+                    updated_at: "",
+                  });
+                  setSnippets(await api.listSnippets());
+                  setSnippetTrigger("");
+                  setSnippetContent("");
+                  setEditingSnippetId(null);
+                  setStatus("Snippet saved.");
+                })
+              }
             >
-              Add snippet
+              {editingSnippetId ? "Save snippet" : "Add snippet"}
             </button>
+            {editingSnippetId && (
+              <button
+                className="mt-3 ml-3 rounded-lg border border-paper/30 px-3 py-2"
+                onClick={() => {
+                  setEditingSnippetId(null);
+                  setSnippetTrigger("");
+                  setSnippetContent("");
+                }}
+              >
+                Cancel
+              </button>
+            )}
             <ul className="mt-6 space-y-2">
               {snippets.map((snippet) => (
                 <li key={snippet.id} className="rounded-lg bg-paper/5 p-3">
                   <div className="flex justify-between">
                     <p className="font-medium">{snippet.trigger}</p>
-                    <button
-                      onClick={async () => {
-                        await api.removeSnippet(snippet.id);
-                        setSnippets(await api.listSnippets());
-                      }}
-                    >
-                      Remove
-                    </button>
+                    <span className="flex gap-3">
+                      <button
+                        onClick={() => {
+                          setEditingSnippetId(snippet.id);
+                          setSnippetTrigger(snippet.trigger);
+                          setSnippetContent(snippet.content);
+                        }}
+                      >
+                        Edit
+                      </button>
+                      <button
+                        onClick={() =>
+                          void runAction(async () => {
+                            await api.removeSnippet(snippet.id);
+                            if (editingSnippetId === snippet.id) {
+                              setEditingSnippetId(null);
+                            }
+                            setSnippets(await api.listSnippets());
+                          })
+                        }
+                      >
+                        Remove
+                      </button>
+                    </span>
                   </div>
                   <pre className="mt-2 whitespace-pre-wrap text-sm text-paper/80">
                     {snippet.content}
@@ -2243,7 +2554,25 @@ export function App() {
             </p>
             {profiles.map((profile, index) => (
               <article key={profile.id} className="rounded-2xl border border-paper/10 p-4">
-                <h2 className="text-xl">{profile.name}</h2>
+                <label className="block text-sm text-paper/70">
+                  Name
+                  <input
+                    className="mt-1 w-full rounded-lg bg-paper/10 p-2 text-xl"
+                    value={profile.name}
+                    onChange={(e) => {
+                      const next = profiles.map((item, i) =>
+                        i === index ? { ...item, name: e.target.value } : item,
+                      );
+                      setProfiles(next);
+                    }}
+                    onBlur={(e) => {
+                      const next = profiles.map((item, i) =>
+                        i === index ? { ...item, name: e.target.value } : item,
+                      );
+                      void persistProfiles(next);
+                    }}
+                  />
+                </label>
                 <label className="mt-2 block text-sm text-paper/70">
                   Style
                   <select
@@ -2253,7 +2582,7 @@ export function App() {
                       const next = profiles.map((item, i) =>
                         i === index ? { ...item, style: e.target.value } : item,
                       );
-                      setProfiles(next);
+                      void persistProfiles(next);
                     }}
                   >
                     <option value="personal">Personal</option>
@@ -2273,7 +2602,7 @@ export function App() {
                           ? { ...item, mode: e.target.value as AppSettings["mode"] }
                           : item,
                       );
-                      setProfiles(next);
+                      void persistProfiles(next);
                     }}
                   >
                     <option value="raw">Raw</option>
@@ -2282,6 +2611,14 @@ export function App() {
                     <option value="code">Code</option>
                   </select>
                 </label>
+                <button
+                  className="mt-3 text-sm text-copper"
+                  onClick={() => {
+                    void persistProfiles(profiles.filter((item) => item.id !== profile.id));
+                  }}
+                >
+                  Remove profile
+                </button>
                 <label className="mt-2 block text-sm text-paper/70">
                   Apps (comma-separated)
                   <input
@@ -2297,20 +2634,48 @@ export function App() {
                       );
                       setProfiles(next);
                     }}
+                    onBlur={(e) => {
+                      const apps = e.target.value
+                        .split(",")
+                        .map((item) => item.trim())
+                        .filter(Boolean);
+                      const next = profiles.map((item, i) =>
+                        i === index ? { ...item, apps } : item,
+                      );
+                      void persistProfiles(next);
+                    }}
                   />
                 </label>
               </article>
             ))}
-            <button
-              className="rounded-full bg-copper px-5 py-2 text-ink"
-              onClick={async () => {
-                await api.saveProfiles(profiles);
-                setContext(await api.getActiveContext());
-                setStatus("Profiles saved.");
-              }}
-            >
-              {t.saveProfiles}
-            </button>
+            <div className="flex flex-wrap gap-3">
+              <button
+                className="rounded-full border border-paper/30 px-5 py-2"
+                onClick={() => {
+                  const next = [
+                    ...profiles,
+                    {
+                      id: crypto.randomUUID(),
+                      name: "Custom",
+                      mode: "normal" as AppSettings["mode"],
+                      style: "other",
+                      dictionary_ids: [],
+                      apps: [],
+                      group: "",
+                    },
+                  ];
+                  void persistProfiles(next);
+                }}
+              >
+                Add profile
+              </button>
+              <button
+                className="rounded-full bg-copper px-5 py-2 text-ink"
+                onClick={() => void persistProfiles(profiles)}
+              >
+                {t.saveProfiles}
+              </button>
+            </div>
           </section>
         )}
 
@@ -2321,9 +2686,7 @@ export function App() {
               <input
                 type="checkbox"
                 checked={settings.personalization_enabled}
-                onChange={(e) =>
-                  void save({ ...settings, personalization_enabled: e.target.checked })
-                }
+                onChange={(e) => void save({ personalization_enabled: e.target.checked })}
               />
               {t.personalizationOn}
             </label>
@@ -2331,9 +2694,7 @@ export function App() {
               <input
                 type="checkbox"
                 checked={settings.learn_from_corrections}
-                onChange={(e) =>
-                  void save({ ...settings, learn_from_corrections: e.target.checked })
-                }
+                onChange={(e) => void save({ learn_from_corrections: e.target.checked })}
               />
               {t.learnCorrections}
             </label>
@@ -2353,13 +2714,19 @@ export function App() {
               />
               <button
                 className="rounded-lg bg-moss px-3 text-ink"
-                onClick={async () => {
-                  const next = await api.recordCorrection(correctionOriginal, correctionFixed);
-                  setSuggestions(next);
-                  setCorrectionOriginal("");
-                  setCorrectionFixed("");
-                  setStatus("Correction recorded.");
-                }}
+                onClick={() =>
+                  void runAction(async () => {
+                    if (!correctionOriginal.trim() || !correctionFixed.trim()) {
+                      setStatus("Enter the original phrase and the correction.");
+                      return;
+                    }
+                    const next = await api.recordCorrection(correctionOriginal, correctionFixed);
+                    setSuggestions(next);
+                    setCorrectionOriginal("");
+                    setCorrectionFixed("");
+                    setStatus("Correction recorded.");
+                  })
+                }
               >
                 Record
               </button>
@@ -2376,19 +2743,23 @@ export function App() {
                   </span>
                   <span className="flex gap-3">
                     <button
-                      onClick={async () => {
-                        await api.acceptSuggestion(item.id);
-                        setSuggestions(await api.listSuggestions());
-                        setDictionary(await api.listDictionary());
-                      }}
+                      onClick={() =>
+                        void runAction(async () => {
+                          await api.acceptSuggestion(item.id);
+                          setSuggestions(await api.listSuggestions());
+                          setDictionary(await api.listDictionary());
+                        })
+                      }
                     >
                       Accept
                     </button>
                     <button
-                      onClick={async () => {
-                        await api.dismissSuggestion(item.id);
-                        setSuggestions(await api.listSuggestions());
-                      }}
+                      onClick={() =>
+                        void runAction(async () => {
+                          await api.dismissSuggestion(item.id);
+                          setSuggestions(await api.listSuggestions());
+                        })
+                      }
                     >
                       Dismiss
                     </button>
@@ -2398,11 +2769,13 @@ export function App() {
             </ul>
             <button
               className="rounded-full border border-copper px-4 py-2 text-copper"
-              onClick={async () => {
-                await api.resetPersonalization();
-                setSuggestions([]);
-                setStatus("Personalization reset.");
-              }}
+              onClick={() =>
+                void runAction(async () => {
+                  await api.resetPersonalization();
+                  setSuggestions([]);
+                  setStatus("Personalization reset.");
+                })
+              }
             >
               Reset personalization
             </button>
@@ -2415,10 +2788,12 @@ export function App() {
               <h1 className="text-4xl">{t.historyTitle}</h1>
               <button
                 className="rounded-full border border-paper/30 px-4 py-2"
-                onClick={async () => {
-                  await api.deleteHistory();
-                  setHistory([]);
-                }}
+                onClick={() =>
+                  void runAction(async () => {
+                    await api.deleteHistory();
+                    setHistory([]);
+                  })
+                }
               >
                 Delete history
               </button>
@@ -2505,25 +2880,33 @@ export function App() {
                         <div className="mt-3 flex flex-wrap gap-3 text-sm text-copper">
                           <button
                             onClick={() =>
-                              void api.copyText(item.output).then(() => setStatus("Copied."))
+                              void runAction(async () => {
+                                await api.copyText(item.output);
+                                setStatus("Copied.");
+                              })
                             }
                           >
                             Copy
                           </button>
                           <button
                             onClick={() =>
-                              void api.pasteText(item.output).then(() => setStatus("Pasted."))
+                              void runAction(async () => {
+                                await api.pasteText(item.output);
+                                setStatus("Pasted.");
+                              })
                             }
                           >
                             Paste
                           </button>
                           {editingHistoryId === item.id ? (
                             <button
-                              onClick={async () => {
-                                await api.updateHistoryOutput(item.id, editingHistoryText);
-                                setEditingHistoryId(null);
-                                setHistory(await api.listHistory());
-                              }}
+                              onClick={() =>
+                                void runAction(async () => {
+                                  await api.updateHistoryOutput(item.id, editingHistoryText);
+                                  setEditingHistoryId(null);
+                                  setHistory(await api.listHistory());
+                                })
+                              }
                             >
                               Save
                             </button>
@@ -2538,50 +2921,58 @@ export function App() {
                             </button>
                           )}
                           <button
-                            onClick={async () => {
-                              const output = await api.retryHistory(item.transcript);
-                              setStatus(`Retry: ${output.final_text}`);
-                              setHistory(await api.listHistory());
-                            }}
+                            onClick={() =>
+                              void runAction(async () => {
+                                const output = await api.retryHistory(item.transcript);
+                                setStatus(`Retry: ${output.final_text}`);
+                                setHistory(await api.listHistory());
+                              })
+                            }
                           >
                             Retry
                           </button>
                           <button
-                            onClick={async () => {
-                              await api.historyToSnippet(
-                                item.transcript.slice(0, 60) || item.output.slice(0, 60),
-                                item.output,
-                              );
-                              setSnippets(await api.listSnippets());
-                              setStatus("Saved as snippet.");
-                            }}
+                            onClick={() =>
+                              void runAction(async () => {
+                                await api.historyToSnippet(
+                                  item.transcript.slice(0, 60) || item.output.slice(0, 60),
+                                  item.output,
+                                );
+                                setSnippets(await api.listSnippets());
+                                setStatus("Saved as snippet.");
+                              })
+                            }
                           >
                             Use as Snippet
                           </button>
                           <button
-                            onClick={async () => {
-                              await api.upsertDictionary({
-                                id: crypto.randomUUID(),
-                                kind: "replacement",
-                                canonical: item.output,
-                                aliases: [item.transcript],
-                                source: item.transcript,
-                                replacement: item.output,
-                                case_sensitive: false,
-                                enabled: true,
-                                builtin: false,
-                              });
-                              setDictionary(await api.listDictionary());
-                              setStatus("Added to dictionary.");
-                            }}
+                            onClick={() =>
+                              void runAction(async () => {
+                                await api.upsertDictionary({
+                                  id: crypto.randomUUID(),
+                                  kind: "replacement",
+                                  canonical: item.output,
+                                  aliases: [item.transcript],
+                                  source: item.transcript,
+                                  replacement: item.output,
+                                  case_sensitive: false,
+                                  enabled: true,
+                                  builtin: false,
+                                });
+                                setDictionary(await api.listDictionary());
+                                setStatus("Added to dictionary.");
+                              })
+                            }
                           >
                             Add to Dictionary
                           </button>
                           <button
-                            onClick={async () => {
-                              await api.deleteHistoryItem(item.id);
-                              setHistory(await api.listHistory());
-                            }}
+                            onClick={() =>
+                              void runAction(async () => {
+                                await api.deleteHistoryItem(item.id);
+                                setHistory(await api.listHistory());
+                              })
+                            }
                           >
                             Delete
                           </button>
@@ -2679,19 +3070,20 @@ export function App() {
           </section>
         )}
 
-        {view === "diagnostics" && build && (
+        {view === "diagnostics" && (
           <section className="space-y-2 font-mono text-sm">
             <h1 className="font-serif text-4xl">{t.diagnosticsTitle}</h1>
             <p>
-              Application: {build.application} {build.version}
+              Application: {build?.application ?? "—"} {build?.version ?? ""}
             </p>
-            <p>Build: {build.git_sha}</p>
-            <p>Platform: {build.platform}</p>
-            <p>Architecture: {build.architecture}</p>
-            <p>Build date: {build.build_date}</p>
-            <p>Tauri: {build.tauri_version}</p>
-            <p>Rust: {build.rustc_version}</p>
-            <p>Native runtime: {build.native_runtime}</p>
+            <p>Build: {build?.git_sha ?? "—"}</p>
+            <p>Platform: {build?.platform ?? "—"}</p>
+            <p>Architecture: {build?.architecture ?? "—"}</p>
+            <p>Build date: {build?.build_date ?? "—"}</p>
+            <p>Tauri: {build?.tauri_version ?? "—"}</p>
+            <p>Rust: {build?.rustc_version ?? "—"}</p>
+            <p>Native runtime: {build?.native_runtime ?? "—"}</p>
+            <p>GPU available: {String(build?.gpu_available ?? false)}</p>
             {permissions && (
               <p>
                 Permissions: mic devices={permissions.microphone_device_count}
@@ -2721,12 +3113,18 @@ export function App() {
                 )}
                 <button
                   className="mt-2 rounded-full border border-paper/30 px-4 py-2 font-sans"
-                  onClick={async () => {
-                    const csv = await api.exportStatsCsv();
-                    setConfigText(csv);
-                    setStatus("Statistics CSV copied into the settings export box.");
-                    setView("settings");
-                  }}
+                  onClick={() =>
+                    void runAction(async () => {
+                      const csv = await api.exportStatsCsv();
+                      setConfigText(csv);
+                      try {
+                        await api.copyText(csv);
+                      } catch {
+                        await navigator.clipboard.writeText(csv).catch(() => undefined);
+                      }
+                      setStatus(t.copiedExport);
+                    })
+                  }
                 >
                   Export stats CSV
                 </button>
@@ -2735,18 +3133,18 @@ export function App() {
           </section>
         )}
 
-        {view === "privacy" && privacy && (
+        {view === "privacy" && (
           <section className="max-w-xl space-y-3">
             <h1 className="text-4xl">{t.privacyTitle}</h1>
             <p>{t.privacyIntro}</p>
             <ul className="list-disc pl-5 text-paper/80">
-              <li>Audio → local: {String(privacy.audio_local)}</li>
-              <li>STT → local: {String(privacy.stt_local)}</li>
-              <li>LLM → local: {String(privacy.llm_local)}</li>
-              <li>Data root: {privacy.data_root}</li>
+              <li>Audio → local: {String(privacy?.audio_local ?? true)}</li>
+              <li>STT → local: {String(privacy?.stt_local ?? true)}</li>
+              <li>LLM → local: {String(privacy?.llm_local ?? true)}</li>
+              <li>Data root: {privacy?.data_root ?? "—"}</li>
             </ul>
             <p className="text-copper">{t.privacyNetwork}</p>
-            {privacy.network_operations.map((item) => (
+            {(privacy?.network_operations ?? []).map((item) => (
               <p key={item}>{item}</p>
             ))}
             <p className="text-sm text-paper/70">{t.privacyLogs}</p>
@@ -2754,21 +3152,30 @@ export function App() {
             <div className="flex flex-wrap gap-3 pt-2">
               <button
                 className="rounded-full border border-paper/30 px-4 py-2"
-                onClick={async () => {
-                  const srt = await api.exportHistoryTimecodes();
-                  setConfigText(srt);
-                  setStatus("History exported with timecodes.");
-                  setView("settings");
-                }}
+                onClick={() =>
+                  void runAction(async () => {
+                    const srt = await api.exportHistoryTimecodes();
+                    setConfigText(srt);
+                    try {
+                      await api.copyText(srt);
+                    } catch {
+                      await navigator.clipboard.writeText(srt).catch(() => undefined);
+                    }
+                    setStatus(t.copiedExport);
+                  })
+                }
               >
                 Export history with timecodes
               </button>
               <button
                 className="rounded-full border border-paper/30 px-4 py-2"
-                onClick={async () => {
-                  await api.resetStats();
-                  setStatus("Statistics reset.");
-                }}
+                onClick={() =>
+                  void runAction(async () => {
+                    await api.resetStats();
+                    setStats(await api.getStats().catch(() => null));
+                    setStatus("Statistics reset.");
+                  })
+                }
               >
                 Reset statistics
               </button>

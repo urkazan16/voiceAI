@@ -94,7 +94,13 @@ pub fn magic_matches_format(magic: &[u8; 4], format: &str) -> bool {
 
 pub fn looks_installed(path: &Path, record: &ModelRecord) -> bool {
     if matches!(record.format.to_ascii_uppercase().as_str(), "ONNX" | "TEXT") {
-        return sidecar_matches(path, record);
+        if sidecar_matches(path, record) {
+            return true;
+        }
+        let Ok(meta) = std::fs::metadata(path) else {
+            return false;
+        };
+        return record.size == 0 || meta.len() == record.size;
     }
     let Ok(meta) = std::fs::metadata(path) else {
         return false;
@@ -260,5 +266,15 @@ mod tests {
         activate_model(&path, &rec).unwrap();
         assert!(sidecar_matches(&path, &rec));
         activate_model(&path, &rec).unwrap();
+    }
+
+    #[test]
+    fn onnx_looks_installed_when_size_matches_without_sidecar() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("model.onnx");
+        std::fs::write(&path, b"onnxdata").unwrap();
+        let sha = sha256_file(&path).unwrap();
+        let rec = record(&sha, "ONNX", "model.onnx");
+        assert!(looks_installed(&path, &rec));
     }
 }

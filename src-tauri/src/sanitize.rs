@@ -212,15 +212,12 @@ fn sentences_are_echo(previous: &str, next: &str) -> bool {
     if prev == cur || is_truncated_echo(previous, next) || is_truncated_echo(next, previous) {
         return true;
     }
-    let wa: Vec<&str> = prev.split_whitespace().collect();
-    let wb: Vec<&str> = cur.split_whitespace().collect();
-    if wa.len() < 5 || wb.len() < 5 {
-        return false;
-    }
-    let overlap = wa.iter().filter(|w| wb.contains(w)).count();
-    let min_len = wa.len().min(wb.len());
-    let max_len = wa.len().max(wb.len());
-    overlap * 10 >= min_len * 8 && max_len - min_len <= min_len / 2 + 2
+    // Do not use a bag-of-words similarity check here. Technical dictation
+    // naturally repeats identifiers, limits, and domain terms in consecutive
+    // sentences ("от 5 до 10", "валидный", "класс"), but those sentences
+    // carry different rules. Similar vocabulary is not evidence of a Whisper
+    // loop; only an exact copy or a prefix/truncated copy is safe to remove.
+    false
 }
 
 /// Drop the prefix of `next` that repeats the tail of `previous` (overlapping
@@ -528,6 +525,15 @@ mod tests {
         let out = collapse_echoed_transcript(text);
         assert!(out.to_lowercase().contains("websocket"), "{out}");
         assert!(out.to_lowercase().contains("отдельно"), "{out}");
+    }
+
+    #[test]
+    fn preserves_consecutive_boundary_value_rules_with_shared_vocabulary() {
+        let text = "Если диапазон от 5 до 10, я выделю три класса: меньше 5 — невалидный, от 5 до 10 — валидный, больше 10 — невалидный. Внутри каждого класса система должна одинаково трактовать данные. Например, для класса меньше 5 мне не нужно проверять 0, 1, 2, 3 и 4 — достаточно взять одно характерное значение. А границы 5 и 10 я дополнительно проверю техникой граничных значений.";
+        let out = collapse_echoed_transcript(text);
+        assert!(out.contains("Внутри каждого класса"), "{out}");
+        assert!(out.contains("0, 1, 2, 3 и 4"), "{out}");
+        assert!(out.contains("границы 5 и 10"), "{out}");
     }
 
     #[test]

@@ -240,16 +240,13 @@ impl AppEngine {
     }
 
     pub(crate) fn ready_model_path(&self, kind: &str) -> Option<PathBuf> {
+        let stt_id = crate::config::effective_stt_model_id(
+            &self.settings.stt_engine,
+            self.settings.active_stt_model.as_deref(),
+        );
         let id = match kind {
-            "llm" => self.settings.active_llm_model.as_ref()?,
-            _ => {
-                let selected = match self.settings.stt_engine.as_str() {
-                    "gigaam" => Some("gigaam-v3-ctc"),
-                    "parakeet" => Some("parakeet-v3"),
-                    _ => None,
-                };
-                selected.or(self.settings.active_stt_model.as_deref())?
-            }
+            "llm" => self.settings.active_llm_model.as_deref()?,
+            _ => stt_id.as_str(),
         };
         let record = self.catalog.get(id).ok()?;
         let path = self.model_path(record);
@@ -290,6 +287,8 @@ impl AppEngine {
                     "gigaam".into()
                 } else if model_id == "parakeet-v3" {
                     "parakeet".into()
+                } else if model_id == "tone-streaming-ru" {
+                    "tone".into()
                 } else {
                     "whisper".into()
                 };
@@ -496,20 +495,14 @@ impl AppEngine {
                 return Err(LfError::Other(msg.into()));
             }
             let path = self.ready_model_path("stt").ok_or_else(|| {
-                LfError::ModelMissing(
-                    if self.settings.stt_engine.eq_ignore_ascii_case("whisper") {
-                        self.settings
-                            .active_stt_model
-                            .clone()
-                            .unwrap_or_else(|| crate::config::DEFAULT_STT_MODEL.to_string())
-                    } else {
-                        crate::config::stt_model_id_for_engine(&self.settings.stt_engine)
-                            .to_string()
-                    },
-                )
+                LfError::ModelMissing(crate::config::effective_stt_model_id(
+                    &self.settings.stt_engine,
+                    self.settings.active_stt_model.as_deref(),
+                ))
             })?;
             let options = if self.file_verbatim {
                 let mut options = crate::whisper_stt::DecodeOptions::long_form_interview();
+                options.stt_engine = self.settings.stt_engine.clone();
                 options.vad_model = self.vad_model_path();
                 options.vad_threshold = self.settings.vad_threshold;
                 options
@@ -1306,6 +1299,10 @@ mod tests {
         assert!(body.contains("inject_enabled = false"));
         assert!(!body.contains("ClipboardInjector"));
         assert!(body.contains("file_verbatim = true"));
+        assert!(
+            include_str!("engine.rs").contains("options.stt_engine = self.settings.stt_engine.clone()"),
+            "Repeat/file decode must keep GigaAM/Parakeet/T-One instead of defaulting to Whisper"
+        );
     }
 
     #[test]

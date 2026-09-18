@@ -82,6 +82,7 @@ pub fn catch_runtime_panic<T>(context: &str, job: impl FnOnce() -> T) -> LfResul
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(job)).map_err(|payload| {
         let detail = panic_payload_message(payload.as_ref());
         crate::journal::log("worker_panic", &format!("{context}: {detail}"));
+        crate::diagnostics::error("worker_panic", &format!("{context}: {detail}"));
         LfError::RuntimeUnsupported(format!(
             "{context} failed unexpectedly. LocalFlow is still running; try again or restart it."
         ))
@@ -102,6 +103,11 @@ pub fn path_buf_error(path: PathBuf) -> String {
     path.display().to_string()
 }
 
+fn names_tone_engine(text: &str) -> bool {
+    let lower = text.to_ascii_lowercase();
+    lower.contains("t-one") || lower.contains("tone-streaming") || lower.contains("tone")
+}
+
 /// What to show in the bar / Settings instead of a raw error code.
 pub fn user_guidance(err: &LfError) -> String {
     match err {
@@ -110,6 +116,9 @@ pub fn user_guidance(err: &LfError) -> String {
         }
         LfError::ModelMissing(model) if model.to_ascii_lowercase().contains("parakeet") => {
             "Parakeet is not ready yet. Open Models, download the complete Parakeet package, select it for speech, then try again.".into()
+        }
+        LfError::ModelMissing(model) if names_tone_engine(model) => {
+            "T-One is not ready yet. Open Models, download T-One Streaming Russian, select it for speech, then try again.".into()
         }
         LfError::ModelFormatInvalid(message) | LfError::ModelNotPinned(message)
             if message.to_ascii_lowercase().contains("gigaam") =>
@@ -120,6 +129,11 @@ pub fn user_guidance(err: &LfError) -> String {
             if message.to_ascii_lowercase().contains("parakeet") =>
         {
             "Parakeet is not ready yet. Open Models, download the complete Parakeet package, select it for speech, then try again.".into()
+        }
+        LfError::ModelFormatInvalid(message) | LfError::ModelNotPinned(message)
+            if names_tone_engine(message) =>
+        {
+            "T-One is not ready yet. Open Models, download T-One Streaming Russian, select it for speech, then try again.".into()
         }
         LfError::ModelMissing(_) | LfError::ModelFormatInvalid(_) | LfError::ModelNotPinned(_) => {
             "Whisper is not ready yet. Open Models, download a speech model, select it for speech, then try again.".into()
@@ -239,6 +253,13 @@ mod tests {
         let parakeet = user_guidance(&LfError::ModelNotPinned("parakeet-v3".into()));
         assert!(parakeet.contains("Parakeet"), "{parakeet}");
         assert!(!parakeet.contains("Whisper"), "{parakeet}");
+
+        let tone = user_guidance(&LfError::ModelMissing("T-One model.onnx".into()));
+        assert!(tone.contains("T-One"), "{tone}");
+        assert!(!tone.contains("Whisper"), "{tone}");
+        let tone_id = user_guidance(&LfError::ModelMissing("tone-streaming-ru".into()));
+        assert!(tone_id.contains("T-One"), "{tone_id}");
+        assert!(!tone_id.contains("Whisper"), "{tone_id}");
     }
 
     #[test]

@@ -1,7 +1,7 @@
 use crate::audio::{self, AudioDevice};
 use crate::build_info::{self, BuildInfo};
 use crate::catalog::ModelRecord;
-use crate::config::{AppSettings, DEFAULT_STT_MODEL};
+use crate::config::AppSettings;
 use crate::dictionary::DictionaryEntry;
 use crate::download::{self, ModelDownloadProgress, ModelInstallStatus};
 use crate::engine::SharedEngine;
@@ -35,6 +35,7 @@ impl std::fmt::Display for CommandError {
 
 impl From<LfError> for CommandError {
     fn from(value: LfError) -> Self {
+        crate::diagnostics::error("command", &format!("code={} detail={value}", value.code()));
         Self {
             code: value.code().to_string(),
             message: crate::error::user_guidance(&value),
@@ -118,7 +119,7 @@ pub fn save_settings(
     app: tauri::AppHandle,
     engine: tauri::State<SharedEngine>,
     mut settings: AppSettings,
-) -> Result<(), CommandError> {
+) -> Result<AppSettings, CommandError> {
     settings.validate()?;
     settings.normalize();
     ensure_shortcut_parseable("Talk", &settings.hotkey)?;
@@ -176,7 +177,7 @@ pub fn save_settings(
             ),
         });
     }
-    Ok(())
+    Ok(lock(&engine)?.settings.clone())
 }
 
 #[tauri::command]
@@ -202,6 +203,11 @@ pub fn upsert_dictionary_entry(
     entry: DictionaryEntry,
 ) -> Result<(), CommandError> {
     let mut eng = lock(&engine)?;
+    if entry.target().trim().is_empty() || entry.patterns().is_empty() {
+        return Err(CommandError::from(LfError::ConfigInvalid(
+            "Dictionary entry needs a spoken form and a replacement.".into(),
+        )));
+    }
     eng.dictionary.upsert(entry);
     eng.persist()?;
     Ok(())
@@ -253,6 +259,11 @@ pub fn upsert_snippet(
     snippet: Snippet,
 ) -> Result<(), CommandError> {
     let mut eng = lock(&engine)?;
+    if snippet.trigger.trim().is_empty() || snippet.content.trim().is_empty() {
+        return Err(CommandError::from(LfError::ConfigInvalid(
+            "Snippet needs a trigger and content.".into(),
+        )));
+    }
     eng.snippets.upsert(snippet);
     eng.persist()?;
     Ok(())
@@ -474,8 +485,13 @@ pub fn dictation_stop() -> Result<(), CommandError> {
 }
 
 #[tauri::command]
-pub fn dictation_cancel() -> Result<(), CommandError> {
-    crate::dictation::enqueue(crate::dictation::DictationCmd::Cancel);
+pub fn dictation_cancel(source: Option<String>) -> Result<(), CommandError> {
+    let source = match source.as_deref() {
+        Some("bar_cancel") => crate::dictation::CancelSource::FlowBarCancel,
+        Some("bar_dismiss") => crate::dictation::CancelSource::FlowBarDismiss,
+        _ => crate::dictation::CancelSource::UserInterface,
+    };
+    crate::dictation::enqueue(crate::dictation::DictationCmd::Cancel(source));
     Ok(())
 }
 
@@ -653,10 +669,17 @@ fn preload_stt(engine: &str, path: PathBuf) {
     match engine.trim().to_ascii_lowercase().as_str() {
         "gigaam" | "parakeet" => {
             crate::whisper_stt::unload();
+            crate::tone_stt::unload();
             crate::sherpa_stt::preload(engine.to_string(), path);
+        }
+        "tone" => {
+            crate::whisper_stt::unload();
+            crate::sherpa_stt::unload();
+            crate::tone_stt::preload(path);
         }
         _ => {
             crate::sherpa_stt::unload();
+            crate::tone_stt::unload();
             crate::whisper_stt::preload(path);
         }
     }
@@ -714,10 +737,10 @@ fn spawn_required_kind_download(app: AppHandle, engine: SharedEngine, kind: &'st
             let Ok(eng) = engine.lock() else {
                 return;
             };
-            eng.settings
-                .active_stt_model
-                .clone()
-                .unwrap_or_else(|| DEFAULT_STT_MODEL.into())
+            crate::config::effective_stt_model_id(
+                &eng.settings.stt_engine,
+                eng.settings.active_stt_model.as_deref(),
+            )
         };
         crate::journal::log("model_download", &format!("auto {id}"));
         if let Err(err) = download_model_guarded(app, engine, id.clone(), false).await {
@@ -804,6 +827,8 @@ async fn download_model_inner(
             "gigaam"
         } else if model_id == crate::config::stt_model_id_for_engine("parakeet") {
             "parakeet"
+        } else if model_id == crate::config::stt_model_id_for_engine("tone") {
+            "tone"
         } else {
             "whisper"
         };
@@ -855,6 +880,8 @@ pub async fn set_active_model(
             "gigaam"
         } else if model_id == crate::config::stt_model_id_for_engine("parakeet") {
             "parakeet"
+        } else if model_id == crate::config::stt_model_id_for_engine("tone") {
+            "tone"
         } else {
             "whisper"
         };
@@ -1162,25 +1189,11 @@ fn transcribe_audio_file_sync(
     crate::journal::log("transcribe_file", &hint.display().to_string());
     let (stt_path, lang, vad, options) = {
         let eng = lock(&engine)?;
-        if !crate::config::stt_engine_runtime_available(&eng.settings.stt_engine) {
-            crate::journal::log(
-                "stt_engine_fallback",
-                &format!(
-                    "{} is unavailable; using Whisper for file transcription",
-                    eng.settings.stt_engine
-                ),
-            );
-        }
         let stt_path = eng.ready_model_path("stt").ok_or_else(|| {
-            let model_id = if eng.settings.stt_engine.eq_ignore_ascii_case("whisper") {
-                eng.settings
-                    .active_stt_model
-                    .clone()
-                    .unwrap_or_else(|| crate::config::DEFAULT_STT_MODEL.to_string())
-            } else {
-                crate::config::stt_model_id_for_engine(&eng.settings.stt_engine).to_string()
-            };
-            LfError::ModelMissing(model_id)
+            LfError::ModelMissing(crate::config::effective_stt_model_id(
+                &eng.settings.stt_engine,
+                eng.settings.active_stt_model.as_deref(),
+            ))
         })?;
         let mut options = crate::whisper_stt::DecodeOptions::long_form_interview();
         options.vad_model = eng.vad_model_path();
@@ -1380,6 +1393,7 @@ pub fn uninstall_localflow(
 ) -> Result<crate::uninstall::UninstallReport, CommandError> {
     crate::whisper_stt::unload();
     crate::sherpa_stt::unload();
+    crate::tone_stt::unload();
     lock(&engine)?.release_files_for_uninstall()?;
     crate::instance::release_gui_lock();
     let report = crate::uninstall::uninstall(keep_history)?;
@@ -1393,7 +1407,15 @@ pub fn uninstall_localflow(
 
 #[tauri::command]
 pub fn permission_status() -> crate::permissions::PermissionStatus {
-    crate::permissions::status()
+    let status = crate::permissions::status();
+    crate::journal::log(
+        "permission_status",
+        &format!(
+            "microphone_devices={} accessibility_trusted={}",
+            status.microphone_device_count, status.accessibility_trusted
+        ),
+    );
+    status
 }
 
 #[tauri::command]
@@ -1422,7 +1444,19 @@ pub fn read_journal(
 
 #[tauri::command]
 pub fn open_privacy_pane(kind: String) -> Result<(), CommandError> {
-    Ok(crate::permissions::open_pane(&kind)?)
+    match crate::permissions::open_pane(&kind) {
+        Ok(()) => {
+            crate::journal::log("privacy_pane", &format!("opened kind={kind}"));
+            Ok(())
+        }
+        Err(err) => {
+            crate::diagnostics::error(
+                "privacy_pane",
+                &format!("kind={kind} code={} detail={err}", err.code()),
+            );
+            Err(err.into())
+        }
+    }
 }
 
 #[tauri::command]

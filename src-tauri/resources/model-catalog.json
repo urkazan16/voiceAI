@@ -1,6 +1,34 @@
 {
-  "catalog_version": "0.4.0",
+  "catalog_version": "0.5.0",
   "models": [
+    {
+      "model_id": "tone-streaming-ru",
+      "display_name": "T-One Streaming Russian",
+      "version": "2025-09-08 ONNX",
+      "filename": "tone-streaming-ru/model.onnx",
+      "format": "ONNX",
+      "quantization": "F32",
+      "kind": "stt",
+      "source": "voicekit-team/T-one via sherpa-onnx",
+      "source_url": "https://k2-fsa.github.io/sherpa/onnx/pretrained_models/online-ctc/t-one-ctc-models.html",
+      "download_url": "https://huggingface.co/csukuangfj/sherpa-onnx-streaming-t-one-russian-2025-09-08/resolve/main/model.onnx?download=true",
+      "sha256": "5ded080e2a6c86ecc11bcb0902d77524eb3e8b0844cb0c0754347f5aafb4dabc",
+      "size": 144193702,
+      "license": "Apache-2.0",
+      "license_url": "https://github.com/voicekit-team/T-one/blob/main/LICENSE",
+      "network_required_to_obtain": true,
+      "checksum_pinned": true,
+      "notes": "Russian streaming CTC model trained at 8 kHz. Use T-One mode for low-latency and long continuous dictation; it emits text while you speak.",
+      "companion_files": [
+        {
+          "filename": "tokens.txt",
+          "download_url": "https://huggingface.co/csukuangfj/sherpa-onnx-streaming-t-one-russian-2025-09-08/resolve/main/tokens.txt?download=true",
+          "sha256": "27f7b3ba2096c572375fba1a6b29af1f80d86e08a329940612908112695f97e0",
+          "size": 202,
+          "format": "TEXT"
+        }
+      ]
+    },
     {
       "model_id": "gigaam-v3-ctc",
       "display_name": "GigaAM v3 CTC",

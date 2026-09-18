@@ -100,5 +100,8 @@ mod tests {
             "6c14d5adee5f86394037b4e4e8b59f1673b6cee10e3cf0b11bbdbee79c156208"
         );
         assert_eq!(medium.size, 1_533_763_059);
+        let tone = catalog.get("tone-streaming-ru").unwrap();
+        assert_eq!(tone.size, 144_193_702);
+        assert_eq!(tone.companion_files.len(), 1);
     }
 }

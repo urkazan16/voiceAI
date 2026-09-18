@@ -4,12 +4,16 @@
 
 use crate::error::{LfError, LfResult};
 use serde::{Deserialize, Serialize};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{mpsc, Arc, Mutex, OnceLock};
 use std::time::Duration;
 
 /// Hands-free can leave the mic open; stop appending after this many seconds
 /// of native samples so RAM cannot grow without bound.
 pub const MAX_CAPTURE_SECS: u32 = 120;
+/// At a typical 20 ms callback this retains about two minutes of audio while
+/// the streaming decoder catches up. The queue is bounded so a 45 minute
+/// session cannot grow RAM indefinitely.
+pub const STREAMING_QUEUE_CHUNKS: usize = 6_000;
 
 pub fn max_capture_samples(sample_rate: u32, channels: u16) -> usize {
     let rate = sample_rate.max(1) as usize;
@@ -27,6 +31,22 @@ pub fn append_capped(buf: &mut Vec<f32>, data: &[f32], max: usize) {
     buf.extend_from_slice(&data[..take]);
 }
 
+pub fn append_rolling(buf: &mut Vec<f32>, data: &[f32], max: usize) {
+    if max == 0 || data.is_empty() {
+        return;
+    }
+    if data.len() >= max {
+        buf.clear();
+        buf.extend_from_slice(&data[data.len() - max..]);
+        return;
+    }
+    let excess = buf.len().saturating_add(data.len()).saturating_sub(max);
+    if excess > 0 {
+        buf.drain(..excess);
+    }
+    buf.extend_from_slice(data);
+}
+
 static LAST_STREAM_ERROR: OnceLock<Mutex<Option<String>>> = OnceLock::new();
 
 fn stream_error_slot() -> &'static Mutex<Option<String>> {
@@ -37,9 +57,20 @@ pub fn take_stream_error() -> Option<String> {
     stream_error_slot().lock().ok().and_then(|mut g| g.take())
 }
 
+pub fn clear_stream_error() {
+    if let Ok(mut slot) = stream_error_slot().lock() {
+        *slot = None;
+    }
+}
+
 fn remember_stream_error(message: String) {
     if let Ok(mut slot) = stream_error_slot().lock() {
-        *slot = Some(message);
+        // CPAL can call its callback repeatedly for one failed stream. Keep
+        // the first cause and print it once instead of flooding the terminal.
+        if slot.is_none() {
+            crate::diagnostics::error("audio_stream", &message);
+            *slot = Some(message);
+        }
     }
 }
 
@@ -68,6 +99,9 @@ pub type SharedCapture = Arc<CaptureHub>;
 enum CaptureCommand {
     Start {
         name: Option<String>,
+        tap: Option<mpsc::SyncSender<CapturedAudio>>,
+        max_samples: usize,
+        rolling: bool,
         reply: std::sync::mpsc::Sender<LfResult<()>>,
     },
     Stop {
@@ -95,18 +129,38 @@ impl CaptureHub {
                 let mut live: Option<LiveCapture> = None;
                 while let Ok(cmd) = rx.recv() {
                     match cmd {
-                        CaptureCommand::Start { name, reply } => {
+                        CaptureCommand::Start {
+                            name,
+                            tap,
+                            max_samples,
+                            rolling,
+                            reply,
+                        } => {
+                            // A transient error from a previous stream must
+                            // not stop the next dictation as soon as its level
+                            // meter starts.
+                            clear_stream_error();
                             if live.is_some() {
                                 drop(live.take().map(LiveCapture::finish));
                                 std::thread::sleep(Duration::from_millis(40));
                             }
-                            let mut result = start_capture(name.as_deref());
+                            let mut result = start_capture_with_tap(
+                                name.as_deref(),
+                                tap.clone(),
+                                max_samples,
+                                rolling,
+                            );
                             for delay_ms in [80_u64, 160, 320] {
                                 if result.is_ok() {
                                     break;
                                 }
                                 std::thread::sleep(Duration::from_millis(delay_ms));
-                                result = start_capture(name.as_deref());
+                                result = start_capture_with_tap(
+                                    name.as_deref(),
+                                    tap.clone(),
+                                    max_samples,
+                                    rolling,
+                                );
                             }
                             let result = result.map(|capture| {
                                 live = Some(capture);
@@ -137,10 +191,38 @@ impl CaptureHub {
     pub fn start(&self, name: Option<String>) -> LfResult<()> {
         let (reply, rx) = std::sync::mpsc::channel();
         self.tx
-            .send(CaptureCommand::Start { name, reply })
+            .send(CaptureCommand::Start {
+                name,
+                tap: None,
+                max_samples: max_capture_samples(48_000, 2),
+                rolling: false,
+                reply,
+            })
             .map_err(|_| LfError::DeviceUnavailable("audio thread stopped".into()))?;
         rx.recv()
             .map_err(|_| LfError::DeviceUnavailable("audio thread stopped".into()))?
+    }
+
+    /// Start capture for a streaming recognizer. The recognizer gets native
+    /// audio chunks through a bounded queue; if it cannot keep up we surface a
+    /// microphone-stream error instead of silently dropping dictation.
+    /// The in-memory buffer still keeps the full utterance (capped) so Repeat
+    /// can re-run the last T-One take.
+    pub fn start_streaming(&self, name: Option<String>) -> LfResult<mpsc::Receiver<CapturedAudio>> {
+        let (tap, audio_rx) = mpsc::sync_channel(STREAMING_QUEUE_CHUNKS);
+        let (reply, rx) = std::sync::mpsc::channel();
+        self.tx
+            .send(CaptureCommand::Start {
+                name,
+                tap: Some(tap),
+                max_samples: max_capture_samples(48_000, 2),
+                rolling: false,
+                reply,
+            })
+            .map_err(|_| LfError::DeviceUnavailable("audio thread stopped".into()))?;
+        rx.recv()
+            .map_err(|_| LfError::DeviceUnavailable("audio thread stopped".into()))??;
+        Ok(audio_rx)
     }
 
     pub fn stop(&self) -> Option<CapturedAudio> {
@@ -190,12 +272,24 @@ pub fn list_input_devices() -> LfResult<Vec<AudioDevice>> {
                 devices.push(AudioDevice { name, is_default });
             }
         }
-        Err(err) => return Err(LfError::DeviceUnavailable(err.to_string())),
+        Err(err) => {
+            crate::diagnostics::error("microphone_enumeration", &err.to_string());
+            return Err(LfError::DeviceUnavailable(err.to_string()));
+        }
     }
     Ok(devices)
 }
 
 pub fn start_capture(preferred_name: Option<&str>) -> LfResult<LiveCapture> {
+    start_capture_with_tap(preferred_name, None, max_capture_samples(48_000, 2), false)
+}
+
+fn start_capture_with_tap(
+    preferred_name: Option<&str>,
+    tap: Option<mpsc::SyncSender<CapturedAudio>>,
+    max_samples: usize,
+    rolling: bool,
+) -> LfResult<LiveCapture> {
     use cpal::traits::{DeviceTrait, StreamTrait};
     let host = cpal::default_host();
     let device = select_input_device(&host, preferred_name)?;
@@ -206,19 +300,41 @@ pub fn start_capture(preferred_name: Option<&str>) -> LfResult<LiveCapture> {
     let channels = config.channels();
     let samples = Arc::new(Mutex::new(Vec::new()));
     let writer = samples.clone();
-    let max_samples = max_capture_samples(sample_rate, channels);
+    let max_samples = if rolling {
+        max_samples
+            .saturating_mul(sample_rate as usize)
+            .saturating_mul(channels as usize)
+            / (48_000 * 2)
+    } else {
+        max_capture_samples(sample_rate, channels)
+    };
     let err_fn = |err: cpal::StreamError| {
         let message = err.to_string();
         remember_stream_error(message.clone());
-        eprintln!("audio stream error: {message}");
     };
     let stream = match config.sample_format() {
         cpal::SampleFormat::F32 => device
             .build_input_stream(
                 &config.into(),
                 move |data: &[f32], _| {
+                    if let Some(tap) = &tap {
+                        let chunk = CapturedAudio {
+                            samples: data.to_vec(),
+                            sample_rate,
+                            channels,
+                        };
+                        if matches!(tap.try_send(chunk), Err(mpsc::TrySendError::Full(_))) {
+                            remember_stream_error(
+                                "Speech recognition cannot keep up with microphone audio.".into(),
+                            );
+                        }
+                    }
                     if let Ok(mut buf) = writer.lock() {
-                        append_capped(&mut buf, data, max_samples);
+                        if rolling {
+                            append_rolling(&mut buf, data, max_samples);
+                        } else {
+                            append_capped(&mut buf, data, max_samples);
+                        }
                     }
                 },
                 err_fn,
@@ -229,12 +345,26 @@ pub fn start_capture(preferred_name: Option<&str>) -> LfResult<LiveCapture> {
             .build_input_stream(
                 &config.into(),
                 move |data: &[i16], _| {
-                    if let Ok(mut buf) = writer.lock() {
-                        if buf.len() >= max_samples {
-                            return;
+                    let converted: Vec<f32> = data.iter().map(|s| *s as f32 / 32768.0).collect();
+                    if let Some(tap) = &tap {
+                        let chunk = CapturedAudio {
+                            samples: converted.clone(),
+                            sample_rate,
+                            channels,
+                        };
+                        if matches!(tap.try_send(chunk), Err(mpsc::TrySendError::Full(_))) {
+                            remember_stream_error(
+                                "Speech recognition cannot keep up with microphone audio.".into(),
+                            );
                         }
-                        let room = max_samples - buf.len();
-                        buf.extend(data.iter().take(room).map(|s| *s as f32 / 32768.0));
+                    }
+                    if let Ok(mut buf) = writer.lock() {
+                        if rolling {
+                            append_rolling(&mut buf, &converted, max_samples);
+                        } else if buf.len() < max_samples {
+                            let room = max_samples - buf.len();
+                            buf.extend_from_slice(&converted[..converted.len().min(room)]);
+                        }
                     }
                 },
                 err_fn,
@@ -414,6 +544,13 @@ mod tests {
         assert_eq!(buf, vec![1.0, 2.0, 3.0, 4.0]);
         append_capped(&mut buf, &[9.0], 4);
         assert_eq!(buf, vec![1.0, 2.0, 3.0, 4.0]);
+    }
+
+    #[test]
+    fn append_rolling_keeps_the_latest_audio_tail() {
+        let mut buf = vec![1.0, 2.0, 3.0];
+        append_rolling(&mut buf, &[4.0, 5.0, 6.0], 4);
+        assert_eq!(buf, vec![3.0, 4.0, 5.0, 6.0]);
     }
 
     #[test]

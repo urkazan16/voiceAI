@@ -149,20 +149,23 @@ const EN = {
   speechLanguage: "Speech language",
   speechEngine: "Speech engine",
   speechEngineHelp:
-    "Choose the installed speech engine. GigaAM is optimized for Russian; Parakeet is multilingual and fast on CPU. Download the corresponding model in Models first.",
+    "Choose the installed speech engine. GigaAM is optimized for Russian; Parakeet is multilingual and fast on CPU; T-One streams Russian speech for long dictation. Download the corresponding model in Models first.",
   speechEngineWhisper: "Whisper — multilingual, reliable baseline.",
   speechEngineGigaam:
     "GigaAM — Russian-focused model, usually faster and better for Russian speech.",
-  speechEngineParakeet:
-    "Parakeet — fast CPU model for English speech; use GigaAM for Russian dictation.",
+  speechEngineParakeet: "Parakeet — fast multilingual CPU model, including Russian.",
+  speechEngineTone:
+    "T-One — Russian streaming mode for long dictation. Hold the talk key while speaking and release it to finalize and insert the text. Download T-One in Models first.",
   langRussian: "Russian",
   langEnglish: "English",
   langAuto: "Auto-detect",
   speechLangHelp:
     "Russian is more accurate for Russian-only speech. Use Auto-detect when a replica mixes Russian and English so Whisper can switch language inside the clip.",
+  speechLangTone:
+    "T-One recognizes Russian only. Speech language is locked to Russian while this engine is selected.",
   speechModel: "Speech model (downloaded)",
   speechModelHelp:
-    "Only Whisper files already on this Mac are listed. Small/Base are faster; Medium is more accurate. Download others on the Models page.",
+    "Downloaded speech files for the selected engine (Whisper, GigaAM, Parakeet, or T-One). Download others on the Models page.",
   formattingModel: "Formatting model (downloaded)",
   formattingModelHelp:
     "Optional Qwen/LLM files that are installed. Dictation still works if none are selected.",
@@ -202,6 +205,7 @@ const EN = {
   pauseInsert: "Pause before insert (ms)",
   handsFree:
     "Hands-free (press to start, press again to stop). Hold-to-talk stays the default when this is off.",
+  handsFreeTone: "T-One finalizes on hotkey release, so hands-free is unavailable in this mode.",
   spokenDigits: "Write spoken numbers as digits",
   dateFormat: "Date format",
   acceleration: "Acceleration",
@@ -211,6 +215,8 @@ const EN = {
   accelerationHelp:
     "Auto uses the GPU on Apple Silicon. Intel Macs and other platforms stay on CPU. GPU can hang on Intel — leave Auto or CPU there.",
   postTimeout: "Post-processing timeout (ms)",
+  logMaxBytes: "Log file size",
+  copiedExport: "Copied to the clipboard.",
   installMacro: "Install Dictate macro",
   copyLastHotkey: "Copy last transcript",
   pasteLastHotkey: "Paste last transcript",
@@ -345,19 +351,23 @@ const RU: typeof EN = {
   speechLanguage: "Язык речи",
   speechEngine: "Движок распознавания",
   speechEngineHelp:
-    "Whisper доступен сейчас. GigaAM оптимизирован для русского, Parakeet — мультиязычная быстрая модель. До подключения их runtime приложение явно использует Whisper как временный fallback.",
+    "Выберите установленный движок. GigaAM оптимизирован для русского, Parakeet — мультиязычная быстрая модель для CPU, T-One распознаёт русскую речь потоком для долгой диктовки. Сначала скачайте нужную модель в разделе «Модели».",
   speechEngineWhisper: "Whisper — надёжная базовая мультиязычная модель; runtime уже активен.",
   speechEngineGigaam:
     "GigaAM — модель для русского языка, обычно быстрее и точнее на русской речи.",
   speechEngineParakeet: "Parakeet — быстрая мультиязычная модель для CPU, включая русский язык.",
+  speechEngineTone:
+    "T-One — потоковый режим для русского и долгой диктовки. Удерживайте хоткей во время речи и отпустите его для финализации и вставки текста. Сначала скачайте T-One в разделе «Модели».",
   langRussian: "Русский",
   langEnglish: "Английский",
   langAuto: "Автоопределение",
   speechLangHelp:
     "Русский точнее для только русской речи. Автоопределение нужно, когда в одной реплике смешаны русский и английский.",
+  speechLangTone:
+    "T-One распознаёт только русский. Пока выбран этот движок, язык речи зафиксирован.",
   speechModel: "Модель речи (скачанные)",
   speechModelHelp:
-    "В списке только Whisper, уже лежащие на этом Mac. Small/Base быстрее, Medium точнее. Остальные скачиваются в разделе «Модели».",
+    "В списке скачанные файлы выбранного движка (Whisper, GigaAM, Parakeet или T-One). Остальные скачиваются в разделе «Модели».",
   formattingModel: "Модель форматирования (скачанные)",
   formattingModelHelp: "Необязательные установленные Qwen/LLM. Диктовка работает и без них.",
   noDownloadedSpeech: "Пока нет установленной модели речи.",
@@ -396,6 +406,8 @@ const RU: typeof EN = {
   pauseInsert: "Пауза перед вставкой (мс)",
   handsFree:
     "Hands-free (нажали — запись, нажали снова — стоп). Если выключено, работает удержание хоткея.",
+  handsFreeTone:
+    "T-One завершает фразу при отпускании хоткея, поэтому hands-free в этом режиме недоступен.",
   spokenDigits: "Писать произнесённые числа цифрами",
   dateFormat: "Формат даты",
   acceleration: "Ускорение",
@@ -405,6 +417,8 @@ const RU: typeof EN = {
   accelerationHelp:
     "Авто включает GPU на Apple Silicon. На Intel и других платформах остаётся CPU. GPU на Intel может зависать — там оставьте Авто или CPU.",
   postTimeout: "Таймаут постобработки (мс)",
+  logMaxBytes: "Размер файла логов",
+  copiedExport: "Скопировано в буфер обмена.",
   installMacro: "Установить макрос Dictate",
   copyLastHotkey: "Копировать последний транскрипт",
   pasteLastHotkey: "Вставить последний транскрипт",
@@ -521,7 +535,7 @@ const WINDOWS_EN: Partial<UiCopy> = {
   hotkeyHelp:
     "Click the field, then press a combination (Ctrl+Shift+Space or F13). Escape cancels. Win+Space and Ctrl+C are reserved by Windows.",
   speechModelHelp:
-    "Only Whisper files already on this PC are listed. Small/Base are faster; Medium is more accurate. Download others on the Models page.",
+    "Downloaded speech files for the selected engine (Whisper, GigaAM, Parakeet, or T-One). Download others on the Models page.",
   deleteModel: "Delete from this PC",
   clipboardHelp:
     "Keeps the previous clipboard after Ctrl+V. If the app crashes mid-paste, the same snapshot is restored from disk. Password fields may block paste — use Copy last after leaving the field.",
@@ -542,7 +556,7 @@ const WINDOWS_RU: Partial<UiCopy> = {
   hotkeyHelp:
     "Нажмите поле, затем сочетание (Ctrl+Shift+Space или F13). Escape отменяет. Win+Space и Ctrl+C заняты Windows.",
   speechModelHelp:
-    "В списке только Whisper, уже лежащие на этом ПК. Small/Base быстрее, Medium точнее. Остальные скачиваются в разделе «Модели».",
+    "В списке скачанные файлы выбранного движка (Whisper, GigaAM, Parakeet или T-One). Остальные скачиваются в разделе «Модели».",
   deleteModel: "Удалить с этого ПК",
   clipboardHelp:
     "Возвращает прежний буфер после Ctrl+V. Если приложение упадёт во время вставки, снимок восстановится с диска. Поля пароля могут блокировать вставку — используйте «Копировать последнее» после выхода из поля.",
@@ -564,7 +578,7 @@ const LINUX_EN: Partial<UiCopy> = {
   hotkeyHelp:
     "Click the field, then press a combination (Ctrl+Shift+Space or F13). Escape cancels. Super+Space is often taken by the desktop input switcher.",
   speechModelHelp:
-    "Only Whisper files already on this computer are listed. Small/Base are faster; Medium is more accurate. Download others on the Models page.",
+    "Downloaded speech files for the selected engine (Whisper, GigaAM, Parakeet, or T-One). Download others on the Models page.",
   deleteModel: "Delete from this computer",
   clipboardHelp:
     "Keeps the previous clipboard after Ctrl+V. On Wayland, some apps cannot receive a synthetic paste — press Ctrl+V if the text stays on the clipboard. If the app crashes mid-paste, the snapshot is restored from disk.",
@@ -585,7 +599,7 @@ const LINUX_RU: Partial<UiCopy> = {
   hotkeyHelp:
     "Нажмите поле, затем сочетание (Ctrl+Shift+Space или F13). Escape отменяет. Super+Space часто занят переключателем раскладки.",
   speechModelHelp:
-    "В списке только Whisper, уже лежащие на этом компьютере. Small/Base быстрее, Medium точнее. Остальные скачиваются в разделе «Модели».",
+    "В списке скачанные файлы выбранного движка (Whisper, GigaAM, Parakeet или T-One). Остальные скачиваются в разделе «Модели».",
   deleteModel: "Удалить с этого компьютера",
   clipboardHelp:
     "Возвращает прежний буфер после Ctrl+V. В Wayland некоторые приложения не принимают синтетическую вставку — нажмите Ctrl+V, если текст остался в буфере. Если приложение упадёт во время вставки, снимок восстановится с диска.",

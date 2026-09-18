@@ -14,14 +14,35 @@ pub fn stt_model_id_for_engine(engine: &str) -> &'static str {
     match engine.trim().to_ascii_lowercase().as_str() {
         "gigaam" => "gigaam-v3-ctc",
         "parakeet" => "parakeet-v3",
+        "tone" => "tone-streaming-ru",
         _ => DEFAULT_STT_MODEL,
+    }
+}
+
+pub fn is_non_whisper_stt_model(model_id: &str) -> bool {
+    matches!(
+        model_id.trim(),
+        "gigaam-v3-ctc" | "parakeet-v3" | "tone-streaming-ru"
+    )
+}
+
+/// Model the runtime actually loads. A leftover ONNX id must not be handed to Whisper.
+pub fn effective_stt_model_id(engine: &str, active_stt_model: Option<&str>) -> String {
+    let engine = engine.trim().to_ascii_lowercase();
+    match engine.as_str() {
+        "gigaam" | "parakeet" | "tone" => stt_model_id_for_engine(&engine).to_string(),
+        _ => active_stt_model
+            .map(str::trim)
+            .filter(|id| !id.is_empty() && !is_non_whisper_stt_model(id))
+            .unwrap_or(DEFAULT_STT_MODEL)
+            .to_string(),
     }
 }
 
 pub fn stt_engine_runtime_available(engine: &str) -> bool {
     matches!(
         engine.trim().to_ascii_lowercase().as_str(),
-        "whisper" | "gigaam" | "parakeet"
+        "whisper" | "gigaam" | "parakeet" | "tone"
     )
 }
 
@@ -171,9 +192,19 @@ impl AppSettings {
         }
         let engine = self.stt_engine.trim().to_ascii_lowercase();
         self.stt_engine = match engine.as_str() {
-            "gigaam" | "parakeet" => engine,
+            "gigaam" | "parakeet" | "tone" => engine,
             _ => DEFAULT_STT_ENGINE.into(),
         };
+        self.active_stt_model = Some(effective_stt_model_id(
+            &self.stt_engine,
+            self.active_stt_model.as_deref(),
+        ));
+        // T-One finalizes a streaming utterance when the talk key is
+        // released. Keeping hands-free enabled leaves that stream open and
+        // makes a short dictated sentence appear to have no result.
+        if self.stt_engine == "tone" {
+            self.hands_free = false;
+        }
         let ui = self.ui_language.trim().to_ascii_lowercase();
         self.ui_language = if ui == "ru" { "ru".into() } else { "en".into() };
     }
@@ -196,10 +227,10 @@ impl AppSettings {
         }
         if !matches!(
             self.stt_engine.trim().to_ascii_lowercase().as_str(),
-            "whisper" | "gigaam" | "parakeet"
+            "whisper" | "gigaam" | "parakeet" | "tone"
         ) {
             return Err(LfError::ConfigInvalid(
-                "Speech engine must be Whisper, GigaAM, or Parakeet.".into(),
+                "Speech engine must be Whisper, GigaAM, Parakeet, or T-One.".into(),
             ));
         }
         if let Some(reason) = hotkey_conflict_reason(
@@ -523,6 +554,44 @@ mod tests {
         settings.compute_device = "whatever".into();
         settings.normalize();
         assert_eq!(settings.compute_device, "auto");
+    }
+
+    #[test]
+    fn tone_uses_release_to_finalize_streaming_dictation() {
+        let mut settings = AppSettings {
+            stt_engine: "tone".into(),
+            hands_free: true,
+            ..AppSettings::default()
+        };
+        settings.normalize();
+        assert!(!settings.hands_free);
+    }
+
+    #[test]
+    fn tone_engine_selects_the_streaming_russian_model() {
+        assert_eq!(stt_model_id_for_engine("tone"), "tone-streaming-ru");
+        assert!(stt_engine_runtime_available("tone"));
+    }
+
+    #[test]
+    fn switching_back_to_whisper_drops_onnx_model_ids() {
+        let mut settings = AppSettings {
+            stt_engine: "whisper".into(),
+            active_stt_model: Some("tone-streaming-ru".into()),
+            ..AppSettings::default()
+        };
+        settings.normalize();
+        assert_eq!(settings.stt_engine, "whisper");
+        assert_eq!(
+            settings.active_stt_model.as_deref(),
+            Some(DEFAULT_STT_MODEL)
+        );
+        settings.stt_engine = "tone".into();
+        settings.normalize();
+        assert_eq!(
+            settings.active_stt_model.as_deref(),
+            Some("tone-streaming-ru")
+        );
     }
 
     #[test]
