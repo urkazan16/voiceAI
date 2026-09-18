@@ -656,6 +656,10 @@ mod tests {
             "shared sherpa-onnx must copy DLLs out of target/ before NSIS runs"
         );
         assert!(
+            build.contains("sherpa-onnx-prebuilt"),
+            "cold CI caches leave profile/*.dll empty; copy from the sherpa extract dir"
+        );
+        assert!(
             windows.contains("sherpa-onnx-c-api.dll"),
             "NSIS only includes files listed in bundle.resources"
         );

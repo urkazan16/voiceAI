@@ -56,9 +56,11 @@ fn main() {
 /// not an `[[test]]` target. The extra dependency is merged into the shipped
 /// exe, which already declares v6.
 /// Windows links sherpa-onnx as `sherpa-onnx-c-api.dll` + `onnxruntime.dll`.
-/// The crate copies those next to the Cargo profile exe (`cargo run` works),
-/// but the NSIS installer only ships files listed in `bundle.resources`.
-/// Flatten them into `src-tauri/` so they sit beside `localflow.exe` after install.
+/// sherpa-onnx-sys extracts the shared archive under `target/sherpa-onnx-prebuilt`
+/// and may copy DLLs next to the profile exe. `tauri.windows.conf.json` lists
+/// those names as `bundle.resources`, so they must exist in `src-tauri/` before
+/// `tauri_build` runs — including on a cold CI cache where the profile folder
+/// is still empty.
 fn bundle_sherpa_windows_dlls() {
     let windows = std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows");
     if !windows {
@@ -82,32 +84,66 @@ fn bundle_sherpa_windows_dlls() {
         return;
     };
     let dest_dir = std::path::PathBuf::from(manifest);
-    let mut copied = 0usize;
-    if let Ok(entries) = std::fs::read_dir(profile_dir) {
+    copy_sherpa_runtime_dlls(profile_dir, &dest_dir, false);
+    copy_sherpa_runtime_dlls(&profile_dir.join("examples"), &dest_dir, false);
+    let mut searched = vec![profile_dir.display().to_string()];
+    if let Some(target_dir) = out_dir
+        .ancestors()
+        .find(|path| path.file_name().and_then(|name| name.to_str()) == Some("target"))
+    {
+        let prebuilt = target_dir.join("sherpa-onnx-prebuilt");
+        println!("cargo:rerun-if-changed={}", prebuilt.display());
+        copy_sherpa_runtime_dlls(&prebuilt, &dest_dir, true);
+        searched.push(prebuilt.display().to_string());
+    }
+    let missing: Vec<_> = ["sherpa-onnx-c-api.dll", "onnxruntime.dll"]
+        .iter()
+        .copied()
+        .filter(|name| !dest_dir.join(name).is_file())
+        .collect();
+    if !missing.is_empty() {
+        panic!(
+            "Windows sherpa-onnx runtime DLLs missing ({}) after searching {}. \
+             sherpa-onnx-sys should extract them under target/sherpa-onnx-prebuilt.",
+            missing.join(", "),
+            searched.join(", ")
+        );
+    }
+}
+
+fn is_sherpa_runtime_dll(name: &str) -> bool {
+    let lower = name.to_ascii_lowercase();
+    lower.ends_with(".dll") && (lower.contains("sherpa") || lower.contains("onnxruntime"))
+}
+
+fn copy_sherpa_runtime_dlls(root: &std::path::Path, dest_dir: &std::path::Path, recursive: bool) {
+    let mut stack = vec![(root.to_path_buf(), 0usize)];
+    while let Some((dir, depth)) = stack.pop() {
+        if depth > 8 {
+            continue;
+        }
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
         for entry in entries.flatten() {
             let path = entry.path();
+            if path.is_dir() {
+                if recursive {
+                    stack.push((path, depth + 1));
+                }
+                continue;
+            }
             let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
                 continue;
             };
-            let lower = name.to_ascii_lowercase();
-            if !lower.ends_with(".dll") {
-                continue;
-            }
-            if !(lower.contains("sherpa") || lower.contains("onnxruntime")) {
+            if !is_sherpa_runtime_dll(name) {
                 continue;
             }
             let dest = dest_dir.join(name);
             if std::fs::copy(&path, &dest).is_ok() {
-                copied += 1;
                 println!("cargo:rerun-if-changed={}", path.display());
             }
         }
-    }
-    if copied == 0 {
-        println!(
-            "cargo:warning=No sherpa-onnx Windows DLLs found in {} to bundle next to localflow.exe",
-            profile_dir.display()
-        );
     }
 }
 
