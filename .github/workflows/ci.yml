@@ -312,7 +312,7 @@ jobs:
           fi
           find dist -name SHA256SUMS -exec cat {} \; | grep -E '  LocalFlow-' | sort -u > SHA256SUMS
           files+=(SHA256SUMS)
-          notes=$'Installers for macOS, Windows, and Linux.\nУстановщики для macOS, Windows и Linux.\n\nSpeech models download on first launch (~1.5 GB).\nРечевая модель скачивается при первом запуске (~1.5 ГБ).\n\nmacOS builds are Developer ID signed and notarized. If an older download still shows Apple could not verify LocalFlow, replace it with this .dmg, then enable Accessibility and Microphone.\n\nСборки macOS подписаны Developer ID и нотаризованы. Если старый файл всё ещё блокирует Gatekeeper, скачайте этот .dmg заново, затем включите Универсальный доступ и Микрофон.'
+          notes=$'Installers for macOS, Windows, and Linux.\nУстановщики для macOS, Windows и Linux.\n\nSpeech and formatting models download on first launch (Whisper Medium Q8_0 ~820 MB, Qwen3 4B ~2.5 GB).\nМодели скачиваются при первом запуске (Whisper Medium Q8_0 ~820 МБ, Qwen3 4B ~2,5 ГБ).\n\nmacOS builds are Developer ID signed and notarized. If an older download still shows Apple could not verify LocalFlow, replace it with this .dmg, then enable Accessibility and Microphone.\n\nСборки macOS подписаны Developer ID и нотаризованы. Если старый файл всё ещё блокирует Gatekeeper, скачайте этот .dmg заново, затем включите Универсальный доступ и Микрофон.'
           if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
             tag="${GITHUB_REF_NAME}"
             if gh release view "$tag" >/dev/null 2>&1; then

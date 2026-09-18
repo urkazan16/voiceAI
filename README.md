@@ -25,9 +25,9 @@
 
 ## Download / Скачать
 
-Ready-made installers from the [latest GitHub Release](https://github.com/urkazan16/voiceAI/releases/latest). Speech models are **not** inside the installer; LocalFlow downloads Whisper Medium (~1.5 GB) on first launch.
+Ready-made installers from the [latest GitHub Release](https://github.com/urkazan16/voiceAI/releases/latest). Speech and formatting models are **not** inside the installer; LocalFlow downloads Whisper Medium Q8_0 (~820 MB) and Qwen3 4B Instruct 2507 (~2.5 GB) on first launch.
 
-Готовые установщики из [последнего GitHub Release](https://github.com/urkazan16/voiceAI/releases/latest). Моделей в установщике **нет**: Whisper Medium (~1.5 ГБ) скачивается при первом запуске.
+Готовые установщики из [последнего GitHub Release](https://github.com/urkazan16/voiceAI/releases/latest). Моделей в установщике **нет**: при первом запуске скачиваются Whisper Medium Q8_0 (~820 МБ) и Qwen3 4B Instruct 2507 (~2,5 ГБ).
 
 | Platform / Платформа               | File / Файл                                                                                                                |
 | ---------------------------------- | -------------------------------------------------------------------------------------------------------------------------- |
@@ -42,7 +42,7 @@ All versions / Все версии: [github.com/urkazan16/voiceAI/releases](http
 
 ## Установка
 
-Готовые сборки — в [Download / Скачать](#download--скачать). Веса Whisper в установщик не входят: при первом запуске скачивается Whisper Medium (~1.5 ГБ) с Hugging Face, затем проверяются SHA-256 и magic ggml.
+Готовые сборки — в [Download / Скачать](#download--скачать). Веса в установщик не входят: при первом запуске скачиваются Whisper Medium Q8_0 (~820 МБ) и Qwen3 4B Instruct 2507 (~2,5 ГБ) с Hugging Face, затем проверяются SHA-256 и magic ggml/GGUF.
 
 ### macOS и Gatekeeper
 
@@ -176,8 +176,8 @@ ffmpeg -f avfoundation -i ":0" -t 3 -f wav - | cargo run --manifest-path src-tau
 | `paste_last_hotkey`       | `Command+Control+V` / `Control+Alt+V` | вставить последнюю реплику                                               |
 | `edit_hotkey`             | `Command+Control+E` / `Control+Alt+E` | диктовка с заменой выделения                                             |
 | `microphone_name`         | пусто                                 | имя из списка устройств; пусто — системный по умолчанию                  |
-| `active_stt_model`        | `whisper-medium`                      | id из каталога моделей                                                   |
-| `active_llm_model`        | пусто                                 | id LLM; пусто — диктовка без языковой модели                             |
+| `active_stt_model`        | `whisper-medium-q8_0`                 | id из каталога моделей                                                   |
+| `active_llm_model`        | `Qwen3-4B-Instruct-2507`              | id LLM; пусто — диктовка без языковой модели                             |
 | `stt_language`            | `ru`                                  | `ru`, `en` или `auto`                                                    |
 | `mode`                    | `normal`                              | запасной стиль пайплайна: `raw` / `normal` / `professional` / `code`     |
 | `profile_override`        | пусто                                 | зафиксировать профиль, не смотря на активное окно                        |
@@ -213,7 +213,7 @@ npm run download:stt
 cargo run --manifest-path src-tauri/Cargo.toml -- download --model whisper-large-v3-turbo
 ```
 
-`whisper-base` быстрее и заметно хуже на русском, `whisper-small` — черновик, `whisper-medium` — компромисс по умолчанию (~1.5 ГБ F16). На Intel-CPU удобнее `whisper-medium-q8_0` (~820 МБ). `whisper-large-v3-turbo` обычно быстрее Medium при том же порядке размера на диске.
+`whisper-base` быстрее и заметно хуже на русском, `whisper-small` — черновик, `whisper-medium-q8_0` — компромисс по умолчанию (~820 МБ). Полный F16 `whisper-medium` (~1.5 ГБ) остаётся в каталоге. `whisper-large-v3-turbo` обычно быстрее Medium при том же порядке размера на диске.
 
 Перед использованием:
 
@@ -239,9 +239,9 @@ cargo run --manifest-path src-tauri/Cargo.toml -- download --model whisper-large
 
 ## Языковая модель
 
-По умолчанию текст правят словарь, сниппеты, персонализация и правила. LLM выключена, пока в Менеджере моделей не активирован `active_llm_model`. Стили `professional` и `code` зовут модель; `raw` и `normal` обходятся без неё. Если модель не отвечает или не укладывается в `postprocess_timeout_ms`, в поле уходит текст после правил — реплика не теряется. `--no-postprocess` на CLI выключает оформление на один запуск.
+По умолчанию при установке выбран `Qwen3-4B-Instruct-2507`. Словарь, сниппеты, персонализация и правила работают всегда. Стили `professional` и `code` зовут модель; `raw` и `normal` обходятся без неё. Если модель не отвечает или не укладывается в `postprocess_timeout_ms`, в поле уходит текст после правил — реплика не теряется. `--no-postprocess` на CLI выключает оформление на один запуск.
 
-Ключ облачного API в приложении не хранится: LLM считается локально из GGUF. Веса Qwen скачиваются по действию пользователя после показа лицензии.
+Ключ облачного API в приложении не хранится: LLM считается локально из GGUF. Веса Qwen скачиваются при первом запуске (или вручную в Менеджере моделей) после показа лицензии.
 
 ## Работа без интернета
 

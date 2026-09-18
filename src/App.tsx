@@ -48,12 +48,15 @@ const fallbackPasteHotkey = () =>
 const fallbackEditHotkey = () =>
   showMacOnlyControls(hostKindFromUa()) ? "Command+Control+E" : "Control+Alt+E";
 
+const DEFAULT_STT_MODEL = "whisper-medium-q8_0";
+const DEFAULT_LLM_MODEL = "Qwen3-4B-Instruct-2507";
+
 const fallbackSettings = (): AppSettings => ({
   hotkey: "Control+Shift+Space",
   mode: "normal",
   microphone_name: null,
-  active_stt_model: "whisper-medium",
-  active_llm_model: null,
+  active_stt_model: DEFAULT_STT_MODEL,
+  active_llm_model: DEFAULT_LLM_MODEL,
   restore_clipboard: true,
   onboarding_complete: false,
   copy_last_hotkey: fallbackCopyHotkey(),
@@ -218,7 +221,7 @@ function effectiveSpeechModelId(
 ): string | null {
   return (
     sherpaSpeechModelId(engine) ??
-    (isSherpaSpeechModel(active) ? "whisper-medium" : (active ?? "whisper-medium"))
+    (isSherpaSpeechModel(active) ? DEFAULT_STT_MODEL : (active ?? DEFAULT_STT_MODEL))
   );
 }
 
@@ -1343,7 +1346,7 @@ export function App() {
                   }
                   const whisperFallback =
                     installedSpeech.find((model) => !isSherpaSpeechModel(model.model_id))
-                      ?.model_id ?? "whisper-medium";
+                      ?.model_id ?? DEFAULT_STT_MODEL;
                   void save({
                     stt_engine: engine,
                     active_stt_model: matching && modelId ? modelId : whisperFallback,
@@ -1390,7 +1393,7 @@ export function App() {
                     <option key={model.model_id} value={model.model_id}>
                       {model.display_name}
                       {modelFileReady(modelStatus.find((item) => item.model_id === model.model_id))
-                        ? model.model_id === "whisper-medium"
+                        ? model.model_id === DEFAULT_STT_MODEL
                           ? " · default"
                           : ""
                         : ` · ${t.modelNotInstalled}`}
@@ -2118,7 +2121,10 @@ export function App() {
                       <p className="mt-2 text-sm text-paper/70">
                         {model.kind === "stt" ? "Speech" : "Formatting"} · {model.version} ·{" "}
                         {model.format} {model.quantization} · {formatBytes(modelBundleBytes(model))}
-                        {model.model_id === "whisper-medium" ? " · recommended default" : ""}
+                        {model.model_id === DEFAULT_STT_MODEL ||
+                        model.model_id === DEFAULT_LLM_MODEL
+                          ? " · recommended default"
+                          : ""}
                       </p>
                       {(state === "downloading" ||
                         state === "incomplete" ||

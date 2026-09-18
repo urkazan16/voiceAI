@@ -16,9 +16,11 @@ if ! command -v npm >/dev/null; then
 fi
 npm install
 if [[ "${LOCALFLOW_SKIP_MODEL_DOWNLOAD:-}" != "1" ]]; then
-  echo "Downloading Whisper Medium (~1.5 GB) from Hugging Face (SHA-256 verified)…"
-  bash scripts/run-with-toolchain.sh cargo run --manifest-path src-tauri/Cargo.toml --quiet -- download --model whisper-medium \
+  echo "Downloading Whisper Medium Q8_0 (~820 MB) and Qwen3 4B Instruct 2507 (~2.5 GB) from Hugging Face (SHA-256 verified)…"
+  bash scripts/run-with-toolchain.sh cargo run --manifest-path src-tauri/Cargo.toml --quiet -- download --model whisper-medium-q8_0 \
     || echo "Whisper download skipped (offline?). LocalFlow will retry on first launch."
+  bash scripts/run-with-toolchain.sh cargo run --manifest-path src-tauri/Cargo.toml --quiet -- download --model Qwen3-4B-Instruct-2507 \
+    || echo "Qwen download skipped (offline?). LocalFlow will retry on first launch."
 fi
 echo "LocalFlow is ready. Run: npm run tauri dev"
 echo "Hold Control+Shift+Space to record; release to process."

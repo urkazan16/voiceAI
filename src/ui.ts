@@ -93,7 +93,7 @@ const EN = {
   onboardingTitle: "Speak. Release. Insert — entirely on this Mac.",
   onboarding1: "1. Allow Microphone and Accessibility (paste into other apps).",
   onboarding2:
-    "2. Whisper Medium (~1.5 GB) downloads automatically on this screen (Hugging Face, checksum checked).",
+    "2. Whisper Medium Q8_0 (~820 MB) and Qwen3 4B Instruct 2507 (~2.5 GB) download automatically on this screen (Hugging Face, checksum checked).",
   onboarding3: "3. Hold Control+Shift+Space over a text field, talk, release.",
   openMicSettings: "Open Microphone settings",
   openAccessSettings: "Open Accessibility settings",
@@ -103,7 +103,7 @@ const EN = {
   sttReady: "is installed and will be used for dictation.",
   sttDownloading: "Downloading from Hugging Face…",
   sttWillDownload:
-    "Whisper will download automatically. You can continue and let it finish in the background.",
+    "Whisper Medium Q8_0 and Qwen3 4B download automatically. You can continue and let them finish in the background.",
   accessibilityTrusted: " Accessibility: trusted.",
   accessibilityNotTrusted:
     " Accessibility: this process is not trusted yet. Closing the window does not quit — use Quit from the menu bar after toggling the switch.",
@@ -299,7 +299,7 @@ const RU: typeof EN = {
   onboardingTitle: "Говорите. Отпустите. Вставка — полностью на этом Mac.",
   onboarding1: "1. Разрешите микрофон и Универсальный доступ (вставка в другие приложения).",
   onboarding2:
-    "2. Whisper Medium (~1,5 ГБ) скачивается на этом экране (Hugging Face, проверка контрольной суммы).",
+    "2. Whisper Medium Q8_0 (~820 МБ) и Qwen3 4B Instruct 2507 (~2,5 ГБ) скачиваются на этом экране (Hugging Face, проверка контрольной суммы).",
   onboarding3: "3. Удерживайте Control+Shift+Space над текстовым полем, говорите, отпустите.",
   openMicSettings: "Открыть настройки микрофона",
   openAccessSettings: "Открыть Универсальный доступ",
@@ -308,7 +308,8 @@ const RU: typeof EN = {
   osDefault: " (системный)",
   sttReady: "установлен и будет использоваться для диктовки.",
   sttDownloading: "Загрузка с Hugging Face…",
-  sttWillDownload: "Whisper скачается сам. Можно продолжить — загрузка пойдёт в фоне.",
+  sttWillDownload:
+    "Whisper Medium Q8_0 и Qwen3 4B скачаются сами. Можно продолжить — загрузка пойдёт в фоне.",
   accessibilityTrusted: " Универсальный доступ: разрешён.",
   accessibilityNotTrusted:
     " Универсальный доступ: этот процесс ещё не доверен. Закрытие окна не завершает приложение — после переключателя выйдите из LocalFlow через строку меню.",

@@ -154,7 +154,7 @@
       "license_url": "https://github.com/ggerganov/whisper.cpp/blob/master/LICENSE",
       "network_required_to_obtain": true,
       "checksum_pinned": true,
-      "notes": "Recommended for Russian dictation. ~1.5 GB, slower than Small, much more accurate on similar-sounding words."
+      "notes": "F16 Medium (~1.5 GB). Same family as the Q8_0 default; use this if you want full-precision weights."
     },
     {
       "model_id": "whisper-medium-q8_0",
@@ -173,7 +173,7 @@
       "license_url": "https://github.com/ggerganov/whisper.cpp/blob/master/LICENSE",
       "network_required_to_obtain": true,
       "checksum_pinned": true,
-      "notes": "Same accuracy as Medium F16 within noise, half the RAM and disk (~820 MB). Integer kernels are usually faster than F16 on Intel/AMD CPUs. Recommended on Intel Macs."
+      "notes": "Default speech model. Same accuracy as Medium F16 within noise, half the RAM and disk (~820 MB). Integer kernels are usually faster than F16 on Intel/AMD CPUs."
     },
     {
       "model_id": "whisper-large-v3-turbo",
@@ -249,7 +249,7 @@
       "license_url": "https://huggingface.co/Qwen/Qwen3-4B-Instruct-2507",
       "network_required_to_obtain": true,
       "checksum_pinned": true,
-      "notes": "Not bundled with the installer. GGUF Q4_K_M from bartowski; SHA-256 from Hugging Face LFS."
+      "notes": "Default formatting model on first install. GGUF Q4_K_M from bartowski; SHA-256 from Hugging Face LFS. Not bundled with the installer."
     },
     {
       "model_id": "Qwen2.5-Coder-7B",

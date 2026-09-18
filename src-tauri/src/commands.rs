@@ -538,7 +538,7 @@ pub fn privacy_summary() -> PrivacySummary {
         history_local: true,
         cloud_account_required: false,
         network_operations: vec![
-            "first-launch Whisper download from Hugging Face (checksum-pinned)".into(),
+            "first-launch Whisper Medium Q8_0 and Qwen3 4B Instruct 2507 download from Hugging Face (checksum-pinned)".into(),
             "optional extra models from Model Manager".into(),
             "optional application update (user initiated)".into(),
         ],
@@ -663,6 +663,7 @@ pub fn skip_auto_model_download() -> bool {
 
 pub fn spawn_required_model_downloads(app: AppHandle, engine: SharedEngine) {
     spawn_required_kind_download(app.clone(), engine.clone(), "stt");
+    spawn_required_kind_download(app.clone(), engine.clone(), "llm");
     spawn_vad_model_download(app, engine);
 }
 
@@ -716,19 +717,24 @@ fn spawn_vad_model_download(app: AppHandle, engine: SharedEngine) {
 
 fn spawn_required_kind_download(app: AppHandle, engine: SharedEngine, kind: &'static str) {
     tauri::async_runtime::spawn(async move {
-        // llama.cpp is not linked; formatting GGUFs stay opt-in in Model Manager.
-        if kind == "llm" {
-            return;
-        }
-        let ready = engine.lock().ok().and_then(|eng| {
-            crate::whisper_stt::set_use_gpu(crate::whisper_stt::use_gpu_from_setting(
-                &eng.settings.compute_device,
-            ));
-            eng.ready_model_path(kind)
-                .map(|path| (eng.settings.stt_engine.clone(), path))
-        });
-        if let Some((stt_engine, path)) = ready {
-            preload_stt(&stt_engine, path);
+        if kind == "stt" {
+            let ready = engine.lock().ok().and_then(|eng| {
+                crate::whisper_stt::set_use_gpu(crate::whisper_stt::use_gpu_from_setting(
+                    &eng.settings.compute_device,
+                ));
+                eng.ready_model_path(kind)
+                    .map(|path| (eng.settings.stt_engine.clone(), path))
+            });
+            if let Some((stt_engine, path)) = ready {
+                preload_stt(&stt_engine, path);
+                return;
+            }
+        } else if engine
+            .lock()
+            .ok()
+            .and_then(|eng| eng.ready_model_path(kind))
+            .is_some()
+        {
             return;
         }
         if skip_auto_model_download() {
@@ -738,10 +744,20 @@ fn spawn_required_kind_download(app: AppHandle, engine: SharedEngine, kind: &'st
             let Ok(eng) = engine.lock() else {
                 return;
             };
-            crate::config::effective_stt_model_id(
-                &eng.settings.stt_engine,
-                eng.settings.active_stt_model.as_deref(),
-            )
+            if kind == "llm" {
+                eng.settings
+                    .active_llm_model
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|id| !id.is_empty())
+                    .unwrap_or(crate::config::DEFAULT_LLM_MODEL)
+                    .to_string()
+            } else {
+                crate::config::effective_stt_model_id(
+                    &eng.settings.stt_engine,
+                    eng.settings.active_stt_model.as_deref(),
+                )
+            }
         };
         crate::journal::log("model_download", &format!("auto {id}"));
         if let Err(err) = download_model_guarded(app, engine, id.clone(), false).await {
@@ -1498,6 +1514,21 @@ mod dictate_macro_tests {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn first_launch_auto_downloads_speech_and_formatting_defaults() {
+        let spawn = include_str!("commands.rs")
+            .split("pub fn spawn_required_model_downloads")
+            .nth(1)
+            .unwrap()
+            .split("fn preload_stt")
+            .next()
+            .unwrap();
+        assert!(
+            spawn.contains("\"stt\"") && spawn.contains("\"llm\""),
+            "first launch must fetch Whisper Q8_0 and Qwen3, not only speech"
+        );
+    }
+
     #[test]
     fn save_settings_applies_autostart_before_the_file() {
         let save = include_str!("commands.rs")

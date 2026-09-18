@@ -125,7 +125,14 @@ impl AppEngine {
             return;
         }
         self.settings.apply_shipped_stt_default();
-        let _ = fs::write(&marker, "whisper-medium\n");
+        let _ = fs::write(
+            &marker,
+            format!(
+                "{} {}\n",
+                crate::config::DEFAULT_STT_MODEL,
+                crate::config::DEFAULT_LLM_MODEL
+            ),
+        );
         let _ = self.persist();
     }
 
@@ -1391,6 +1398,10 @@ mod tests {
         assert_eq!(
             eng.settings.active_stt_model.as_deref(),
             Some(crate::config::DEFAULT_STT_MODEL)
+        );
+        assert_eq!(
+            eng.settings.active_llm_model.as_deref(),
+            Some(crate::config::DEFAULT_LLM_MODEL)
         );
         assert_eq!(eng.settings.ui_language, "en");
         assert!(!eng.settings.autostart);

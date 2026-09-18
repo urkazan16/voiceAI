@@ -7,7 +7,8 @@ use crate::profiles::Profile;
 use crate::snippets::SnippetBook;
 use serde::{Deserialize, Serialize};
 
-pub const DEFAULT_STT_MODEL: &str = "whisper-medium";
+pub const DEFAULT_STT_MODEL: &str = "whisper-medium-q8_0";
+pub const DEFAULT_LLM_MODEL: &str = "Qwen3-4B-Instruct-2507";
 pub const DEFAULT_STT_ENGINE: &str = "whisper";
 
 pub fn stt_model_id_for_engine(engine: &str) -> &'static str {
@@ -254,13 +255,23 @@ impl AppSettings {
         Ok(())
     }
 
-    /// First install / first launch: speech model is Medium unless the user already picked Turbo or another catalog id.
+    /// First install / first launch: speech is Medium Q8_0 unless the user
+    /// already picked another catalog id. Formatting defaults to Qwen3 4B.
     pub fn apply_shipped_stt_default(&mut self) {
         match self.active_stt_model.as_deref() {
             None | Some("") | Some("whisper-small") | Some("whisper-base") => {
                 self.active_stt_model = Some(DEFAULT_STT_MODEL.to_string());
             }
             _ => {}
+        }
+        if self
+            .active_llm_model
+            .as_deref()
+            .map(str::trim)
+            .filter(|id| !id.is_empty())
+            .is_none()
+        {
+            self.active_llm_model = Some(DEFAULT_LLM_MODEL.to_string());
         }
     }
 }
@@ -357,7 +368,7 @@ impl Default for AppSettings {
             mode: PipelineMode::Normal,
             microphone_name: None,
             active_stt_model: Some(DEFAULT_STT_MODEL.into()),
-            active_llm_model: None,
+            active_llm_model: Some(DEFAULT_LLM_MODEL.into()),
             restore_clipboard: true,
             onboarding_complete: false,
             copy_last_hotkey: default_copy_hotkey(),
@@ -478,7 +489,10 @@ mod tests {
             imported.settings.active_stt_model.as_deref(),
             Some(DEFAULT_STT_MODEL)
         );
-        assert_eq!(imported.settings.active_llm_model, None);
+        assert_eq!(
+            imported.settings.active_llm_model.as_deref(),
+            Some(DEFAULT_LLM_MODEL)
+        );
     }
 
     #[test]
@@ -489,7 +503,11 @@ mod tests {
             ..AppSettings::default()
         };
         settings.apply_shipped_stt_default();
-        assert_eq!(settings.active_stt_model.as_deref(), Some("whisper-medium"));
+        assert_eq!(settings.active_stt_model.as_deref(), Some(DEFAULT_STT_MODEL));
+        assert_eq!(
+            settings.active_llm_model.as_deref(),
+            Some(DEFAULT_LLM_MODEL)
+        );
         assert_eq!(settings.stt_language, "auto");
         settings.active_stt_model = Some("whisper-large-v3-turbo".into());
         settings.apply_shipped_stt_default();

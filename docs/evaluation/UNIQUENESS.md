@@ -36,7 +36,7 @@ These decisions are specific to LocalFlow and would not appear together in an up
 5. Backtrack marker **`нет`** for value swap; model tags such as `[BLANK_AUDIO]` stripped before insert.
 6. Clipboard restore via **NSPasteboard** snapshot; paste blocked when **secure input** is on.
 7. Repeat last clip from `audio/last-utterance.wav` — not a catalog model.
-8. Default recognizer **whisper-medium** on first install, with catalog hashes pinned.
+8. Default recognizer **whisper-medium-q8_0** and formatter **Qwen3-4B-Instruct-2507** on first install, with catalog hashes pinned.
 
 String search of the tree found **no** `wispr`, `superwhisper`, `macwhisper`, or `create-tauri-app` identifiers.
 
