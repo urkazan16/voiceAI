@@ -650,6 +650,7 @@ mod tests {
     #[test]
     fn windows_installer_ships_sherpa_shared_dlls_next_to_the_exe() {
         let build = include_str!("../build.rs");
+        let config = include_str!("../tauri.conf.json");
         let windows = include_str!("../tauri.windows.conf.json");
         let hooks = include_str!("../nsis-hooks.nsh");
         let runtime_directory = include_str!("../resources/runtime/.gitkeep");
@@ -661,10 +662,10 @@ mod tests {
             build.contains("sherpa-onnx-prebuilt"),
             "copy from the sherpa extract dir after a release compile"
         );
+        assert!(windows.contains("installerHooks"));
         assert!(
-            windows.contains("installerHooks")
-                && windows.contains("\"resources/runtime\": \"runtime\""),
-            "the Windows config must bundle the staged runtime directory"
+            config.contains("\"resources/runtime\": \"runtime\""),
+            "the base Tauri config must bundle the staged runtime directory; a platform override can be discarded when it changes resources from a list to a map"
         );
         assert!(
             runtime_directory.contains("cargo check"),
