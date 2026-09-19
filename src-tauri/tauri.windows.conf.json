@@ -1,6 +1,9 @@
 {
   "bundle": {
-    "resources": ["resources/model-catalog.json"],
+    "resources": {
+      "resources/model-catalog.json": "model-catalog.json",
+      "resources/runtime": "runtime"
+    },
     "windows": {
       "nsis": {
         "installMode": "currentUser",

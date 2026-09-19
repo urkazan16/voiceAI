@@ -660,7 +660,11 @@ mod tests {
             build.contains("sherpa-onnx-prebuilt"),
             "copy from the sherpa extract dir after a release compile"
         );
-        assert!(windows.contains("installerHooks"));
+        assert!(
+            windows.contains("installerHooks")
+                && windows.contains("\"resources/runtime\": \"runtime\""),
+            "the Windows config must bundle the staged runtime directory"
+        );
         assert!(
             hooks.contains("$INSTDIR\\resources\\runtime\\*.dll")
                 && hooks.contains("$INSTDIR\\sherpa-onnx*.dll")
@@ -673,14 +677,10 @@ mod tests {
             "NSIS must stage sherpa DLLs after the Windows release compile"
         );
         assert!(
-            packager.contains("`runtime/${name}`")
-                && packager.contains("\"resources/model-catalog.json\": \"model-catalog.json\""),
-            "Tauri resources must target $RESOURCES/runtime, not resources/resources/runtime"
-        );
-        assert!(
             packager.contains("verifyWindowsSherpaRuntimeInInstaller")
-                && packager.contains("NSIS package did not install"),
-            "Windows packaging must install its own NSIS artifact and verify the DLL search path"
+                && packager.contains("resources/runtime")
+                && packager.contains("NSIS post-install hook did not place"),
+            "Windows packaging must verify both staged and loader-visible DLL locations"
         );
         let ensure = include_str!("../../scripts/ensure-sherpa-windows-libs.mjs");
         assert!(

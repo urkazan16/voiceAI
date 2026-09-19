@@ -233,15 +233,9 @@ function stageWindowsSherpaRuntime() {
 
   const runtimeDir = path.join(root, "src-tauri/resources/runtime");
   mkdirSync(runtimeDir, { recursive: true });
-  // Resource targets are relative to Tauri's `$RESOURCES` directory. Keeping
-  // `resources/` in the target would install to `$INSTDIR/resources/resources`
-  // and make the NSIS hook miss the DLLs.
-  const resources = { "resources/model-catalog.json": "model-catalog.json" };
   for (const [name, from] of found) {
     copyFileSync(from, path.join(runtimeDir, name));
-    resources[`resources/runtime/${name}`] = `runtime/${name}`;
   }
-  process.env.TAURI_CONFIG = JSON.stringify({ bundle: { resources } });
 }
 
 /**
@@ -264,10 +258,15 @@ function verifyWindowsSherpaRuntimeInInstaller() {
   mkdirSync(installRoot, { recursive: true });
   try {
     run(path.join(nsisDir, installers[0]), ["/S", `/D=${installRoot}`]);
+    const resourcesRuntime = path.join(installRoot, "resources", "runtime");
+    for (const required of ["sherpa-onnx-c-api.dll", "onnxruntime.dll"]) {
+      if (!existsSync(path.join(resourcesRuntime, required))) {
+        throw new Error(`NSIS package did not install ${required} into resources/runtime`);
+      }
+    }
     for (const required of ["localflow.exe", "sherpa-onnx-c-api.dll", "onnxruntime.dll"]) {
       if (!existsSync(path.join(installRoot, required))) {
-        console.error(`NSIS package did not install ${required} next to localflow.exe`);
-        process.exit(1);
+        throw new Error(`NSIS post-install hook did not place ${required} next to localflow.exe`);
       }
     }
   } finally {
