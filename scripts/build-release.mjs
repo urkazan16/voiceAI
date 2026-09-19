@@ -238,11 +238,22 @@ function stageWindowsSherpaRuntime() {
   }
 }
 
+function stagedWindowsRuntimeDlls() {
+  const runtimeDir = path.join(root, "src-tauri/resources/runtime");
+  const dlls = existsSync(runtimeDir) ? readdirSync(runtimeDir).filter(isSherpaRuntimeDll) : [];
+  for (const required of ["sherpa-onnx-c-api.dll", "onnxruntime.dll"]) {
+    if (!dlls.includes(required)) {
+      throw new Error(`Windows runtime staging is missing ${required}`);
+    }
+  }
+  return dlls;
+}
+
 /**
  * A DLL in Tauri's resources directory cannot satisfy a PE import: Windows
  * resolves `sherpa-onnx-c-api.dll` before Rust's `main` runs. Install the
  * freshly built NSIS package into a disposable directory and assert that its
- * post-install hook placed every required runtime DLL beside localflow.exe.
+ * pre-install hook placed every staged runtime DLL beside localflow.exe.
  */
 function verifyWindowsSherpaRuntimeInInstaller() {
   const nsisDir = path.join(rustReleaseDir(), "bundle", "nsis");
@@ -258,15 +269,9 @@ function verifyWindowsSherpaRuntimeInInstaller() {
   mkdirSync(installRoot, { recursive: true });
   try {
     run(path.join(nsisDir, installers[0]), ["/S", `/D=${installRoot}`]);
-    const resourcesRuntime = path.join(installRoot, "resources", "runtime");
-    for (const required of ["sherpa-onnx-c-api.dll", "onnxruntime.dll"]) {
-      if (!existsSync(path.join(resourcesRuntime, required))) {
-        throw new Error(`NSIS package did not install ${required} into resources/runtime`);
-      }
-    }
-    for (const required of ["localflow.exe", "sherpa-onnx-c-api.dll", "onnxruntime.dll"]) {
+    for (const required of ["localflow.exe", ...stagedWindowsRuntimeDlls()]) {
       if (!existsSync(path.join(installRoot, required))) {
-        throw new Error(`NSIS post-install hook did not place ${required} next to localflow.exe`);
+        throw new Error(`NSIS package did not install ${required} next to localflow.exe`);
       }
     }
   } finally {

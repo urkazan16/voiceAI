@@ -1,4 +1,0 @@
-# This directory is populated with the sherpa-onnx Windows runtime DLLs by
-# scripts/build-release.mjs immediately before Tauri packages the installer.
-# Keep the directory in the repository so cargo check can validate the Windows
-# Tauri resource configuration before a release build has run.

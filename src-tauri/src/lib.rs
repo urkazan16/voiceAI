@@ -650,10 +650,8 @@ mod tests {
     #[test]
     fn windows_installer_ships_sherpa_shared_dlls_next_to_the_exe() {
         let build = include_str!("../build.rs");
-        let config = include_str!("../tauri.conf.json");
         let windows = include_str!("../tauri.windows.conf.json");
         let hooks = include_str!("../nsis-hooks.nsh");
-        let runtime_directory = include_str!("../resources/runtime/.gitkeep");
         assert!(
             build.contains("bundle_sherpa_windows_dlls"),
             "shared sherpa-onnx must copy DLLs next to the profile exe when they exist"
@@ -664,18 +662,16 @@ mod tests {
         );
         assert!(windows.contains("installerHooks"));
         assert!(
-            config.contains("\"resources/runtime\": \"runtime\""),
-            "the base Tauri config must bundle the staged runtime directory; a platform override can be discarded when it changes resources from a list to a map"
+            hooks.contains("!define LOCALFLOW_HOOK_DIR \"${__FILEDIR__}\"")
+                && hooks.contains("!macro NSIS_HOOK_PREINSTALL")
+                && hooks.contains("File \"${LOCALFLOW_HOOK_DIR}\\resources\\runtime\\*.dll\""),
+            "NSIS must embed the staged DLLs directly; Tauri resources cannot satisfy the loader"
         );
         assert!(
-            runtime_directory.contains("cargo check"),
-            "the runtime directory must exist before Windows cargo check runs"
-        );
-        assert!(
-            hooks.contains("$INSTDIR\\resources\\runtime\\*.dll")
+            hooks.contains("SetOutPath \"$INSTDIR\"")
                 && hooks.contains("$INSTDIR\\sherpa-onnx*.dll")
                 && hooks.contains("$INSTDIR\\onnxruntime*.dll"),
-            "NSIS must copy shared runtime DLLs next to localflow.exe and remove them on uninstall"
+            "NSIS must install shared runtime DLLs next to localflow.exe and remove them on uninstall"
         );
         let packager = include_str!("../../scripts/build-release.mjs");
         assert!(
@@ -684,9 +680,9 @@ mod tests {
         );
         assert!(
             packager.contains("verifyWindowsSherpaRuntimeInInstaller")
-                && packager.contains("resources/runtime")
-                && packager.contains("NSIS post-install hook did not place"),
-            "Windows packaging must verify both staged and loader-visible DLL locations"
+                && packager.contains("stagedWindowsRuntimeDlls")
+                && packager.contains("NSIS package did not install"),
+            "Windows packaging must install its own NSIS artifact and verify every staged DLL"
         );
         let ensure = include_str!("../../scripts/ensure-sherpa-windows-libs.mjs");
         assert!(

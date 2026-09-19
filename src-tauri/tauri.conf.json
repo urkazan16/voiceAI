@@ -66,10 +66,7 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ],
-    "resources": {
-      "resources/model-catalog.json": "model-catalog.json",
-      "resources/runtime": "runtime"
-    },
+    "resources": ["resources/model-catalog.json"],
     "macOS": {
       "minimumSystemVersion": "12.0",
       "hardenedRuntime": true,
