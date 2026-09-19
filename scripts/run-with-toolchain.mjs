@@ -2,6 +2,7 @@
 import { spawnSync } from "node:child_process";
 import os from "node:os";
 import path from "node:path";
+import { ensureSherpaWindowsImportLibs } from "./ensure-sherpa-windows-libs.mjs";
 
 const cargoBin = path.join(os.homedir(), ".cargo", "bin");
 process.env.PATH = `${cargoBin}${path.delimiter}${process.env.PATH}`;
@@ -13,6 +14,9 @@ if (args.length === 0) {
 }
 
 const [cmd, ...rest] = args;
+if (cmd === "cargo") {
+  ensureSherpaWindowsImportLibs();
+}
 // Passing an argument array through a shell makes paths containing spaces split
 // again (for example "Application Support/.../audio.wav"). Invoke executables
 // directly. Tauri's npm entry point is JavaScript, which also avoids the `.cmd`

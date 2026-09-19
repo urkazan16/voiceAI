@@ -668,5 +668,15 @@ mod tests {
             packager.contains("resources/runtime") && packager.contains("sherpa-onnx-c-api.dll"),
             "NSIS must stage sherpa DLLs after the Windows release compile"
         );
+        let ensure = include_str!("../../scripts/ensure-sherpa-windows-libs.mjs");
+        assert!(
+            ensure.contains("sherpa-onnx-c-api.lib"),
+            "Windows CI rust-cache can keep an empty sherpa lib/ and skip extract"
+        );
+        assert!(
+            build.contains("restore_sherpa_windows_prebuilt")
+                && build.contains("stage_sherpa_windows_import_libs"),
+            "localflow build.rs must unpack import libs even when sherpa-onnx-sys skips download"
+        );
     }
 }

@@ -86,8 +86,124 @@ fn bundle_sherpa_windows_dlls() {
     {
         let prebuilt = target_dir.join("sherpa-onnx-prebuilt");
         println!("cargo:rerun-if-changed={}", prebuilt.display());
+        restore_sherpa_windows_prebuilt(&prebuilt);
         copy_sherpa_runtime_dlls(&prebuilt, profile_dir, true);
+        stage_sherpa_windows_import_libs(&prebuilt, &out_dir);
     }
+}
+
+const SHERPA_WIN_ARCHIVE_STEM: &str = "sherpa-onnx-v1.13.8-win-x64-shared-MT-Release-lib";
+const SHERPA_WIN_ARCHIVE: &str = "sherpa-onnx-v1.13.8-win-x64-shared-MT-Release-lib.tar.bz2";
+const SHERPA_WIN_ARCHIVE_URL: &str =
+    "https://github.com/k2-fsa/sherpa-onnx/releases/download/v1.13.8/sherpa-onnx-v1.13.8-win-x64-shared-MT-Release-lib.tar.bz2";
+const SHERPA_WIN_IMPORT_LIBS: [&str; 2] = ["sherpa-onnx-c-api.lib", "onnxruntime.lib"];
+
+fn restore_sherpa_windows_prebuilt(prebuilt: &std::path::Path) {
+    if find_named_file(prebuilt, "sherpa-onnx-c-api.lib").is_some() {
+        return;
+    }
+    let _ = std::fs::create_dir_all(prebuilt);
+    let archive_path = prebuilt.join(SHERPA_WIN_ARCHIVE);
+    if !download_url_to_file(SHERPA_WIN_ARCHIVE_URL, &archive_path) {
+        println!("cargo:warning=could not download {SHERPA_WIN_ARCHIVE_URL}");
+        return;
+    }
+    let extracted = prebuilt.join(SHERPA_WIN_ARCHIVE_STEM);
+    let _ = std::fs::remove_dir_all(&extracted);
+    if let Err(err) = unpack_tar_bz2(&archive_path, prebuilt) {
+        println!("cargo:warning=failed to unpack sherpa-onnx Windows libs: {err}");
+        let _ = std::fs::remove_dir_all(&extracted);
+    }
+}
+
+fn stage_sherpa_windows_import_libs(prebuilt: &std::path::Path, out_dir: &std::path::Path) {
+    let mut staged = false;
+    for name in SHERPA_WIN_IMPORT_LIBS {
+        let Some(src) = find_named_file(prebuilt, name) else {
+            continue;
+        };
+        let dest = out_dir.join(name);
+        if std::fs::copy(&src, &dest).is_ok() {
+            staged = true;
+        }
+        if let Some(parent) = src.parent() {
+            println!("cargo:rustc-link-search=native={}", parent.display());
+        }
+    }
+    if staged {
+        println!("cargo:rustc-link-search=native={}", out_dir.display());
+        for name in SHERPA_WIN_IMPORT_LIBS {
+            let path = out_dir.join(name);
+            if path.is_file() {
+                println!("cargo:rustc-link-arg={}", path.display());
+            }
+        }
+    } else {
+        println!(
+            "cargo:warning=sherpa-onnx-c-api.lib is still missing; Windows link will fail with LNK1181"
+        );
+    }
+}
+
+fn download_url_to_file(url: &str, dest: &std::path::Path) -> bool {
+    if dest.is_file()
+        && dest
+            .metadata()
+            .map(|meta| meta.len() > 1_000)
+            .unwrap_or(false)
+    {
+        return true;
+    }
+    for cmd in ["curl", "curl.exe"] {
+        if let Ok(status) = Command::new(cmd)
+            .args(["-fsSL", "--retry", "3", "-o"])
+            .arg(dest)
+            .arg(url)
+            .status()
+        {
+            if status.success() && dest.is_file() {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+fn unpack_tar_bz2(
+    archive: &std::path::Path,
+    dest: &std::path::Path,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let file = std::fs::File::open(archive)?;
+    let decoder = bzip2::read::BzDecoder::new(file);
+    tar::Archive::new(decoder).unpack(dest)?;
+    Ok(())
+}
+
+fn find_named_file(root: &std::path::Path, name: &str) -> Option<std::path::PathBuf> {
+    let mut stack = vec![(root.to_path_buf(), 0usize)];
+    let want = name.to_ascii_lowercase();
+    while let Some((dir, depth)) = stack.pop() {
+        if depth > 8 {
+            continue;
+        }
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                stack.push((path, depth + 1));
+                continue;
+            }
+            let Some(file_name) = path.file_name().and_then(|name| name.to_str()) else {
+                continue;
+            };
+            if file_name.to_ascii_lowercase() == want {
+                return Some(path);
+            }
+        }
+    }
+    None
 }
 
 fn is_sherpa_runtime_dll(name: &str) -> bool {

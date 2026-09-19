@@ -7,4 +7,7 @@ if ! command -v cargo >/dev/null 2>&1; then
   echo "Then restart this terminal, or run: source \"\$HOME/.cargo/env\"" >&2
   exit 127
 fi
+if [[ "${1:-}" == cargo ]] && command -v node >/dev/null 2>&1; then
+  node "$(dirname "$0")/ensure-sherpa-windows-libs.mjs"
+fi
 exec "$@"

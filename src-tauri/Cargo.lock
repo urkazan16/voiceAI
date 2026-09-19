@@ -2292,6 +2292,7 @@ checksum = "47d9d19d1d6efa0109d2f65ff4c85cddd50bd572e5a00127ab10987290bcefae"
 name = "localflow"
 version = "0.1.0"
 dependencies = [
+ "bzip2 0.4.4",
  "cc",
  "chrono",
  "cpal",
@@ -2310,6 +2311,7 @@ dependencies = [
  "serde_json",
  "sha2",
  "sherpa-onnx",
+ "tar",
  "tauri",
  "tauri-build",
  "tauri-plugin-clipboard-manager",
