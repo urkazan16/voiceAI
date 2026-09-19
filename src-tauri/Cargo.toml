@@ -74,7 +74,7 @@ whisper-rs = { version = "0.16.0", default-features = false, features = ["metal"
 
 [target.'cfg(windows)'.dependencies]
 sherpa-onnx = { version = "1.13.8", default-features = false, features = ["shared"] }
-windows-sys = { version = "0.59.0", features = [
+windows-sys = { version = "0.61.2", features = [
     "Win32_Foundation",
     "Win32_Graphics_Gdi",
     "Win32_Storage_FileSystem",
