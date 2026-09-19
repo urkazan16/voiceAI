@@ -3,7 +3,8 @@
     "resources": ["resources/model-catalog.json"],
     "windows": {
       "nsis": {
-        "installMode": "currentUser"
+        "installMode": "currentUser",
+        "installerHooks": "./nsis-hooks.nsh"
       }
     }
   }

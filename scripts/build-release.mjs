@@ -110,6 +110,9 @@ if (!skipBuild) {
   }
   tauriArgs.push("--", "--locked");
   run("npx", tauriArgs);
+  if (host === "win32") {
+    verifyWindowsSherpaRuntimeInInstaller();
+  }
 }
 
 const version = JSON.parse(readFileSync(path.join(root, "package.json"), "utf8")).version;
@@ -230,12 +233,46 @@ function stageWindowsSherpaRuntime() {
 
   const runtimeDir = path.join(root, "src-tauri/resources/runtime");
   mkdirSync(runtimeDir, { recursive: true });
-  const resources = ["resources/model-catalog.json"];
+  // Resource targets are relative to Tauri's `$RESOURCES` directory. Keeping
+  // `resources/` in the target would install to `$INSTDIR/resources/resources`
+  // and make the NSIS hook miss the DLLs.
+  const resources = { "resources/model-catalog.json": "model-catalog.json" };
   for (const [name, from] of found) {
     copyFileSync(from, path.join(runtimeDir, name));
-    resources.push(`resources/runtime/${name}`);
+    resources[`resources/runtime/${name}`] = `runtime/${name}`;
   }
   process.env.TAURI_CONFIG = JSON.stringify({ bundle: { resources } });
+}
+
+/**
+ * A DLL in Tauri's resources directory cannot satisfy a PE import: Windows
+ * resolves `sherpa-onnx-c-api.dll` before Rust's `main` runs. Install the
+ * freshly built NSIS package into a disposable directory and assert that its
+ * post-install hook placed every required runtime DLL beside localflow.exe.
+ */
+function verifyWindowsSherpaRuntimeInInstaller() {
+  const nsisDir = path.join(rustReleaseDir(), "bundle", "nsis");
+  const installers = existsSync(nsisDir)
+    ? readdirSync(nsisDir).filter((name) => name.toLowerCase().endsWith(".exe"))
+    : [];
+  if (installers.length !== 1) {
+    console.error(`expected one NSIS installer in ${nsisDir}, found ${installers.length}`);
+    process.exit(1);
+  }
+  const installRoot = path.join(os.tmpdir(), `localflow-nsis-${process.pid}`);
+  rmSync(installRoot, { recursive: true, force: true });
+  mkdirSync(installRoot, { recursive: true });
+  try {
+    run(path.join(nsisDir, installers[0]), ["/S", `/D=${installRoot}`]);
+    for (const required of ["localflow.exe", "sherpa-onnx-c-api.dll", "onnxruntime.dll"]) {
+      if (!existsSync(path.join(installRoot, required))) {
+        console.error(`NSIS package did not install ${required} next to localflow.exe`);
+        process.exit(1);
+      }
+    }
+  } finally {
+    rmSync(installRoot, { recursive: true, force: true });
+  }
 }
 
 /** GitHub-hosted macOS installers must be Developer ID signed and notarized. */

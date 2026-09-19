@@ -651,6 +651,7 @@ mod tests {
     fn windows_installer_ships_sherpa_shared_dlls_next_to_the_exe() {
         let build = include_str!("../build.rs");
         let windows = include_str!("../tauri.windows.conf.json");
+        let hooks = include_str!("../nsis-hooks.nsh");
         assert!(
             build.contains("bundle_sherpa_windows_dlls"),
             "shared sherpa-onnx must copy DLLs next to the profile exe when they exist"
@@ -659,14 +660,27 @@ mod tests {
             build.contains("sherpa-onnx-prebuilt"),
             "copy from the sherpa extract dir after a release compile"
         );
+        assert!(windows.contains("installerHooks"));
         assert!(
-            !windows.contains("sherpa-onnx-c-api.dll"),
-            "tauri_build runs on cargo check before sherpa-onnx-sys extracts DLLs"
+            hooks.contains("$INSTDIR\\resources\\runtime\\*.dll")
+                && hooks.contains("$INSTDIR\\sherpa-onnx*.dll")
+                && hooks.contains("$INSTDIR\\onnxruntime*.dll"),
+            "NSIS must copy shared runtime DLLs next to localflow.exe and remove them on uninstall"
         );
         let packager = include_str!("../../scripts/build-release.mjs");
         assert!(
             packager.contains("resources/runtime") && packager.contains("sherpa-onnx-c-api.dll"),
             "NSIS must stage sherpa DLLs after the Windows release compile"
+        );
+        assert!(
+            packager.contains("`runtime/${name}`")
+                && packager.contains("\"resources/model-catalog.json\": \"model-catalog.json\""),
+            "Tauri resources must target $RESOURCES/runtime, not resources/resources/runtime"
+        );
+        assert!(
+            packager.contains("verifyWindowsSherpaRuntimeInInstaller")
+                && packager.contains("NSIS package did not install"),
+            "Windows packaging must install its own NSIS artifact and verify the DLL search path"
         );
         let ensure = include_str!("../../scripts/ensure-sherpa-windows-libs.mjs");
         assert!(
