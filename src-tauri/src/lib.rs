@@ -652,6 +652,7 @@ mod tests {
         let build = include_str!("../build.rs");
         let windows = include_str!("../tauri.windows.conf.json");
         let hooks = include_str!("../nsis-hooks.nsh");
+        let runtime_directory = include_str!("../resources/runtime/.gitkeep");
         assert!(
             build.contains("bundle_sherpa_windows_dlls"),
             "shared sherpa-onnx must copy DLLs next to the profile exe when they exist"
@@ -664,6 +665,10 @@ mod tests {
             windows.contains("installerHooks")
                 && windows.contains("\"resources/runtime\": \"runtime\""),
             "the Windows config must bundle the staged runtime directory"
+        );
+        assert!(
+            runtime_directory.contains("cargo check"),
+            "the runtime directory must exist before Windows cargo check runs"
         );
         assert!(
             hooks.contains("$INSTDIR\\resources\\runtime\\*.dll")
