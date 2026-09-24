@@ -558,7 +558,23 @@ impl Platform for Linux {
     fn insert_text(&self, request: &InsertRequest<'_>) -> LfResult<()> {
         prepare_keyboard();
         if let Some(pid) = request.target_pid {
-            let _ = with_x11(|d| d.activate_pid(pid as u32), false);
+            let pid = pid as u32;
+            // On Wayland, X11 window activation is a no-op for native windows.
+            // Use kdotool (KWin scripting) to re-focus the target app so the
+            // synthetic paste lands in the right field. Falls back to X11 when
+            // kdotool is missing or the session is X11.
+            let activated = if current_session() == LinuxSession::Wayland {
+                let pid_str = pid.to_string();
+                tool_paste(
+                    "kdotool",
+                    &["search", "--pid", pid_str.as_str(), "windowactivate"],
+                )
+            } else {
+                false
+            };
+            if !activated {
+                let _ = with_x11(|d| d.activate_pid(pid), false);
+            }
         }
         std::thread::sleep(shared::insert_pause(
             request.insert_delay_ms,
