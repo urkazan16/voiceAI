@@ -2,7 +2,28 @@
   "name": "localflow",
   "private": true,
   "version": "0.1.0",
-  "description": "Local, private, CPU-first voice pipeline for macOS, Windows, and Linux",
+  "description": "Private offline voice typing and local speech-to-text for Windows, macOS, and Linux",
+  "keywords": [
+    "voice-typing",
+    "speech-to-text",
+    "dictation",
+    "offline",
+    "privacy",
+    "whisper",
+    "local-ai",
+    "windows",
+    "macos",
+    "linux",
+    "russian-speech-recognition"
+  ],
+  "homepage": "https://github.com/urkazan16/voiceAI#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/urkazan16/voiceAI.git"
+  },
+  "bugs": {
+    "url": "https://github.com/urkazan16/voiceAI/issues"
+  },
   "license": "MIT",
   "type": "module",
   "engines": {
