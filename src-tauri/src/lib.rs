@@ -177,13 +177,8 @@ pub fn run() {
                 true,
                 None::<&str>,
             )?;
-            let dictate = MenuItem::with_id(
-                app,
-                "dictate",
-                "Start/Stop Dictation",
-                true,
-                None::<&str>,
-            )?;
+            let dictate =
+                MenuItem::with_id(app, "dictate", "Start/Stop Dictation", true, None::<&str>)?;
             let cancel_item = MenuItem::with_id(
                 app,
                 "cancel-dictation",
@@ -194,7 +189,14 @@ pub fn run() {
             let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
             let menu = Menu::with_items(
                 app,
-                &[&show, &copy_last, &paste_last, &dictate, &cancel_item, &quit],
+                &[
+                    &show,
+                    &copy_last,
+                    &paste_last,
+                    &dictate,
+                    &cancel_item,
+                    &quit,
+                ],
             )?;
             if let Some(tray) = app.tray_by_id("localflow") {
                 tray.set_menu(Some(menu))?;
