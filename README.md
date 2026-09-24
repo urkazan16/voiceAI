@@ -159,3 +159,5 @@ Read [CONTRIBUTING.md](CONTRIBUTING.md) and the [development setup](docs/develop
 ## License
 
 LocalFlow is released under the [MIT License](LICENSE). See [NOTICE](NOTICE) and the [licensing policy](docs/licensing/POLICY.md) for third-party components and separately licensed model weights.
+
+See the [engineering uniqueness report](docs/evaluation/UNIQUENESS.md) for the scope of first-party code and third-party attribution.
