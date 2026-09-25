@@ -19,11 +19,12 @@ LocalFlow — приложение с открытым исходным кодо
 
 ## Поддерживаемые платформы
 
-| Платформа                        | Установщик       | Особенности                                              |
-| -------------------------------- | ---------------- | -------------------------------------------------------- |
-| Windows 10 / 11, x64             | NSIS `.exe`      | Требуется WebView2 Evergreen                             |
-| macOS 12+, Apple Silicon / Intel | `.dmg`           | Нужны разрешения на микрофон и универсальный доступ      |
-| Ubuntu 22.04+ / Linux, x64       | `.deb`, AppImage | На Wayland автоматическая вставка зависит от композитора |
+| Платформа                        | Установщик           | Особенности                                              |
+| -------------------------------- | -------------------- | -------------------------------------------------------- |
+| Windows 10 / 11, x64             | NSIS `.exe`          | Требуется WebView2 Evergreen                             |
+| macOS 12+, Apple Silicon / Intel | `.dmg`               | Нужны разрешения на микрофон и универсальный доступ      |
+| Ubuntu 22.04+ / Linux, x64       | `.deb`, AppImage     | На Wayland автоматическая вставка зависит от композитора |
+| Fedora Asahi Remix, aarch64      | Сборка из исходников | Поддерживаются 32-битный захват микрофона и Wayland      |
 
 ## Как это работает
 
@@ -50,6 +51,8 @@ LocalFlow — приложение с открытым исходным кодо
 | Linux Debian / Ubuntu              | [LocalFlow-linux-x64.deb](https://github.com/urkazan16/voiceAI/releases/latest/download/LocalFlow-linux-x64.deb)           |
 | Linux AppImage                     | [LocalFlow-linux-x64.AppImage](https://github.com/urkazan16/voiceAI/releases/latest/download/LocalFlow-linux-x64.AppImage) |
 | Checksums                          | [SHA256SUMS](https://github.com/urkazan16/voiceAI/releases/latest/download/SHA256SUMS)                                     |
+
+LocalFlow также доступен для **Fedora Asahi Remix (aarch64)** при сборке из исходников.
 
 All versions / Все версии: [github.com/urkazan16/voiceAI/releases](https://github.com/urkazan16/voiceAI/releases)
 
@@ -115,7 +118,7 @@ macOS 12+, CMake 3.16+, актуальные Xcode Command Line Tools. Стро�
 
 Windows 10/11, Visual Studio Build Tools 2022 с рабочей нагрузкой C++ (whisper.cpp / `cc`), WebView2 Evergreen (на Windows 11 уже есть). Установщик NSIS — per-user (`%LOCALAPPDATA%`). Микрофон: Параметры → Конфиденциальность и безопасность → Микрофон.
 
-#### Linux (Ubuntu 22.04+)
+#### Linux (Ubuntu 22.04+ и Fedora Asahi Remix aarch64)
 
 ```bash
 sudo apt-get install --no-install-recommends -y \

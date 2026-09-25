@@ -309,9 +309,7 @@ fn start_capture_with_tap(
     use cpal::traits::{DeviceTrait, StreamTrait};
     let host = cpal::default_host();
     let device = select_input_device(&host, preferred_name)?;
-    let config = device
-        .default_input_config()
-        .map_err(|e| map_capture_error(e.to_string()))?;
+    let config = best_input_config(&device)?;
     let sample_rate = config.sample_rate().0;
     let channels = config.channels();
     let samples = Arc::new(Mutex::new(Vec::new()));
@@ -362,6 +360,37 @@ fn start_capture_with_tap(
                 &config.into(),
                 move |data: &[i16], _| {
                     let converted: Vec<f32> = data.iter().map(|s| *s as f32 / 32768.0).collect();
+                    if let Some(tap) = &tap {
+                        let chunk = CapturedAudio {
+                            samples: converted.clone(),
+                            sample_rate,
+                            channels,
+                        };
+                        if matches!(tap.try_send(chunk), Err(mpsc::TrySendError::Full(_))) {
+                            remember_stream_error(
+                                "Speech recognition cannot keep up with microphone audio.".into(),
+                            );
+                        }
+                    }
+                    if let Ok(mut buf) = writer.lock() {
+                        if rolling {
+                            append_rolling(&mut buf, &converted, max_samples);
+                        } else if buf.len() < max_samples {
+                            let room = max_samples - buf.len();
+                            buf.extend_from_slice(&converted[..converted.len().min(room)]);
+                        }
+                    }
+                },
+                err_fn,
+                None,
+            )
+            .map_err(|e| map_capture_error(e.to_string()))?,
+        cpal::SampleFormat::I32 => device
+            .build_input_stream(
+                &config.into(),
+                move |data: &[i32], _| {
+                    let converted: Vec<f32> =
+                        data.iter().map(|s| *s as f32 / 2147483648.0).collect();
                     if let Some(tap) = &tap {
                         let chunk = CapturedAudio {
                             samples: converted.clone(),
@@ -512,6 +541,38 @@ fn map_capture_error(message: String) -> LfError {
     } else {
         LfError::DeviceUnavailable(message)
     }
+}
+
+/// Pick the best supported input config, preferring native 32-bit capture.
+///
+/// Some drivers (the Asahi `aop_audio` mic array) advertise S16_LE and FLOAT_LE
+/// but only emit valid samples as S32_LE, so their "default" config reads back
+/// as noise. Preferring I32 avoids that.
+fn best_input_config(device: &cpal::Device) -> LfResult<cpal::SupportedStreamConfig> {
+    use cpal::traits::DeviceTrait;
+    let configs = device
+        .supported_input_configs()
+        .map_err(|e| map_capture_error(e.to_string()))?;
+    let rank = |f: cpal::SampleFormat| match f {
+        cpal::SampleFormat::I32 => 0u8,
+        cpal::SampleFormat::F32 => 1,
+        cpal::SampleFormat::I16 => 2,
+        cpal::SampleFormat::U16 => 3,
+        _ => 4,
+    };
+    let mut best: Option<cpal::SupportedStreamConfig> = None;
+    let mut best_rank = u8::MAX;
+    for cfg in configs {
+        let r = rank(cfg.sample_format());
+        if r < best_rank {
+            best_rank = r;
+            best = Some(match cfg.try_with_sample_rate(cpal::SampleRate(48_000)) {
+                Some(c) => c,
+                None => cfg.with_max_sample_rate(),
+            });
+        }
+    }
+    best.ok_or_else(|| LfError::DeviceUnavailable("no supported input config".into()))
 }
 
 fn select_input_device(host: &cpal::Host, preferred_name: Option<&str>) -> LfResult<cpal::Device> {

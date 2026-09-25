@@ -20,11 +20,12 @@ Speech recognition, text formatting, and clipboard insertion run on your compute
 
 ## Supported platforms
 
-| Platform                    | Installer                      | Notes                                                                   |
-| --------------------------- | ------------------------------ | ----------------------------------------------------------------------- |
-| Windows 10 / 11 (x64)       | NSIS `.exe`                    | WebView2 Evergreen required (included with Windows 11)                  |
-| macOS 12+                   | Apple Silicon and Intel `.dmg` | Microphone and Accessibility permissions required                       |
-| Ubuntu 22.04+ / Linux (x64) | `.deb` and AppImage            | X11 supports automatic paste; Wayland support depends on the compositor |
+| Platform                     | Installer                      | Notes                                                                   |
+| ---------------------------- | ------------------------------ | ----------------------------------------------------------------------- |
+| Windows 10 / 11 (x64)        | NSIS `.exe`                    | WebView2 Evergreen required (included with Windows 11)                  |
+| macOS 12+                    | Apple Silicon and Intel `.dmg` | Microphone and Accessibility permissions required                       |
+| Ubuntu 22.04+ / Linux (x64)  | `.deb` and AppImage            | X11 supports automatic paste; Wayland support depends on the compositor |
+| Fedora Asahi Remix (aarch64) | Build from source              | Native 32-bit microphone capture and Wayland are supported              |
 
 ## Download and install LocalFlow
 
@@ -38,6 +39,8 @@ Download an installer from the [latest GitHub Release](https://github.com/urkaza
 | Linux Debian / Ubuntu              | [LocalFlow-linux-x64.deb](https://github.com/urkazan16/voiceAI/releases/latest/download/LocalFlow-linux-x64.deb)           |
 | Linux AppImage                     | [LocalFlow-linux-x64.AppImage](https://github.com/urkazan16/voiceAI/releases/latest/download/LocalFlow-linux-x64.AppImage) |
 | Checksums                          | [SHA256SUMS](https://github.com/urkazan16/voiceAI/releases/latest/download/SHA256SUMS)                                     |
+
+LocalFlow is also available for **Fedora Asahi Remix (aarch64)** when built from source.
 
 All versions: [github.com/urkazan16/voiceAI/releases](https://github.com/urkazan16/voiceAI/releases)
 
