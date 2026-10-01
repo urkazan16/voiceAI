@@ -31,14 +31,14 @@ Speech recognition, text formatting, and clipboard insertion run on your compute
 
 Download an installer from the [latest GitHub Release](https://github.com/urkazan16/voiceAI/releases/latest). Models are downloaded separately: the default selection is Whisper Medium Q8_0 (about 820 MB) and Qwen3 4B Instruct 2507 (about 2.5 GB). The local language model is optional for basic dictation.
 
-| Platform                           | File                                                                                                                       |
-| ---------------------------------- | -------------------------------------------------------------------------------------------------------------------------- |
-| macOS Apple Silicon (M1 and later) | [LocalFlow-macos-arm64.dmg](https://github.com/urkazan16/voiceAI/releases/latest/download/LocalFlow-macos-arm64.dmg)       |
-| macOS Intel                        | [LocalFlow-macos-x64.dmg](https://github.com/urkazan16/voiceAI/releases/latest/download/LocalFlow-macos-x64.dmg)           |
-| Windows 10 / 11                    | [LocalFlow-windows-x64.exe](https://github.com/urkazan16/voiceAI/releases/latest/download/LocalFlow-windows-x64.exe)       |
-| Linux Debian / Ubuntu              | [LocalFlow-linux-x64.deb](https://github.com/urkazan16/voiceAI/releases/latest/download/LocalFlow-linux-x64.deb)           |
-| Linux AppImage                     | [LocalFlow-linux-x64.AppImage](https://github.com/urkazan16/voiceAI/releases/latest/download/LocalFlow-linux-x64.AppImage) |
-| Checksums                          | [SHA256SUMS](https://github.com/urkazan16/voiceAI/releases/latest/download/SHA256SUMS)                                     |
+| Platform                           | File                                                                                                                 |
+| ---------------------------------- | -------------------------------------------------------------------------------------------------------------------- |
+| macOS Apple Silicon (M1 and later) | [LocalFlow-macos-arm64.dmg](https://github.com/urkazan16/voiceAI/releases/latest/download/LocalFlow-macos-arm64.dmg) |
+| macOS Intel                        | [LocalFlow-macos-x64.dmg](https://github.com/urkazan16/voiceAI/releases/latest/download/LocalFlow-macos-x64.dmg)     |
+| Windows 10 / 11                    | [LocalFlow-windows-x64.exe](https://github.com/urkazan16/voiceAI/releases/latest/download/LocalFlow-windows-x64.exe) |
+| Linux Debian / Ubuntu              | [LocalFlow-linux-x64.deb](https://github.com/urkazan16/voiceAI/releases/latest/download/LocalFlow-linux-x64.deb)     |
+| Linux AppImage                     | [LocalFlow-x86_64.AppImage](https://github.com/urkazan16/voiceAI/releases/latest/download/LocalFlow-x86_64.AppImage) |
+| Checksums                          | [SHA256SUMS](https://github.com/urkazan16/voiceAI/releases/latest/download/SHA256SUMS)                               |
 
 LocalFlow is also available for **Fedora Asahi Remix (aarch64)** when built from source.
 
