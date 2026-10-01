@@ -65,9 +65,9 @@
     "audit": "npm audit --omit=dev && node scripts/run-with-toolchain.mjs cargo audit --file src-tauri/Cargo.lock"
   },
   "dependencies": {
-    "@tauri-apps/api": "2.2.0",
-    "@tauri-apps/plugin-clipboard-manager": "2.2.0",
-    "@tauri-apps/plugin-global-shortcut": "2.2.0",
+    "@tauri-apps/api": "2.11.1",
+    "@tauri-apps/plugin-clipboard-manager": "2.3.3",
+    "@tauri-apps/plugin-global-shortcut": "2.3.2",
     "react": "18.3.1",
     "react-dom": "18.3.1"
   },
