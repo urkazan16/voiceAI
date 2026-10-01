@@ -267,6 +267,26 @@ jobs:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+      - name: Validate AppImage catalog requirements
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mapfile -t appimages < <(find release-artifacts -maxdepth 1 -type f -name 'LocalFlow-*.AppImage')
+          if [[ ${#appimages[@]} -ne 1 ]]; then
+            echo "Expected exactly one AppImage, found ${#appimages[@]}"
+            exit 1
+          fi
+          if [[ "$(basename "${appimages[0]}")" =~ [Ll]inux ]]; then
+            echo "AppImage filename must not contain 'linux'"
+            exit 1
+          fi
+          appimage="$(realpath "${appimages[0]}")"
+          extract_dir="$(mktemp -d)"
+          trap 'rm -rf -- "$extract_dir"' EXIT
+          cd "$extract_dir"
+          "$appimage" --appimage-extract >/dev/null
+          test -e squashfs-root/.DirIcon
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact }}

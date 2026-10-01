@@ -173,7 +173,10 @@ function stableInstallerName(fileName, arch) {
   if (lower.endsWith(".exe")) return `LocalFlow-windows-${cpu}.exe`;
   if (lower.endsWith(".msi")) return `LocalFlow-windows-${cpu}.msi`;
   if (lower.endsWith(".deb")) return `LocalFlow-linux-${cpu}.deb`;
-  if (lower.endsWith(".appimage")) return `LocalFlow-linux-${cpu}.AppImage`;
+  if (lower.endsWith(".appimage")) {
+    const appImageArch = cpu === "arm64" ? "aarch64" : "x86_64";
+    return `LocalFlow-${appImageArch}.AppImage`;
+  }
   return null;
 }
 
