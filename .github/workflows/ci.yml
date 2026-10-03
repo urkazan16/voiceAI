@@ -233,7 +233,7 @@ jobs:
       - if: runner.os == 'Linux'
         uses: ./.github/actions/linux-deps
       - if: runner.os == 'Linux'
-        run: sudo apt-get install --no-install-recommends -y file libfuse2
+        run: sudo apt-get install --no-install-recommends -y file libfuse2 squashfs-tools
       - if: runner.os == 'Windows'
         shell: bash
         run: |
@@ -284,9 +284,30 @@ jobs:
           appimage="$(realpath "${appimages[0]}")"
           extract_dir="$(mktemp -d)"
           trap 'rm -rf -- "$extract_dir"' EXIT
+          chmod a+rx "$extract_dir"
           cd "$extract_dir"
           "$appimage" --appimage-extract >/dev/null
+          test -L squashfs-root/.DirIcon
           test -e squashfs-root/.DirIcon
+          diricon_target="$(readlink squashfs-root/.DirIcon)"
+          if [[ "$diricon_target" == /* ]]; then
+            echo ".DirIcon must be a relative symlink, got: $diricon_target"
+            exit 1
+          fi
+          if find squashfs-root -type d ! -perm -0005 -print -quit | grep -q .; then
+            echo "AppImage contains a directory that is not world-readable/searchable"
+            find squashfs-root -type d ! -perm -0005 -ls
+            exit 1
+          fi
+          if find squashfs-root -type f ! -perm -0004 -print -quit | grep -q .; then
+            echo "AppImage contains a file that is not world-readable"
+            find squashfs-root -type f ! -perm -0004 -ls
+            exit 1
+          fi
+          sudo -u nobody test -x squashfs-root/AppRun
+          if [[ -e squashfs-root/AppRun.wrapped ]]; then
+            sudo -u nobody test -x squashfs-root/AppRun.wrapped
+          fi
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact }}

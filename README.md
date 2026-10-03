@@ -18,6 +18,23 @@ Speech recognition, text formatting, and clipboard insertion run on your compute
 - **Windows 10/11 x64, macOS 12+ (Apple Silicon and Intel), and Ubuntu 22.04+ x64** installers
 - **Local text formatting** with dictionaries, snippets, personalization, and optional local LLMs
 
+## LocalFlow in action
+
+Hold the global hotkey, dictate, and release it. LocalFlow recognizes the speech locally and inserts the finished text into the active application.
+
+![LocalFlow dictating text into an editor](docs/assets/localflow-voice-typing-demo.gif)
+
+<table>
+  <tr>
+    <td width="50%"><img src="docs/assets/localflow-dictation.png" alt="LocalFlow dictation pipeline with a processed transcript"></td>
+    <td width="50%"><img src="docs/assets/localflow-settings.png" alt="LocalFlow settings with hotkey, language, and local model information"></td>
+  </tr>
+  <tr>
+    <td align="center"><strong>Local transcription pipeline</strong></td>
+    <td align="center"><strong>Hotkey, language, and model settings</strong></td>
+  </tr>
+</table>
+
 ## Supported platforms
 
 | Platform                     | Installer                      | Notes                                                                   |

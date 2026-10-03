@@ -122,6 +122,18 @@ mkdirSync(artifacts, { recursive: true });
 const bundleDir = path.join(rustReleaseDir(), "bundle");
 const ARTIFACT_FILE = /\.(dmg|exe|msi|deb|rpm|AppImage)$/i;
 
+if (host === "linux") {
+  const appImageDir = path.join(bundleDir, "appimage");
+  const appImages = existsSync(appImageDir)
+    ? readdirSync(appImageDir).filter((name) => name.endsWith(".AppImage"))
+    : [];
+  if (appImages.length !== 1) {
+    console.error(`expected one AppImage in ${appImageDir}, found ${appImages.length}`);
+    process.exit(1);
+  }
+  run("bash", ["scripts/harden-appimage.sh", path.join(appImageDir, appImages[0])]);
+}
+
 function collect(kind) {
   const dir = path.join(bundleDir, kind);
   if (!existsSync(dir)) return;
