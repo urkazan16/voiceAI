@@ -28,6 +28,7 @@ offset="$($appimage --appimage-offset)"
 
 (
   cd "$work_dir"
+  umask 022
   "$appimage" --appimage-extract >/dev/null
 )
 
@@ -60,6 +61,7 @@ verify_dir="$work_dir/verify"
 mkdir "$verify_dir"
 (
   cd "$verify_dir"
+  umask 022
   "$repacked" --appimage-extract >/dev/null
 )
 [[ -x "$verify_dir/squashfs-root/AppRun" ]] || die "repacked AppRun is not executable"

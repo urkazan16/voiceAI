@@ -286,6 +286,10 @@ jobs:
           trap 'rm -rf -- "$extract_dir"' EXIT
           chmod a+rx "$extract_dir"
           cd "$extract_dir"
+          # AppImage's embedded unsquashfs applies the caller's umask while
+          # extracting. Make the validation deterministic instead of turning
+          # valid 0755 payload directories into runner-local 0700 directories.
+          umask 022
           "$appimage" --appimage-extract >/dev/null
           test -L squashfs-root/.DirIcon
           test -e squashfs-root/.DirIcon
