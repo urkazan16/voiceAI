@@ -48,7 +48,10 @@ runtime="$work_dir/runtime"
 squashfs="$work_dir/payload.squashfs"
 
 head -c "$offset" "$appimage" >"$runtime"
-mksquashfs "$app_dir" "$squashfs" -root-owned -noappend -comp xz >/dev/null
+# Tauri's current type-2 runtime supports zlib and Zstandard, but not XZ.
+# Zstandard also keeps release packaging reasonably fast while preserving the
+# runtime taken from the original Tauri-generated AppImage.
+mksquashfs "$app_dir" "$squashfs" -root-owned -noappend -comp zstd >/dev/null
 cat "$runtime" "$squashfs" >"$repacked"
 chmod a+x "$repacked"
 
