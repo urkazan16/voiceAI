@@ -56,18 +56,9 @@ mksquashfs "$app_dir" "$squashfs" -root-owned -noappend -comp zstd >/dev/null
 cat "$runtime" "$squashfs" >"$repacked"
 chmod a+x "$repacked"
 
-# Ensure the repacked image is readable before replacing the original.
-verify_dir="$work_dir/verify"
-mkdir "$verify_dir"
-(
-  cd "$verify_dir"
-  umask 022
-  "$repacked" --appimage-extract >/dev/null
-)
-[[ -x "$verify_dir/squashfs-root/AppRun" ]] || die "repacked AppRun is not executable"
-if [[ -e "$app_dir/AppRun.wrapped" && ! -x "$verify_dir/squashfs-root/AppRun.wrapped" ]]; then
-  die "repacked AppRun.wrapped is not executable"
-fi
+# Verify compression, launcher modes, and .DirIcon before replacing the
+# original Tauri artifact.
+bash "$(dirname "$0")/validate-appimage.sh" "$repacked"
 
 mv "$repacked" "$appimage"
 echo "Hardened AppImage permissions: $appimage"
