@@ -87,7 +87,8 @@ enum WorkerCmd {
 struct Loaded {
     path: PathBuf,
     gpu: bool,
-    ctx: WhisperContext,
+    // Owns the native allocation referenced by `state`.
+    _ctx: WhisperContext,
     state: WhisperState,
 }
 
@@ -97,6 +98,9 @@ static USE_GPU: AtomicBool = AtomicBool::new(false);
 /// Set when whisper.cpp rejects the VAD model, so the session falls back to
 /// plain decoding instead of failing every utterance.
 static VAD_BROKEN: AtomicBool = AtomicBool::new(false);
+/// Some whisper.cpp CPU backends reject a reduced encoder context with -6.
+/// Once observed, keep the upstream full context for the rest of the session.
+static DYNAMIC_AUDIO_CTX_BROKEN: AtomicBool = AtomicBool::new(false);
 static CHUNK_INDEX: AtomicU32 = AtomicU32::new(0);
 static CHUNK_COUNT: AtomicU32 = AtomicU32::new(1);
 static AUDIO_MS: AtomicU32 = AtomicU32::new(0);
@@ -498,31 +502,81 @@ fn decode_loaded(
     options: &DecodeOptions,
     cancellation: &Cancellation,
 ) -> LfResult<String> {
-    let slot = loaded.as_mut().expect("whisper context");
     // `no_context` is set for every decode below, so the state can be reused
     // safely between utterances without reallocating the large KV cache.
     let vad = options
         .vad_model
         .as_deref()
-        .filter(|p| p.is_file() && !VAD_BROKEN.load(Ordering::Relaxed));
-    match decode(&mut slot.state, pcm, language, options, vad, cancellation) {
-        Err(err) if vad.is_some() && !cancellation.is_cancelled() => {
-            // A rejected VAD model must not take dictation down with it.
+        .filter(|p| p.is_file() && native_vad_supported() && !VAD_BROKEN.load(Ordering::Relaxed))
+        .map(Path::to_path_buf);
+    let force_full_audio_ctx = DYNAMIC_AUDIO_CTX_BROKEN.load(Ordering::Relaxed);
+    let mut result = {
+        let slot = loaded.as_mut().expect("whisper context");
+        decode(
+            &mut slot.state,
+            pcm,
+            language,
+            options,
+            vad.as_deref(),
+            cancellation,
+            force_full_audio_ctx,
+        )
+    };
+    if let Err(err) = &result {
+        if vad.is_some() && !cancellation.is_cancelled() {
+            // whisper.cpp keeps the VAD context on the Whisper context, not
+            // only on the decode state. Reload the model before the plain
+            // retry so a rejected VAD cannot poison subsequent utterances.
             eprintln!("localflow: whisper VAD failed ({err}); decoding without VAD");
-            // The failed VAD context may be cached on the state; start clean.
-            slot.state = slot
-                .ctx
-                .create_state()
-                .map_err(|e| LfError::RuntimeUnsupported(e.to_string()))?;
-            let retry = decode(&mut slot.state, pcm, language, options, None, cancellation);
-            if retry.is_ok() {
-                // Only the VAD step was at fault: skip it for the rest of the session.
-                VAD_BROKEN.store(true, Ordering::Relaxed);
-            }
-            retry
+            VAD_BROKEN.store(true, Ordering::Relaxed);
+            reload_loaded(loaded)?;
+            let slot = loaded.as_mut().expect("whisper context");
+            result = decode(
+                &mut slot.state,
+                pcm,
+                language,
+                options,
+                None,
+                cancellation,
+                force_full_audio_ctx,
+            );
         }
-        other => other,
     }
+    if !force_full_audio_ctx
+        && !cancellation.is_cancelled()
+        && result.as_ref().is_err_and(|err| is_encoder_failure(err))
+    {
+        // A reduced `audio_ctx` is an optimization, not a correctness
+        // requirement. whisper.cpp reports encoder backend failures as -6;
+        // retry from a clean state with its normal 30-second context.
+        eprintln!("localflow: reduced whisper audio context failed; retrying full context");
+        reload_loaded(loaded)?;
+        let slot = loaded.as_mut().expect("whisper context");
+        result = decode(
+            &mut slot.state,
+            pcm,
+            language,
+            options,
+            None,
+            cancellation,
+            true,
+        );
+        if result.is_ok() {
+            DYNAMIC_AUDIO_CTX_BROKEN.store(true, Ordering::Relaxed);
+        }
+    }
+    result
+}
+
+fn is_encoder_failure(err: &LfError) -> bool {
+    matches!(err, LfError::RuntimeUnsupported(detail) if detail.contains("Error code: -6"))
+}
+
+/// whisper.cpp's integrated Silero path can leave the CPU backend unusable
+/// after an encoder -6 on Intel macOS. LocalFlow still applies its energy VAD
+/// before decode there; only the native Silero preprocessing is skipped.
+fn native_vad_supported() -> bool {
+    !cfg!(all(target_os = "macos", target_arch = "x86_64"))
 }
 
 fn ensure_loaded(loaded: &mut Option<Loaded>, model_path: PathBuf) -> LfResult<()> {
@@ -538,30 +592,47 @@ fn ensure_loaded(loaded: &mut Option<Loaded>, model_path: PathBuf) -> LfResult<(
         None => true,
     };
     if needs_reload {
-        let path = model_path
-            .to_str()
-            .ok_or_else(|| LfError::Other("model path is not UTF-8".into()))?;
-        eprintln!(
-            "localflow: loading whisper model {} (gpu={use_gpu})",
-            model_path.display()
-        );
-        let mut params = WhisperContextParameters::default();
-        params.use_gpu(use_gpu);
-        // Flash attention helps Metal/CUDA and slows the CPU path.
-        params.flash_attn(use_gpu);
-        let ctx = WhisperContext::new_with_params(path, params)
-            .map_err(|err| LfError::RuntimeUnsupported(format!("whisper.cpp: {err}")))?;
-        let state = ctx
-            .create_state()
-            .map_err(|err| LfError::RuntimeUnsupported(err.to_string()))?;
-        *loaded = Some(Loaded {
-            path: model_path,
-            gpu: use_gpu,
-            ctx,
-            state,
-        });
+        // Drop the old model before allocating the replacement. Medium takes
+        // enough memory that briefly holding two contexts can make the encoder
+        // allocation fail on Intel Macs.
+        *loaded = None;
+        *loaded = Some(load_model(model_path, use_gpu)?);
     }
     Ok(())
+}
+
+fn reload_loaded(loaded: &mut Option<Loaded>) -> LfResult<()> {
+    let slot = loaded.as_ref().expect("whisper context");
+    let path = slot.path.clone();
+    let gpu = slot.gpu;
+    *loaded = None;
+    *loaded = Some(load_model(path, gpu)?);
+    Ok(())
+}
+
+fn load_model(model_path: PathBuf, use_gpu: bool) -> LfResult<Loaded> {
+    let path = model_path
+        .to_str()
+        .ok_or_else(|| LfError::Other("model path is not UTF-8".into()))?;
+    eprintln!(
+        "localflow: loading whisper model {} (gpu={use_gpu})",
+        model_path.display()
+    );
+    let mut params = WhisperContextParameters::default();
+    params.use_gpu(use_gpu);
+    // Flash attention helps Metal/CUDA and slows the CPU path.
+    params.flash_attn(use_gpu);
+    let ctx = WhisperContext::new_with_params(path, params)
+        .map_err(|err| LfError::RuntimeUnsupported(format!("whisper.cpp: {err}")))?;
+    let state = ctx
+        .create_state()
+        .map_err(|err| LfError::RuntimeUnsupported(err.to_string()))?;
+    Ok(Loaded {
+        path: model_path,
+        gpu: use_gpu,
+        _ctx: ctx,
+        state,
+    })
 }
 
 /// whisper.cpp only reads `initial_prompt` when `prompt_tokens` is null, and it
@@ -586,8 +657,14 @@ fn prompt_for(options: &DecodeOptions) -> String {
 }
 
 fn pad_to_whisper_window(pcm: &[f32]) -> Vec<f32> {
-    // whisper.cpp skips (or fails language detect on) clips shorter than 1s.
-    const MIN: usize = 16_000;
+    // A reduced encoder context still needs a sufficiently long mel input on
+    // the Intel CPU backend. Padding with silence preserves the recording and
+    // avoids native encoder -6 failures on short dictation.
+    const MIN: usize = if cfg!(all(target_os = "macos", target_arch = "x86_64")) {
+        16_000 * 6
+    } else {
+        16_000
+    };
     if pcm.len() >= MIN {
         return pcm.to_vec();
     }
@@ -602,12 +679,15 @@ fn pad_to_whisper_window(pcm: &[f32]) -> Vec<f32> {
 /// (ggml-org/whisper.cpp#1855). Too small a context hurts accuracy, hence the
 /// floor.
 pub const FULL_AUDIO_CTX: i32 = 1500;
-pub const MIN_AUDIO_CTX: i32 = 384;
+pub const MIN_AUDIO_CTX: i32 = 416;
+const AUDIO_CTX_ALIGNMENT: i32 = 32;
 
 pub fn audio_ctx_for_samples(n_samples: usize) -> i32 {
     let secs = n_samples as f64 / 16_000.0;
-    let ctx = (secs / 30.0 * f64::from(FULL_AUDIO_CTX)).ceil() as i32 + 128;
-    ctx.clamp(MIN_AUDIO_CTX, FULL_AUDIO_CTX)
+    let requested = (secs / 30.0 * f64::from(FULL_AUDIO_CTX)).ceil() as i32 + 128;
+    let aligned =
+        ((requested + AUDIO_CTX_ALIGNMENT - 1) / AUDIO_CTX_ALIGNMENT) * AUDIO_CTX_ALIGNMENT;
+    aligned.clamp(MIN_AUDIO_CTX, FULL_AUDIO_CTX)
 }
 
 fn vad_params(long_form: bool) -> WhisperVadParams {
@@ -627,6 +707,7 @@ fn decode(
     options: &DecodeOptions,
     vad_model: Option<&Path>,
     cancellation: &Cancellation,
+    force_full_audio_ctx: bool,
 ) -> LfResult<String> {
     let mut params = FullParams::new(SamplingStrategy::Greedy { best_of: 1 });
     params.set_n_threads(num_threads());
@@ -656,17 +737,13 @@ fn decode(
     // Clears context carried over from the previous utterance. It is applied
     // before the initial prompt is seeded, so the two are compatible.
     params.set_no_context(true);
-    if options.long_form {
-        // Long files: one greedy pass. Dictation keeps whisper.cpp's 0.2
-        // increment so a looped sentence retries instead of being pasted.
-        params.set_temperature_inc(0.0);
-        params.set_audio_ctx(audio_ctx_for_samples(pcm.len()));
-    } else {
-        // Short dictation is padded with the onset, but should not pay for a
-        // full 30-second encoder window. Keep the same full context for long
-        // recordings only; the lower bound in `audio_ctx_for_samples` avoids
-        // degrading recognition on very short utterances.
-        params.set_temperature_inc(0.0);
+    // Leave the default value (0) alone for the fallback: whisper.cpp uses the
+    // model's full context through that path. Explicitly setting 1500 is not
+    // equivalent on every backend.
+    params.set_temperature_inc(0.0);
+    if !force_full_audio_ctx {
+        // Short dictation should not pay for a full 30-second encoder window.
+        // The lower bound avoids degrading recognition on very short speech.
         params.set_audio_ctx(audio_ctx_for_samples(pcm.len()));
     }
     // Deliberately no `set_tokens` call: whisper.cpp ignores `initial_prompt`
@@ -780,10 +857,15 @@ mod tests {
     }
 
     #[test]
-    fn pads_short_clips_to_one_second() {
+    fn pads_short_clips_to_safe_encoder_window() {
         let pcm = vec![0.1; 800];
         let padded = pad_to_whisper_window(&pcm);
-        assert_eq!(padded.len(), 16_000);
+        let expected = if cfg!(all(target_os = "macos", target_arch = "x86_64")) {
+            16_000 * 6
+        } else {
+            16_000
+        };
+        assert_eq!(padded.len(), expected);
         assert!((padded[0] - 0.1).abs() < f32::EPSILON);
         assert_eq!(padded[800], 0.0);
     }
@@ -825,13 +907,32 @@ mod tests {
     fn audio_ctx_scales_with_clip_length() {
         // 1 s clip sits on the floor.
         assert_eq!(audio_ctx_for_samples(16_000), MIN_AUDIO_CTX);
-        // 6 s: 6/30*1500 + 128 = 428.
-        assert_eq!(audio_ctx_for_samples(16_000 * 6), 428);
-        // 20 s: 1000 + 128.
-        assert_eq!(audio_ctx_for_samples(16_000 * 20), 1128);
+        // Reduced contexts are rounded up to a backend-safe block boundary.
+        assert_eq!(audio_ctx_for_samples(16_000 * 6), 448);
+        assert_eq!(audio_ctx_for_samples(16_000 * 20), 1152);
+        assert_eq!(audio_ctx_for_samples(16_000 * 6) % AUDIO_CTX_ALIGNMENT, 0);
         // 30 s and longer use the full window.
         assert_eq!(audio_ctx_for_samples(16_000 * 30), FULL_AUDIO_CTX);
         assert_eq!(audio_ctx_for_samples(16_000 * 90), FULL_AUDIO_CTX);
+    }
+
+    #[test]
+    fn recognizes_native_encoder_failure_for_full_context_fallback() {
+        assert!(is_encoder_failure(&LfError::RuntimeUnsupported(
+            "Generic whisper error. Varies depending on the function. Error code: -6".into()
+        )));
+        assert!(!is_encoder_failure(&LfError::RuntimeUnsupported(
+            "Generic whisper error. Varies depending on the function. Error code: -7".into()
+        )));
+        assert!(!is_encoder_failure(&LfError::Other("cancelled".into())));
+    }
+
+    #[test]
+    fn integrated_vad_is_disabled_on_intel_macos() {
+        assert_eq!(
+            native_vad_supported(),
+            !cfg!(all(target_os = "macos", target_arch = "x86_64"))
+        );
     }
 
     #[test]
@@ -852,6 +953,7 @@ mod tests {
             .unwrap();
         assert!(body.contains("set_temperature_inc(0.0)"));
         assert!(body.contains("set_audio_ctx(audio_ctx_for_samples("));
+        assert!(body.contains("if !force_full_audio_ctx"));
         assert!(body.contains("set_no_timestamps(!options.timestamps)"));
     }
 
