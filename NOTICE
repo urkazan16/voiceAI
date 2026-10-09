@@ -41,3 +41,23 @@ Qwen3-4B-Instruct-2507 and Qwen2.5-Coder-7B
 Copyright Alibaba Cloud / Qwen
 Apache-2.0. Weights are not shipped in the LocalFlow installer.
 See licenses/qwen.txt and Model Manager.
+
+Optional experimental Ogg/Opus build only:
+
+Symphonia 0.6.1
+Copyright (c) The Project Symphonia Developers
+MPL-2.0. This component is not enabled in the default build.
+See licenses/symphonia-mpl-2.0.txt. Exact corresponding unmodified Source Code
+Form, direct download URLs and SHA-256 checksums are listed in
+licenses/symphonia-source.json.
+
+symphonia-adapter-libopus 0.3.0 (LocalFlow-pinned modifications)
+Apache-2.0 selected from the upstream MIT OR Apache-2.0 options.
+LocalFlow changes provide Rust 1.88 compatibility, multi-packet pre-skip,
+output gain, strict mapping-family validation, and reset correctness.
+See licenses/symphonia-adapter-apache-2.0.txt.
+
+libopus 1.6.1 via opusic-sys 0.7.5
+Copyright 2001-2023 Xiph.Org, Skype Limited, Octasic, and contributors
+BSD-3-Clause with the patent-license references published by Xiph.Org.
+See licenses/libopus.txt.

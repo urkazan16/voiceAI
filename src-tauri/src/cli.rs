@@ -21,12 +21,14 @@ pub fn invoked(args: &[String]) -> bool {
                 | "check"
                 | "devices"
                 | "paste-smoke"
+                | "opus-decode-smoke"
                 | "download"
                 | "--help"
                 | "-h"
                 | "--version"
                 | "-V"
                 | "--json"
+                | "--experimental-opus"
         ) || a == "--"
             || Path::new(a)
                 .extension()
@@ -54,6 +56,7 @@ struct Opts {
     files: Vec<PathBuf>,
     dir: Option<PathBuf>,
     stdin: bool,
+    experimental_opus: bool,
     command: Command,
 }
 
@@ -62,6 +65,7 @@ enum Command {
     Check,
     Devices,
     PasteSmoke,
+    OpusDecodeSmoke,
     Download,
     Help,
     Version,
@@ -77,6 +81,7 @@ fn parse(args: &[String]) -> Result<Opts, String> {
         files: Vec::new(),
         dir: None,
         stdin: false,
+        experimental_opus: false,
         command: Command::Transcribe,
     };
     let mut rest = args.iter().skip(1);
@@ -86,12 +91,14 @@ fn parse(args: &[String]) -> Result<Opts, String> {
             "check" => opts.command = Command::Check,
             "devices" => opts.command = Command::Devices,
             "paste-smoke" => opts.command = Command::PasteSmoke,
+            "opus-decode-smoke" => opts.command = Command::OpusDecodeSmoke,
             "download" => opts.command = Command::Download,
             "--help" | "-h" => opts.command = Command::Help,
             "--version" | "-V" => opts.command = Command::Version,
             "--json" => opts.json = true,
             "--no-postprocess" | "--raw" => opts.no_post = true,
             "--stdin" => opts.stdin = true,
+            "--experimental-opus" => opts.experimental_opus = true,
             "--language" | "-l" => {
                 opts.language = Some(rest.next().cloned().ok_or("--language needs a value")?)
             }
@@ -142,6 +149,7 @@ fn run_inner(args: &[String]) -> Result<i32, String> {
             }
         }
         Command::PasteSmoke => paste_smoke(),
+        Command::OpusDecodeSmoke => opus_decode_smoke(opts),
         Command::Download => download_required(opts),
         Command::Transcribe => transcribe(opts),
     }
@@ -154,11 +162,13 @@ LocalFlow CLI (no GUI)
 
 Usage:
   localflow transcribe [--json] [--no-postprocess] [--language ru|en|auto]
-                       [--model MODEL_ID] [--device NAME] [--dir DIR] [--stdin] [FILE...]
+                       [--model MODEL_ID] [--device NAME] [--dir DIR] [--stdin]
+                       [--experimental-opus] [FILE...]
   localflow devices
   localflow check [--json]
   localflow download [--model MODEL_ID]
   localflow paste-smoke
+  localflow opus-decode-smoke FILE
   localflow --version
   localflow --help
 
@@ -168,22 +178,95 @@ Progress goes to stderr; transcripts go to stdout.
     );
 }
 
+fn opus_decode_smoke(opts: Opts) -> Result<i32, String> {
+    if opts.stdin || opts.dir.is_some() || opts.files.len() != 1 {
+        return Err("opus-decode-smoke requires exactly one file".into());
+    }
+    let started = std::time::Instant::now();
+    let pcm = load_cli_file(&opts.files[0], true)?;
+    let decode_ms = started.elapsed().as_secs_f64() * 1000.0;
+    if pcm.is_empty() || pcm.iter().any(|sample| !sample.is_finite()) {
+        return Err("AUDIO_OUTPUT_INVALID: decoded PCM is empty or non-finite".into());
+    }
+
+    #[derive(serde::Serialize)]
+    struct SmokeResult {
+        backend: &'static str,
+        sample_rate: u32,
+        samples: usize,
+        decode_ms: f64,
+        peak_rss_bytes: Option<u64>,
+    }
+
+    #[cfg(feature = "audio-symphonia-opus")]
+    let backend = crate::symphonia_opus::BACKEND_NAME;
+    #[cfg(not(feature = "audio-symphonia-opus"))]
+    let backend = "unavailable";
+
+    println!(
+        "{}",
+        serde_json::to_string(&SmokeResult {
+            backend,
+            sample_rate: 16_000,
+            samples: pcm.len(),
+            decode_ms,
+            peak_rss_bytes: peak_rss_bytes(),
+        })
+        .map_err(|error| error.to_string())?
+    );
+    Ok(0)
+}
+
+#[cfg(unix)]
+fn peak_rss_bytes() -> Option<u64> {
+    let mut usage = std::mem::MaybeUninit::<libc::rusage>::zeroed();
+    // SAFETY: `usage` points to writable storage of the exact type required by
+    // getrusage, and the value is read only after a successful call.
+    if unsafe { libc::getrusage(libc::RUSAGE_SELF, usage.as_mut_ptr()) } != 0 {
+        return None;
+    }
+    // SAFETY: getrusage returned success and initialized the structure.
+    let max_rss = unsafe { usage.assume_init() }.ru_maxrss;
+    if max_rss < 0 {
+        return None;
+    }
+    #[cfg(target_os = "macos")]
+    return Some(max_rss as u64);
+    #[cfg(not(target_os = "macos"))]
+    return (max_rss as u64).checked_mul(1024);
+}
+
+#[cfg(windows)]
+fn peak_rss_bytes() -> Option<u64> {
+    use windows_sys::Win32::System::ProcessStatus::{
+        K32GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS,
+    };
+    use windows_sys::Win32::System::Threading::GetCurrentProcess;
+
+    let mut counters = std::mem::MaybeUninit::<PROCESS_MEMORY_COUNTERS>::zeroed();
+    let size = std::mem::size_of::<PROCESS_MEMORY_COUNTERS>() as u32;
+    // SAFETY: the pseudo-handle is valid for the current process and counters
+    // points to writable storage of `size` bytes.
+    if unsafe { K32GetProcessMemoryInfo(GetCurrentProcess(), counters.as_mut_ptr(), size) } == 0 {
+        return None;
+    }
+    // SAFETY: K32GetProcessMemoryInfo returned success and initialized it.
+    Some(unsafe { counters.assume_init() }.PeakWorkingSetSize as u64)
+}
+
 fn transcribe(opts: Opts) -> Result<i32, String> {
     let mut paths_to_run: Vec<(String, Result<Vec<f32>, String>)> = Vec::new();
     if opts.stdin {
         eprintln!("reading audio from stdin");
-        paths_to_run.push((
-            "stdin".into(),
-            media::load_stdin().map_err(|e| e.to_string()),
-        ));
+        paths_to_run.push(("stdin".into(), load_cli_stdin(opts.experimental_opus)));
     }
     if let Some(dir) = &opts.dir {
         eprintln!("batch {}", dir.display());
-        for file in media::list_audio_files(dir).map_err(|e| e.to_string())? {
+        for file in list_cli_audio_files(dir, opts.experimental_opus)? {
             eprintln!("loading {}", file.display());
             paths_to_run.push((
                 file.display().to_string(),
-                media::load_pcm_16k_mono(&file).map_err(|e| e.to_string()),
+                load_cli_file(&file, opts.experimental_opus),
             ));
         }
     }
@@ -191,7 +274,7 @@ fn transcribe(opts: Opts) -> Result<i32, String> {
         eprintln!("loading {}", file.display());
         paths_to_run.push((
             file.display().to_string(),
-            media::load_pcm_16k_mono(file).map_err(|e| e.to_string()),
+            load_cli_file(file, opts.experimental_opus),
         ));
     }
     if paths_to_run.is_empty() {
@@ -266,6 +349,62 @@ fn transcribe(opts: Opts) -> Result<i32, String> {
         println!("{}", serde_json::to_string_pretty(&outputs).unwrap());
     }
     Ok(if any_error { 1 } else { 0 })
+}
+
+fn load_cli_file(path: &Path, experimental_opus: bool) -> Result<Vec<f32>, String> {
+    if experimental_opus {
+        #[cfg(feature = "audio-symphonia-opus")]
+        {
+            return media::load_pcm_16k_mono_experimental(path, &Default::default())
+                .map_err(|error| error.to_string());
+        }
+        #[cfg(not(feature = "audio-symphonia-opus"))]
+        return Err("--experimental-opus requires the audio-symphonia-opus build feature".into());
+    }
+    media::load_pcm_16k_mono(path).map_err(|error| error.to_string())
+}
+
+fn load_cli_stdin(experimental_opus: bool) -> Result<Vec<f32>, String> {
+    if experimental_opus {
+        #[cfg(feature = "audio-symphonia-opus")]
+        {
+            return media::load_stdin_experimental(&Default::default())
+                .map_err(|error| error.to_string());
+        }
+        #[cfg(not(feature = "audio-symphonia-opus"))]
+        return Err("--experimental-opus requires the audio-symphonia-opus build feature".into());
+    }
+    media::load_stdin().map_err(|error| error.to_string())
+}
+
+fn list_cli_audio_files(dir: &Path, experimental_opus: bool) -> Result<Vec<PathBuf>, String> {
+    if !experimental_opus {
+        return media::list_audio_files(dir).map_err(|error| error.to_string());
+    }
+    if !dir.is_dir() {
+        return Err(format!("{} is not a directory", dir.display()));
+    }
+    let mut files = Vec::new();
+    for entry in std::fs::read_dir(dir).map_err(|error| error.to_string())? {
+        let path = entry.map_err(|error| error.to_string())?.path();
+        let accepted = path
+            .extension()
+            .and_then(|value| value.to_str())
+            .is_some_and(|value| {
+                media::AUDIO_EXTENSIONS
+                    .iter()
+                    .any(|ext| value.eq_ignore_ascii_case(ext))
+                    || value.eq_ignore_ascii_case("opus")
+            });
+        if path.is_file() && accepted {
+            files.push(path);
+        }
+    }
+    files.sort();
+    if files.is_empty() {
+        return Err(format!("no audio files in {}", dir.display()));
+    }
+    Ok(files)
 }
 
 #[derive(serde::Serialize)]
@@ -473,6 +612,18 @@ mod tests {
     fn paste_smoke_command_parses() {
         let opts = parse(&["lf".into(), "paste-smoke".into()]).unwrap();
         assert!(matches!(opts.command, Command::PasteSmoke));
+    }
+
+    #[test]
+    fn opus_decode_smoke_command_parses_one_file() {
+        let opts = parse(&[
+            "lf".into(),
+            "opus-decode-smoke".into(),
+            "fixture.opus".into(),
+        ])
+        .unwrap();
+        assert!(matches!(opts.command, Command::OpusDecodeSmoke));
+        assert_eq!(opts.files, [PathBuf::from("fixture.opus")]);
     }
 
     #[test]

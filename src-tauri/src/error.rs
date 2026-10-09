@@ -27,6 +27,22 @@ pub enum LfError {
     RuntimeUnsupported(String),
     #[error("CONFIG_INVALID: {0}")]
     ConfigInvalid(String),
+    #[error("AUDIO_FORMAT_UNSUPPORTED: {0}")]
+    AudioFormatUnsupported(String),
+    #[error("AUDIO_CHANNELS_UNSUPPORTED: {0}")]
+    AudioChannelsUnsupported(String),
+    #[error("AUDIO_INPUT_INVALID: {0}")]
+    AudioInputInvalid(String),
+    #[error("AUDIO_DECODE_FAILED: {0}")]
+    AudioDecodeFailed(String),
+    #[error("AUDIO_LIMIT_EXCEEDED: {0}")]
+    AudioLimitExceeded(String),
+    #[error("AUDIO_DECODE_TIMEOUT: {0}")]
+    AudioDecodeTimeout(String),
+    #[error("AUDIO_CANCELLED: {0}")]
+    AudioCancelled(String),
+    #[error("AUDIO_OUTPUT_INVALID: {0}")]
+    AudioOutputInvalid(String),
     #[error("IO: {0}")]
     Io(#[from] std::io::Error),
     #[error("DB: {0}")]
@@ -51,6 +67,14 @@ impl LfError {
             Self::PipelineInvalidState { .. } => "PIPELINE_INVALID_STATE",
             Self::RuntimeUnsupported(_) => "RUNTIME_UNSUPPORTED",
             Self::ConfigInvalid(_) => "CONFIG_INVALID",
+            Self::AudioFormatUnsupported(_) => "AUDIO_FORMAT_UNSUPPORTED",
+            Self::AudioChannelsUnsupported(_) => "AUDIO_CHANNELS_UNSUPPORTED",
+            Self::AudioInputInvalid(_) => "AUDIO_INPUT_INVALID",
+            Self::AudioDecodeFailed(_) => "AUDIO_DECODE_FAILED",
+            Self::AudioLimitExceeded(_) => "AUDIO_LIMIT_EXCEEDED",
+            Self::AudioDecodeTimeout(_) => "AUDIO_DECODE_TIMEOUT",
+            Self::AudioCancelled(_) => "AUDIO_CANCELLED",
+            Self::AudioOutputInvalid(_) => "AUDIO_OUTPUT_INVALID",
             Self::Io(_) => "IO",
             Self::Db(_) => "DB",
             Self::Json(_) => "JSON",

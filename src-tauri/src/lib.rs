@@ -54,6 +54,8 @@ pub mod sherpa_stt;
 pub mod snippets;
 pub mod spoken_tech;
 pub mod stt;
+#[cfg(feature = "audio-symphonia-opus")]
+pub mod symphonia_opus;
 pub mod textscan;
 pub mod tone_stt;
 pub mod uninstall;
@@ -117,6 +119,7 @@ pub fn run() {
             commands::append_audio_upload,
             commands::transcribe_staged_audio,
             commands::transcribe_audio_file,
+            commands::cancel_audio_file_task,
             commands::get_transcribe_progress,
             commands::get_hotkey_status,
             commands::dictation_stop,
@@ -706,6 +709,25 @@ mod tests {
             build.contains("restore_sherpa_windows_prebuilt")
                 && build.contains("stage_sherpa_windows_import_libs"),
             "localflow build.rs must unpack import libs even when sherpa-onnx-sys skips download"
+        );
+    }
+
+    #[test]
+    fn installers_bundle_third_party_notices() {
+        let config = include_str!("../tauri.conf.json");
+        assert!(
+            config.contains("\"../NOTICE\": \"NOTICE\"")
+                && config.contains("\"../licenses/\": \"THIRD_PARTY_LICENSES/\""),
+            "installed applications must contain the notice and separate license texts"
+        );
+
+        let packager = include_str!("../../scripts/build-release.mjs");
+        assert!(
+            packager.contains("LOCALFLOW_AUDIO_SYMPHONIA_OPUS")
+                && packager.contains("--audio-symphonia-opus")
+                && packager.contains("verifyExperimentalOpusExecutable")
+                && packager.contains("opus-decode-smoke"),
+            "experimental releases must compile, describe and run the packaged decoder"
         );
     }
 }

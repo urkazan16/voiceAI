@@ -2,6 +2,7 @@
 node_modules/
 dist/
 src-tauri/target/
+src-tauri/vendor/**/target/
 src-tauri/native/build/
 src-tauri/sherpa-onnx-c-api.dll
 src-tauri/onnxruntime.dll
@@ -10,6 +11,7 @@ src-tauri/resources/runtime/*.dll
 src-tauri/gen/
 third_party/
 release-artifacts/
+.release-measure/
 models/
 *.dmg
 *.app

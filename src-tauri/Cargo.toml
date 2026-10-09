@@ -35,6 +35,7 @@ path = "tests/tray.rs"
 [features]
 default = []
 ai-bench = []
+audio-symphonia-opus = ["dep:symphonia", "dep:symphonia-adapter-libopus"]
 
 [build-dependencies]
 cc = "1.2.13"
@@ -62,6 +63,8 @@ regex = "1.11.1"
 libc = "0.2"
 whisper-rs = { version = "0.16.0", default-features = false }
 num_cpus = "1.16"
+symphonia = { version = "=0.6.1", default-features = false, features = ["ogg"], optional = true }
+symphonia-adapter-libopus = { version = "=0.3.0", default-features = false, features = ["bundled"], optional = true }
 
 [target.'cfg(not(windows))'.dependencies]
 sherpa-onnx = { version = "1.13.8", default-features = false, features = ["static"] }
@@ -80,6 +83,7 @@ windows-sys = { version = "0.59.0", features = [
     "Win32_Storage_FileSystem",
     "Win32_System_DataExchange",
     "Win32_System_Memory",
+    "Win32_System_ProcessStatus",
     "Win32_System_Registry",
     "Win32_Security",
     "Win32_System_StationsAndDesktops",
@@ -126,3 +130,8 @@ opt-level = 3
 # especially opaque in the console-less Windows release build).
 panic = "unwind"
 strip = "symbols"
+
+[patch.crates-io]
+# Pinned LocalFlow patch of 0.3.0: Rust 1.88 compatibility, multi-packet
+# pre-skip, reset correctness, and RFC 7845 output gain. See the stage-1 report.
+symphonia-adapter-libopus = { path = "vendor/symphonia-adapter-libopus" }

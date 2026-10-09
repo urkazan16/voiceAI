@@ -274,6 +274,7 @@ export function App() {
   const logPaneRef = useRef<HTMLPreElement | null>(null);
   const audioFileRef = useRef<HTMLInputElement | null>(null);
   const audioBusyRef = useRef(false);
+  const audioTaskIdRef = useRef<string | null>(null);
   const autoDownloadStarted = useRef<Record<string, boolean>>({});
   const settingsRef = useRef(settings);
   const saveChain = useRef(Promise.resolve());
@@ -796,6 +797,8 @@ export function App() {
       "path" in file && typeof (file as File & { path?: string }).path === "string"
         ? (file as File & { path: string }).path
         : "";
+    const taskId = globalThis.crypto.randomUUID();
+    audioTaskIdRef.current = taskId;
     setAudioBusy(true);
     audioBusyRef.current = true;
     setFileProgress({
@@ -811,9 +814,10 @@ export function App() {
       const filename = file.name || nativePath || "upload.wav";
       let output;
       if (nativePath) {
-        output = await api.transcribeAudioFile({ filename, path: nativePath });
+        output = await api.transcribeAudioFile({ filename, path: nativePath, taskId });
       } else {
         const id = await api.beginAudioUpload(filename);
+        audioTaskIdRef.current = id;
         const step = 32 * 1024;
         const sendChunk = async (bytes: Uint8Array, total: number, already: number) => {
           let sent = already;
@@ -863,7 +867,7 @@ export function App() {
       }
       setPipelineOut(output);
       setDraft(output.final_text);
-      setStatus(`Formed: ${output.final_text}`);
+      setStatus(t.pipelineComplete);
       setHistory(await api.listHistory());
       setLastUtteranceReady(await api.lastUtteranceReady().catch(() => false));
     } catch (error) {
@@ -872,6 +876,7 @@ export function App() {
     } finally {
       setAudioBusy(false);
       audioBusyRef.current = false;
+      audioTaskIdRef.current = null;
       setFileProgress(null);
       if (audioFileRef.current) {
         audioFileRef.current.value = "";
@@ -1156,7 +1161,7 @@ export function App() {
                     const output = await api.processTranscript(draft);
                     setPipelineOut(output);
                     setDraft(output.final_text);
-                    setStatus(`Formed: ${output.final_text}`);
+                    setStatus(t.pipelineComplete);
                     setHistory(await api.listHistory());
                   } catch (error) {
                     setPipelineOut(null);
@@ -1203,38 +1208,121 @@ export function App() {
                     {fileProgress.chunk + 1}/{fileProgress.chunks}
                   </p>
                 )}
+                <button
+                  className="mt-3 rounded-full border border-paper/30 px-4 py-1 text-sm"
+                  onClick={() => {
+                    const id = audioTaskIdRef.current;
+                    if (id) {
+                      void api.cancelAudioFileTask(id);
+                    }
+                  }}
+                >
+                  {t.barCancel}
+                </button>
               </div>
             )}
             {pipelineOut && (
-              <dl className="mt-6 space-y-2 rounded-2xl border border-paper/10 p-4 text-sm">
-                <div>
-                  <dt className="text-paper/50">{t.transcript}</dt>
-                  <dd className="whitespace-pre-wrap">{pipelineOut.raw_transcript}</dd>
-                </div>
-                <div>
-                  <dt className="text-paper/50">{t.afterDictionary}</dt>
-                  <dd className="whitespace-pre-wrap">{pipelineOut.dictionary_text}</dd>
-                </div>
-                <div>
-                  <dt className="text-paper/50">{t.formedText}</dt>
-                  <dd className="whitespace-pre-wrap text-lg">{pipelineOut.final_text}</dd>
-                </div>
-                {pipelineOut.insert_ok === false && pipelineOut.final_text && (
-                  <div className="flex flex-wrap gap-2 pt-2">
-                    <p className="w-full text-copper">
-                      Last insert failed. Copy or paste the text, then dismiss.
-                    </p>
+              <section
+                aria-label={t.resultSteps}
+                className="mt-6 space-y-3 rounded-2xl border border-paper/10 bg-paper/[0.02] p-4"
+              >
+                <header className="flex items-center justify-between gap-3">
+                  <h2 className="text-lg">{t.resultSteps}</h2>
+                  <span className="rounded-full bg-emerald-400/10 px-3 py-1 text-xs text-emerald-300">
+                    ✓ {t.pipelineComplete}
+                  </span>
+                </header>
+
+                <article className="rounded-xl border border-paper/10 bg-paper/[0.03] p-4">
+                  <div className="flex flex-wrap items-center justify-between gap-3">
+                    <div className="flex items-center gap-3">
+                      <span className="grid h-7 w-7 place-items-center rounded-full bg-paper/10 text-xs text-paper/70">
+                        1
+                      </span>
+                      <div>
+                        <h3 className="font-medium">{t.recognitionStep}</h3>
+                        <p className="text-xs text-paper/45">{t.transcript}</p>
+                      </div>
+                    </div>
                     <button
-                      className="rounded-full border border-paper/30 px-3 py-1"
+                      type="button"
+                      className="rounded-full border border-paper/25 px-3 py-1.5 text-xs hover:border-paper/50"
                       onClick={() =>
                         void runAction(async () => {
-                          await api.copyLastTranscript();
-                          setStatus("Copied last transcript.");
+                          await api.copyText(pipelineOut.raw_transcript);
+                          setStatus(t.copiedExport);
                         })
                       }
                     >
-                      Copy
+                      {t.copyTranscript}
                     </button>
+                  </div>
+                  <p className="mt-3 select-text whitespace-pre-wrap text-sm leading-6 text-paper/75">
+                    {pipelineOut.raw_transcript}
+                  </p>
+                </article>
+
+                <article className="rounded-xl border border-paper/10 bg-paper/[0.03] p-4">
+                  <div className="flex flex-wrap items-center justify-between gap-3">
+                    <div className="flex items-center gap-3">
+                      <span className="grid h-7 w-7 place-items-center rounded-full bg-paper/10 text-xs text-paper/70">
+                        2
+                      </span>
+                      <div>
+                        <h3 className="font-medium">{t.dictionaryStep}</h3>
+                        <p className="text-xs text-paper/45">{t.afterDictionary}</p>
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      className="rounded-full border border-paper/25 px-3 py-1.5 text-xs hover:border-paper/50"
+                      onClick={() =>
+                        void runAction(async () => {
+                          await api.copyText(pipelineOut.dictionary_text);
+                          setStatus(t.copiedExport);
+                        })
+                      }
+                    >
+                      {t.copyDictionaryText}
+                    </button>
+                  </div>
+                  <p className="mt-3 select-text whitespace-pre-wrap text-sm leading-6 text-paper/75">
+                    {pipelineOut.dictionary_text}
+                  </p>
+                </article>
+
+                <article className="rounded-xl border border-copper/50 bg-copper/[0.08] p-4">
+                  <div className="flex flex-wrap items-center justify-between gap-3">
+                    <div className="flex items-center gap-3">
+                      <span className="grid h-7 w-7 place-items-center rounded-full bg-copper text-xs font-semibold text-ink">
+                        3
+                      </span>
+                      <div>
+                        <h3 className="font-medium text-copper">{t.formattingStep}</h3>
+                        <p className="text-xs text-paper/55">{t.formedText}</p>
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      className="rounded-full bg-copper px-4 py-2 text-sm font-medium text-ink hover:brightness-110"
+                      onClick={() =>
+                        void runAction(async () => {
+                          await api.copyText(pipelineOut.final_text);
+                          setStatus(t.copiedExport);
+                        })
+                      }
+                    >
+                      {t.copyFinalText}
+                    </button>
+                  </div>
+                  <p className="mt-3 select-text whitespace-pre-wrap text-base leading-7 text-paper">
+                    {pipelineOut.final_text}
+                  </p>
+                </article>
+
+                {pipelineOut.insert_ok === false && pipelineOut.final_text && (
+                  <div className="flex flex-wrap gap-2 rounded-xl border border-copper/30 bg-copper/5 p-3">
+                    <p className="w-full text-copper">{t.insertFailedResult}</p>
                     <button
                       className="rounded-full border border-paper/30 px-3 py-1"
                       onClick={() =>
@@ -1260,7 +1348,7 @@ export function App() {
                     </button>
                   </div>
                 )}
-              </dl>
+              </section>
             )}
           </section>
         )}

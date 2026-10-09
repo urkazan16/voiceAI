@@ -16,8 +16,11 @@ use std::collections::{HashMap, HashSet};
 use std::fs::OpenOptions;
 use std::io::Write;
 use std::path::PathBuf;
-use std::sync::{Mutex, OnceLock};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
+#[cfg(feature = "audio-symphonia-opus")]
+use std::time::Instant;
 use tauri::{AppHandle, Emitter};
 use tauri_plugin_global_shortcut::Shortcut;
 
@@ -997,6 +1000,78 @@ fn upload_slots() -> &'static Mutex<HashMap<String, PathBuf>> {
     SLOTS.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
+fn file_task_tokens() -> &'static Mutex<HashMap<String, Arc<AtomicBool>>> {
+    static TOKENS: OnceLock<Mutex<HashMap<String, Arc<AtomicBool>>>> = OnceLock::new();
+    TOKENS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+struct FileTaskGuard {
+    id: String,
+    cancellation: Arc<AtomicBool>,
+}
+
+impl FileTaskGuard {
+    fn register(id: String) -> Result<Self, CommandError> {
+        if !valid_upload_id(&id) {
+            return Err(CommandError {
+                code: "CONFIG_INVALID".into(),
+                message: "Invalid audio task.".into(),
+            });
+        }
+        let cancellation = Arc::new(AtomicBool::new(false));
+        file_task_tokens()
+            .lock()
+            .map_err(|_| CommandError {
+                code: "ERROR".into(),
+                message: "audio task lock poisoned".into(),
+            })?
+            .insert(id.clone(), Arc::clone(&cancellation));
+        Ok(Self { id, cancellation })
+    }
+}
+
+impl Drop for FileTaskGuard {
+    fn drop(&mut self) {
+        if let Ok(mut tokens) = file_task_tokens().lock() {
+            tokens.remove(&self.id);
+        }
+    }
+}
+
+struct StagedUploadGuard {
+    path: PathBuf,
+}
+
+impl Drop for StagedUploadGuard {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.path);
+        if let Some(parent) = self.path.parent() {
+            let _ = std::fs::remove_dir(parent);
+        }
+    }
+}
+
+#[tauri::command]
+pub fn cancel_audio_file_task(id: String) -> Result<(), CommandError> {
+    if !valid_upload_id(&id) {
+        return Err(CommandError {
+            code: "CONFIG_INVALID".into(),
+            message: "Invalid audio task.".into(),
+        });
+    }
+    if let Some(token) = file_task_tokens()
+        .lock()
+        .map_err(|_| CommandError {
+            code: "ERROR".into(),
+            message: "audio task lock poisoned".into(),
+        })?
+        .get(&id)
+    {
+        token.store(true, Ordering::Relaxed);
+    }
+    Ok(())
+}
+
 fn valid_upload_id(id: &str) -> bool {
     let ok_len = (8..=64).contains(&id.len());
     ok_len && id.chars().all(|c| c.is_ascii_hexdigit() || c == '-')
@@ -1030,7 +1105,7 @@ pub fn begin_audio_upload(filename: String) -> Result<String, CommandError> {
             code: "CONFIG_INVALID".into(),
             message: format!(
                 "Unsupported audio format. Use {}.",
-                crate::media::AUDIO_EXTENSIONS.join(", ")
+                crate::media::audio_extensions().join(", ")
             ),
         });
     }
@@ -1107,21 +1182,27 @@ pub async fn transcribe_staged_audio(
     id: String,
     filename: Option<String>,
 ) -> Result<PipelineOutput, CommandError> {
-    let path = take_upload_path(&id)?;
+    let staged = StagedUploadGuard {
+        path: take_upload_path(&id)?,
+    };
+    let task = FileTaskGuard::register(id)?;
     let engine = engine.inner().clone();
     let name = filename.unwrap_or_else(|| {
-        path.file_name()
+        staged
+            .path
+            .file_name()
             .and_then(|n| n.to_str())
             .unwrap_or("upload.wav")
             .to_string()
     });
     let result = tokio::task::spawn_blocking(move || {
-        let out = transcribe_audio_file_sync(engine, name, Some(path.display().to_string()), None);
-        let _ = std::fs::remove_file(&path);
-        if let Some(parent) = path.parent() {
-            let _ = std::fs::remove_dir(parent);
-        }
-        out
+        transcribe_audio_file_sync(
+            engine,
+            name,
+            Some(staged.path.display().to_string()),
+            None,
+            Arc::clone(&task.cancellation),
+        )
     })
     .await
     .map_err(|err| CommandError {
@@ -1137,14 +1218,25 @@ pub async fn transcribe_audio_file(
     filename: String,
     path: Option<String>,
     bytes: Option<Vec<u8>>,
+    task_id: Option<String>,
 ) -> Result<PipelineOutput, CommandError> {
+    let task =
+        FileTaskGuard::register(task_id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string()))?;
     let engine = engine.inner().clone();
-    tokio::task::spawn_blocking(move || transcribe_audio_file_sync(engine, filename, path, bytes))
-        .await
-        .map_err(|err| CommandError {
-            code: "ERROR".into(),
-            message: err.to_string(),
-        })?
+    tokio::task::spawn_blocking(move || {
+        transcribe_audio_file_sync(
+            engine,
+            filename,
+            path,
+            bytes,
+            Arc::clone(&task.cancellation),
+        )
+    })
+    .await
+    .map_err(|err| CommandError {
+        code: "ERROR".into(),
+        message: err.to_string(),
+    })?
 }
 
 fn transcribe_audio_file_sync(
@@ -1152,6 +1244,7 @@ fn transcribe_audio_file_sync(
     filename: String,
     path: Option<String>,
     bytes: Option<Vec<u8>>,
+    cancellation: Arc<AtomicBool>,
 ) -> Result<PipelineOutput, CommandError> {
     let hint_name = if !filename.trim().is_empty() {
         filename.trim()
@@ -1166,7 +1259,7 @@ fn transcribe_audio_file_sync(
             code: "CONFIG_INVALID".into(),
             message: format!(
                 "Unsupported audio format. Use {}.",
-                crate::media::AUDIO_EXTENSIONS.join(", ")
+                crate::media::audio_extensions().join(", ")
             ),
         });
     }
@@ -1180,7 +1273,7 @@ fn transcribe_audio_file_sync(
                 message: "Audio file is too large (80 MB max).".into(),
             });
         }
-        crate::media::load_pcm_16k_mono(&file_path)?
+        decode_audio_path(&file_path, cancellation.clone())?
     } else {
         let data = bytes.unwrap_or_default();
         if data.is_empty() {
@@ -1195,15 +1288,22 @@ fn transcribe_audio_file_sync(
                 message: "Audio file is too large (80 MB max).".into(),
             });
         }
-        crate::media::load_bytes(&data, &hint)?
+        decode_audio_bytes(&data, &hint, cancellation.clone())?
     };
+    if cancellation.load(Ordering::Relaxed) {
+        return Err(LfError::AudioCancelled("Audio file task was cancelled.".into()).into());
+    }
     if pcm.is_empty() {
         return Err(CommandError {
             code: "CONFIG_INVALID".into(),
             message: "The file has no audio to recognize.".into(),
         });
     }
-    crate::journal::log("transcribe_file", &hint.display().to_string());
+    if crate::media::experimental_opus_enabled() {
+        crate::journal::log("transcribe_file", "backend=symphonia-libopus");
+    } else {
+        crate::journal::log("transcribe_file", "backend=legacy");
+    }
     let (stt_path, lang, vad, options) = {
         let eng = lock(&engine)?;
         let stt_path = eng.ready_model_path("stt").ok_or_else(|| {
@@ -1235,18 +1335,60 @@ fn transcribe_audio_file_sync(
         });
     }
     crate::whisper_stt::set_progress("recognize", 12, "Starting speech recognition…");
-    let raw = crate::stt::transcribe_with_paragraph_pauses(
-        &crate::stt::NativeStt,
+    if cancellation.load(Ordering::Relaxed) {
+        return Err(LfError::AudioCancelled("Audio file task was cancelled.".into()).into());
+    }
+    let raw = crate::stt::transcribe_file(
         &pcm,
         Some(stt_path.as_path()),
         &lang,
-        vad,
         &options,
+        Arc::clone(&cancellation),
     )?;
+    if cancellation.load(Ordering::Relaxed) {
+        return Err(LfError::AudioCancelled("Audio file task was cancelled.".into()).into());
+    }
     crate::whisper_stt::set_progress("format", 92, "Formatting transcript…");
     let output = lock(&engine)?.process_file_transcript(&raw, &pcm)?;
     crate::whisper_stt::set_progress("done", 100, "Done");
     Ok(output)
+}
+
+fn decode_audio_path(
+    path: &std::path::Path,
+    cancellation: Arc<AtomicBool>,
+) -> crate::error::LfResult<Vec<f32>> {
+    #[cfg(feature = "audio-symphonia-opus")]
+    if crate::media::experimental_opus_enabled() {
+        let options = crate::symphonia_opus::DecodeOptions {
+            max_input_bytes: MAX_UPLOAD_BYTES,
+            deadline: Some(Instant::now() + Duration::from_secs(30 * 60)),
+            cancellation,
+            ..Default::default()
+        };
+        return crate::media::load_pcm_16k_mono_experimental(path, &options);
+    }
+    let _ = cancellation;
+    crate::media::load_pcm_16k_mono(path)
+}
+
+fn decode_audio_bytes(
+    bytes: &[u8],
+    hint: &std::path::Path,
+    cancellation: Arc<AtomicBool>,
+) -> crate::error::LfResult<Vec<f32>> {
+    #[cfg(feature = "audio-symphonia-opus")]
+    if crate::media::experimental_opus_enabled() {
+        let options = crate::symphonia_opus::DecodeOptions {
+            max_input_bytes: MAX_UPLOAD_BYTES,
+            deadline: Some(Instant::now() + Duration::from_secs(30 * 60)),
+            cancellation,
+            ..Default::default()
+        };
+        return crate::media::load_bytes_experimental(bytes, hint, &options);
+    }
+    let _ = cancellation;
+    crate::media::load_bytes(bytes, hint)
 }
 
 #[tauri::command]
@@ -1514,6 +1656,9 @@ mod dictate_macro_tests {
 
 #[cfg(test)]
 mod tests {
+    use super::{cancel_audio_file_task, file_task_tokens, FileTaskGuard, StagedUploadGuard};
+    use std::sync::atomic::Ordering;
+
     #[test]
     fn first_launch_auto_downloads_speech_and_formatting_defaults() {
         let spawn = include_str!("commands.rs")
@@ -1592,5 +1737,45 @@ mod tests {
             body.contains("long_form_interview"),
             "file STT must not use the dictation dictionary prompt"
         );
+    }
+
+    #[test]
+    fn file_task_cancellation_is_scoped_and_registration_is_cleaned_up() {
+        let first_id = uuid::Uuid::new_v4().to_string();
+        let second_id = uuid::Uuid::new_v4().to_string();
+        let first = FileTaskGuard::register(first_id.clone()).unwrap();
+        let second = FileTaskGuard::register(second_id.clone()).unwrap();
+
+        cancel_audio_file_task(first_id.clone()).unwrap();
+        assert!(first.cancellation.load(Ordering::Relaxed));
+        assert!(!second.cancellation.load(Ordering::Relaxed));
+
+        drop(first);
+        drop(second);
+        let tokens = file_task_tokens().lock().unwrap();
+        assert!(!tokens.contains_key(&first_id));
+        assert!(!tokens.contains_key(&second_id));
+    }
+
+    #[test]
+    fn staged_upload_guard_cleans_up_after_success_and_unwind() {
+        for should_panic in [false, true] {
+            let root = tempfile::tempdir().unwrap();
+            let upload_dir = root.path().join("upload");
+            std::fs::create_dir(&upload_dir).unwrap();
+            let path = upload_dir.join("audio.opus");
+            std::fs::write(&path, b"staged").unwrap();
+
+            let result = std::panic::catch_unwind({
+                let path = path.clone();
+                move || {
+                    let _guard = StagedUploadGuard { path };
+                    assert!(!should_panic, "simulated worker panic");
+                }
+            });
+            assert_eq!(result.is_err(), should_panic);
+            assert!(!path.exists());
+            assert!(!upload_dir.exists());
+        }
     }
 }

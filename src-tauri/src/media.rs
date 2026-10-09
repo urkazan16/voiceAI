@@ -5,11 +5,35 @@ use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
 pub const AUDIO_EXTENSIONS: &[&str] = &["wav", "mp3", "m4a", "aac", "ogg", "flac", "aiff", "aif"];
+#[cfg(feature = "audio-symphonia-opus")]
+pub const EXPERIMENTAL_AUDIO_EXTENSIONS: &[&str] = &[
+    "wav", "mp3", "m4a", "aac", "ogg", "opus", "flac", "aiff", "aif",
+];
+
+#[cfg(feature = "audio-symphonia-opus")]
+pub fn experimental_opus_enabled() -> bool {
+    std::env::var("LOCALFLOW_EXPERIMENTAL_OPUS")
+        .ok()
+        .is_some_and(|value| matches!(value.to_ascii_lowercase().as_str(), "1" | "true" | "yes"))
+}
+
+#[cfg(not(feature = "audio-symphonia-opus"))]
+pub fn experimental_opus_enabled() -> bool {
+    false
+}
+
+pub fn audio_extensions() -> &'static [&'static str] {
+    #[cfg(feature = "audio-symphonia-opus")]
+    if experimental_opus_enabled() {
+        return EXPERIMENTAL_AUDIO_EXTENSIONS;
+    }
+    AUDIO_EXTENSIONS
+}
 
 pub fn is_audio_path(path: &Path) -> bool {
     path.extension()
         .and_then(|e| e.to_str())
-        .map(|e| AUDIO_EXTENSIONS.iter().any(|x| e.eq_ignore_ascii_case(x)))
+        .map(|e| audio_extensions().iter().any(|x| e.eq_ignore_ascii_case(x)))
         .unwrap_or(false)
 }
 
@@ -27,6 +51,10 @@ pub fn load_pcm_16k_mono(path: &Path) -> LfResult<Vec<f32>> {
             path.display()
         )));
     }
+    #[cfg(feature = "audio-symphonia-opus")]
+    if experimental_opus_enabled() && path_is_ogg_candidate(path)? {
+        return crate::symphonia_opus::decode_path(path, &Default::default());
+    }
     let bytes = fs::read(path)?;
     load_bytes(&bytes, path)
 }
@@ -38,7 +66,77 @@ pub fn load_bytes(bytes: &[u8], hint: &Path) -> LfResult<Vec<f32>> {
     if let Ok(pcm) = decode_wav(bytes) {
         return Ok(pcm);
     }
+    #[cfg(feature = "audio-symphonia-opus")]
+    if experimental_opus_enabled() && is_ogg_candidate(bytes, hint) {
+        return crate::symphonia_opus::decode_bytes(bytes, &Default::default());
+    }
     decode_via_converter(hint, bytes)
+}
+
+#[cfg(feature = "audio-symphonia-opus")]
+pub fn load_pcm_16k_mono_experimental(
+    path: &Path,
+    options: &crate::symphonia_opus::DecodeOptions,
+) -> LfResult<Vec<f32>> {
+    if !path.exists() {
+        return Err(LfError::Io(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            "audio file not found",
+        )));
+    }
+    let metadata = fs::metadata(path)?;
+    if metadata.len() == 0 {
+        return Err(LfError::AudioInputInvalid("empty audio input".into()));
+    }
+    if path_is_ogg_candidate(path)? {
+        crate::symphonia_opus::decode_path(path, options)
+    } else {
+        load_pcm_16k_mono(path)
+    }
+}
+
+#[cfg(feature = "audio-symphonia-opus")]
+pub fn load_bytes_experimental(
+    bytes: &[u8],
+    hint: &Path,
+    options: &crate::symphonia_opus::DecodeOptions,
+) -> LfResult<Vec<f32>> {
+    if bytes.is_empty() {
+        return Err(LfError::AudioInputInvalid("empty audio input".into()));
+    }
+    if let Ok(pcm) = decode_wav(bytes) {
+        return Ok(pcm);
+    }
+    if is_ogg_candidate(bytes, hint) {
+        crate::symphonia_opus::decode_bytes(bytes, options)
+    } else {
+        decode_via_converter(hint, bytes)
+    }
+}
+
+#[cfg(feature = "audio-symphonia-opus")]
+fn is_ogg_candidate(bytes: &[u8], hint: &Path) -> bool {
+    bytes.starts_with(b"OggS") || has_ogg_extension(hint)
+}
+
+#[cfg(feature = "audio-symphonia-opus")]
+fn has_ogg_extension(path: &Path) -> bool {
+    path.extension()
+        .and_then(|value| value.to_str())
+        .is_some_and(|value| {
+            value.eq_ignore_ascii_case("ogg") || value.eq_ignore_ascii_case("opus")
+        })
+}
+
+#[cfg(feature = "audio-symphonia-opus")]
+fn path_is_ogg_candidate(path: &Path) -> LfResult<bool> {
+    if has_ogg_extension(path) {
+        return Ok(true);
+    }
+    let mut magic = [0_u8; 4];
+    let mut file = fs::File::open(path)?;
+    let read = file.read(&mut magic)?;
+    Ok(read == magic.len() && &magic == b"OggS")
 }
 
 fn decode_wav(bytes: &[u8]) -> Result<Vec<f32>, ()> {
@@ -203,6 +301,17 @@ pub fn load_stdin() -> LfResult<Vec<f32>> {
     let mut bytes = Vec::new();
     std::io::stdin().read_to_end(&mut bytes)?;
     load_bytes(&bytes, Path::new("stdin.wav"))
+}
+
+#[cfg(feature = "audio-symphonia-opus")]
+pub fn load_stdin_experimental(
+    options: &crate::symphonia_opus::DecodeOptions,
+) -> LfResult<Vec<f32>> {
+    let mut bytes = Vec::new();
+    std::io::stdin()
+        .take(options.max_input_bytes.saturating_add(1))
+        .read_to_end(&mut bytes)?;
+    load_bytes_experimental(&bytes, Path::new("stdin.ogg"), options)
 }
 
 pub fn list_audio_files(dir: &Path) -> LfResult<Vec<PathBuf>> {
