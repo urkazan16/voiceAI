@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "generator": "ffmpeg 8.1.2 with libopus, synthetic lavfi signals",
-  "license": "CC0-1.0; generated mathematical tones and silence contain no personal data",
+  "license_policy": "Generated mathematical signals are CC0-1.0. The NASA speech excerpt is public domain in the United States as a work of the U.S. federal government.",
   "fixtures": [
     {
       "file": "mono-997hz-1s.opus",
@@ -29,15 +29,15 @@
     },
     {
       "file": "mono-997hz-1s.reference.f32le",
-      "sha256": "ed12ea7afea264b7df348388482904d860ba22c10ebb91ea48fca9e923ca053d",
+      "sha256": "c1f857a8112209b758dbb285cf18753c8100aae1c5d92ab66934b656640c72b1",
       "profile": "Reference libopus float decode, mono, 48 kHz, exactly 48000 samples",
-      "command": "ffmpeg 8.1.2 -i mono-997hz-1s.opus -c:a pcm_f32le -ar 48000 -ac 1 -f f32le mono-997hz-1s.reference.f32le"
+      "command": "ffmpeg 8.1.2 -request_sample_fmt flt -c:a libopus -i mono-997hz-1s.opus -c:a pcm_f32le -ar 48000 -ac 1 -f f32le mono-997hz-1s.reference.f32le"
     },
     {
       "file": "stereo-440-880hz-1s.reference.f32le",
-      "sha256": "e81a0df72db0afde3b10249e2221d70c0690491df241095a7ea0fa5c699a8814",
+      "sha256": "5846015135b3c3bc1754ef82df86265998919b5817eefd3b2ec398d2c5f69799",
       "profile": "Reference libopus float decode and (L+R)/2 downmix, 48 kHz, exactly 48000 samples",
-      "command": "ffmpeg 8.1.2 -i stereo-440-880hz-1s.ogg -af pan=mono|c0=0.5*c0+0.5*c1 -c:a pcm_f32le -ar 48000 -f f32le stereo-440-880hz-1s.reference.f32le"
+      "command": "ffmpeg 8.1.2 -request_sample_fmt flt -c:a libopus -i stereo-440-880hz-1s.ogg -af pan=mono|c0=0.5*c0+0.5*c1 -c:a pcm_f32le -ar 48000 -f f32le stereo-440-880hz-1s.reference.f32le"
     },
     {
       "file": "mono-997hz-1s-gain-plus-6db.opus",
@@ -49,9 +49,9 @@
     },
     {
       "file": "mono-997hz-1s-gain-plus-6db.reference.f32le",
-      "sha256": "c1332ca81b77bf4d752b6244d30e31c259c14ae0f9a93ecb5c37f84db86e1c16",
+      "sha256": "88b9c60b3a3b7cde693914c1efaffa1d05ca538fd1e1907704ef004eea1a3634",
       "profile": "Reference libopus float decode with +6 dB OpusHead gain, 48 kHz",
-      "command": "ffmpeg 8.1.2 -i mono-997hz-1s-gain-plus-6db.opus -c:a pcm_f32le -ar 48000 -ac 1 -f f32le mono-997hz-1s-gain-plus-6db.reference.f32le"
+      "command": "ffmpeg 8.1.2 -request_sample_fmt flt -c:a libopus -i mono-997hz-1s-gain-plus-6db.opus -c:a pcm_f32le -ar 48000 -ac 1 -f f32le mono-997hz-1s-gain-plus-6db.reference.f32le"
     },
     {
       "file": "mono-997hz-1s-gain-minus-6db.opus",
@@ -63,9 +63,9 @@
     },
     {
       "file": "mono-997hz-1s-gain-minus-6db.reference.f32le",
-      "sha256": "357fa8b87332f6cdf263d6eb31bf4ea468ae3d079e50cf514844b34d5cc3eddc",
+      "sha256": "5a91b0c6420d145b7cc7bdb6322a76e044dd9d277318b3d08c446bde45f06095",
       "profile": "Reference libopus float decode with -6 dB OpusHead gain, 48 kHz",
-      "command": "ffmpeg 8.1.2 -i mono-997hz-1s-gain-minus-6db.opus -c:a pcm_f32le -ar 48000 -ac 1 -f f32le mono-997hz-1s-gain-minus-6db.reference.f32le"
+      "command": "ffmpeg 8.1.2 -request_sample_fmt flt -c:a libopus -i mono-997hz-1s-gain-minus-6db.opus -c:a pcm_f32le -ar 48000 -ac 1 -f f32le mono-997hz-1s-gain-minus-6db.reference.f32le"
     },
     {
       "file": "mono-997hz-1s-input-rate-44100.opus",
@@ -93,9 +93,29 @@
     },
     {
       "file": "mono-chirp-vbr-60ms-1.2s.reference.f32le",
-      "sha256": "3951f8aca811847227d662ff5912d4fba42cd7919b4f27e04fc8e5a58b930cd4",
+      "sha256": "87a5b2b1b3340626c766c19f3ba0685f89732a474555cd0e021034b269d4d1df",
       "profile": "Reference libopus float decode of the VBR 60 ms packet fixture, 48 kHz, exactly 57600 samples",
-      "command": "ffmpeg 8.1.2 -i mono-chirp-vbr-60ms-1.2s.opus -c:a pcm_f32le -ar 48000 -ac 1 -f f32le mono-chirp-vbr-60ms-1.2s.reference.f32le"
+      "command": "ffmpeg 8.1.2 -request_sample_fmt flt -c:a libopus -i mono-chirp-vbr-60ms-1.2s.opus -c:a pcm_f32le -ar 48000 -ac 1 -f f32le mono-chirp-vbr-60ms-1.2s.reference.f32le"
+    },
+    {
+      "file": "nasa-armstrong-speech-3s.opus",
+      "sha256": "b8cbb2781a31e7e24ca38a23f8f4d00fa0180fc7274ade106021f1aa634a351d",
+      "profile": "Ogg/Opus mono, 3-second real speech excerpt, VBR voice mode",
+      "expected_samples_48k": 144000,
+      "expected_samples_16k": 48000,
+      "source": "Neil Armstrong small step.wav, Neil Armstrong/NASA, 20 July 1969",
+      "source_url": "https://upload.wikimedia.org/wikipedia/commons/b/bb/Neil_Armstrong_small_step.wav",
+      "source_page": "https://commons.wikimedia.org/wiki/File:Neil_Armstrong_small_step.wav",
+      "source_sha256": "9c2146638c3acba0c05643d18ee3a03fd2d5c167f89cf160579f97266b368cd2",
+      "license": "Public domain in the United States; work solely created by NASA",
+      "command": "ffmpeg 8.1.2 -ss 10 -t 3 -i Neil_Armstrong_small_step.wav -ar 48000 -ac 1 -c:a libopus -b:a 32k -vbr on -application voip -map_metadata -1 nasa-armstrong-speech-3s.opus"
+    },
+    {
+      "file": "nasa-armstrong-speech-3s.reference.f32le",
+      "sha256": "4bdbb537eafe7c664385cbbb5089ed2854cfbf12c4c4568badaac47dc363cc01",
+      "profile": "Reference libopus float decode of the NASA speech excerpt, 48 kHz, exactly 144000 samples",
+      "license": "Public domain in the United States; derived from the NASA source identified above",
+      "command": "ffmpeg 8.1.2 -request_sample_fmt flt -c:a libopus -i nasa-armstrong-speech-3s.opus -c:a pcm_f32le -ar 48000 -ac 1 -f f32le nasa-armstrong-speech-3s.reference.f32le"
     }
   ]
 }

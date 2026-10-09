@@ -8,6 +8,7 @@ export default tseslint.config(
     ignores: [
       "dist",
       "src-tauri/target",
+      "src-tauri/vendor/**/target",
       "src-tauri/gen",
       "node_modules",
       "release-artifacts",

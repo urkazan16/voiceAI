@@ -680,7 +680,7 @@ mod tests {
 
     fn decode_fixture_48k(name: &str) -> Vec<f32> {
         let bytes = std::fs::read(fixture(name)).unwrap();
-        let options = options(20_000);
+        let options = options(100_000);
         validate_ogg(Cursor::new(&bytes), &options).unwrap();
         let mut pcm = Vec::new();
         decode_source(Box::new(Cursor::new(&bytes)), &options, Some(&mut pcm)).unwrap();
@@ -717,7 +717,10 @@ mod tests {
             let name = entry.unwrap().file_name();
             let name = name.to_str().unwrap();
             if name != "manifest.json" {
-                assert!(listed.contains(name), "fixture {name} is missing from manifest");
+                assert!(
+                    listed.contains(name),
+                    "fixture {name} is missing from manifest"
+                );
             }
         }
     }
@@ -756,6 +759,10 @@ mod tests {
                 "mono-chirp-vbr-60ms-1.2s.opus",
                 "mono-chirp-vbr-60ms-1.2s.reference.f32le",
             ),
+            (
+                "nasa-armstrong-speech-3s.opus",
+                "nasa-armstrong-speech-3s.reference.f32le",
+            ),
         ] {
             let actual = decode_fixture_48k(input);
             let expected = reference_f32le(reference);
@@ -785,12 +792,16 @@ mod tests {
 
     #[test]
     fn decodes_vbr_sixty_millisecond_packets() {
-        let pcm = decode_path(
-            &fixture("mono-chirp-vbr-60ms-1.2s.opus"),
-            &options(20_000),
-        )
-        .unwrap();
+        let pcm = decode_path(&fixture("mono-chirp-vbr-60ms-1.2s.opus"), &options(20_000)).unwrap();
         assert_eq!(pcm.len(), 19_200);
+        assert!(pcm.iter().all(|sample| sample.is_finite()));
+    }
+
+    #[test]
+    fn decodes_public_domain_speech_fixture() {
+        let pcm = decode_path(&fixture("nasa-armstrong-speech-3s.opus"), &options(50_000)).unwrap();
+        assert_eq!(pcm.len(), 48_000);
+        assert!(pcm.iter().any(|sample| sample.abs() > 0.01));
         assert!(pcm.iter().all(|sample| sample.is_finite()));
     }
 

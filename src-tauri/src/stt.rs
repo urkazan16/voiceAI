@@ -66,54 +66,51 @@ fn transcribe_native(
     if cancellation.is_cancelled() {
         return Err(LfError::Other("cancelled".into()));
     }
-        if let Some(path) = model_path {
-            if matches!(
-                options.stt_engine.trim().to_ascii_lowercase().as_str(),
-                "gigaam" | "parakeet"
-            ) {
-                let result = crate::sherpa_stt::transcribe(&options.stt_engine, path, pcm);
-                return if cancellation.is_cancelled() {
-                    Err(LfError::Other("cancelled".into()))
-                } else {
-                    result
-                };
-            }
-            if options.stt_engine.trim().eq_ignore_ascii_case("tone") {
-                return match crate::tone_stt::transcribe(path, pcm) {
-                    Ok(text) if !text.trim().is_empty() => Ok(text),
-                    Ok(_) => Err(LfError::Other(
-                        "No speech detected. Nothing was inserted.".into(),
-                    )),
-                    Err(err) => Err(err),
-                };
-            }
-            match crate::whisper_stt::transcribe(
-                path,
-                pcm,
-                cancellation,
-                language,
-                options,
-            ) {
+    if let Some(path) = model_path {
+        if matches!(
+            options.stt_engine.trim().to_ascii_lowercase().as_str(),
+            "gigaam" | "parakeet"
+        ) {
+            let result = crate::sherpa_stt::transcribe(&options.stt_engine, path, pcm);
+            return if cancellation.is_cancelled() {
+                Err(LfError::Other("cancelled".into()))
+            } else {
+                result
+            };
+        }
+        if options.stt_engine.trim().eq_ignore_ascii_case("tone") {
+            let result = match crate::tone_stt::transcribe(path, pcm) {
                 Ok(text) if !text.trim().is_empty() => Ok(text),
                 Ok(_) => Err(LfError::Other(
                     "No speech detected. Nothing was inserted.".into(),
                 )),
                 Err(err) => Err(err),
-            }
-        } else {
-            let engine = options.stt_engine.trim().to_ascii_lowercase();
-            let message = match engine.as_str() {
-                "tone" => {
-                    "T-One is not installed. Open Models and download T-One Streaming Russian."
-                }
-                "gigaam" => "GigaAM is not installed. Open Models and download GigaAM v3 CTC.",
-                "parakeet" => {
-                    "Parakeet is not installed. Open Models and download the Parakeet package."
-                }
-                _ => "Whisper is not installed. Open Models and download the speech model.",
             };
-            Err(LfError::ModelMissing(message.into()))
+            return if cancellation.is_cancelled() {
+                Err(LfError::Other("cancelled".into()))
+            } else {
+                result
+            };
         }
+        match crate::whisper_stt::transcribe(path, pcm, cancellation, language, options) {
+            Ok(text) if !text.trim().is_empty() => Ok(text),
+            Ok(_) => Err(LfError::Other(
+                "No speech detected. Nothing was inserted.".into(),
+            )),
+            Err(err) => Err(err),
+        }
+    } else {
+        let engine = options.stt_engine.trim().to_ascii_lowercase();
+        let message = match engine.as_str() {
+            "tone" => "T-One is not installed. Open Models and download T-One Streaming Russian.",
+            "gigaam" => "GigaAM is not installed. Open Models and download GigaAM v3 CTC.",
+            "parakeet" => {
+                "Parakeet is not installed. Open Models and download the Parakeet package."
+            }
+            _ => "Whisper is not installed. Open Models and download the speech model.",
+        };
+        Err(LfError::ModelMissing(message.into()))
+    }
 }
 
 pub fn transcribe_with_paragraph_pauses(
@@ -195,6 +192,20 @@ mod tests {
             .transcribe(&[0.1; 800], None, "ru", &options)
             .unwrap_err();
         assert!(err.to_string().to_lowercase().contains("t-one"), "{err}");
+    }
+
+    #[test]
+    fn file_cancellation_has_its_own_error_code_before_model_load() {
+        let cancellation = Arc::new(AtomicBool::new(true));
+        let err = transcribe_file(
+            &[0.1; 800],
+            Some(Path::new("/no/such/whisper.bin")),
+            "ru",
+            &DecodeOptions::default(),
+            cancellation,
+        )
+        .unwrap_err();
+        assert_eq!(err.code(), "AUDIO_CANCELLED");
     }
 
     #[test]

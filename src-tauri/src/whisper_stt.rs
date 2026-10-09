@@ -306,14 +306,36 @@ pub fn transcribe(
         reply: reply_tx,
     }))
     .map_err(|_| LfError::RuntimeUnsupported("whisper worker stopped".into()))?;
-    match reply_rx.recv_timeout(transcribe_wait(pcm.len().max(16_000))) {
-        Ok(_) if cancellation.is_cancelled() => Err(LfError::Other("cancelled".into())),
-        Ok(result) => result,
-        Err(mpsc::RecvTimeoutError::Timeout) => Err(LfError::RuntimeUnsupported(
-            "Speech recognition timed out. On Intel Macs use Whisper Small or Base.".into(),
-        )),
-        Err(mpsc::RecvTimeoutError::Disconnected) => {
-            Err(LfError::RuntimeUnsupported("whisper worker stopped".into()))
+    wait_for_transcription(
+        reply_rx,
+        &cancellation,
+        transcribe_wait(pcm.len().max(16_000)),
+    )
+}
+
+fn wait_for_transcription(
+    reply_rx: mpsc::Receiver<LfResult<String>>,
+    cancellation: &Cancellation,
+    timeout: Duration,
+) -> LfResult<String> {
+    let deadline = Instant::now() + timeout;
+    loop {
+        if cancellation.is_cancelled() {
+            return Err(LfError::Other("cancelled".into()));
+        }
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Err(LfError::RuntimeUnsupported(
+                "Speech recognition timed out. On Intel Macs use Whisper Small or Base.".into(),
+            ));
+        }
+        match reply_rx.recv_timeout(remaining.min(Duration::from_millis(50))) {
+            Ok(_) if cancellation.is_cancelled() => return Err(LfError::Other("cancelled".into())),
+            Ok(result) => return result,
+            Err(mpsc::RecvTimeoutError::Timeout) => continue,
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                return Err(LfError::RuntimeUnsupported("whisper worker stopped".into()))
+            }
         }
     }
 }
@@ -403,13 +425,7 @@ fn run_job(
             note_inner_progress(100);
             continue;
         }
-        let text = decode_loaded(
-            loaded,
-            &pcm[start..end],
-            language,
-            options,
-            cancellation,
-        )?;
+        let text = decode_loaded(loaded, &pcm[start..end], language, options, cancellation)?;
         let offset_ms = (start as u64 * 1000) / 16_000;
         let mut window_cues = last_cues();
         if options.long_form && !options.timestamps {
@@ -498,14 +514,7 @@ fn decode_loaded(
                 .ctx
                 .create_state()
                 .map_err(|e| LfError::RuntimeUnsupported(e.to_string()))?;
-            let retry = decode(
-                &mut slot.state,
-                pcm,
-                language,
-                options,
-                None,
-                cancellation,
-            );
+            let retry = decode(&mut slot.state, pcm, language, options, None, cancellation);
             if retry.is_ok() {
                 // Only the VAD step was at fault: skip it for the rest of the session.
                 VAD_BROKEN.store(true, Ordering::Relaxed);
@@ -752,6 +761,23 @@ fn num_threads() -> std::ffi::c_int {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn queued_file_transcription_observes_cancellation_within_one_second() {
+        let token = Arc::new(AtomicBool::new(false));
+        let cancellation = Cancellation::File(Arc::clone(&token));
+        let (_reply_tx, reply_rx) = mpsc::channel();
+        let started = Instant::now();
+        let setter = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(20));
+            token.store(true, Ordering::Relaxed);
+        });
+        let error =
+            wait_for_transcription(reply_rx, &cancellation, Duration::from_secs(5)).unwrap_err();
+        setter.join().unwrap();
+        assert_eq!(error.to_string(), "cancelled");
+        assert!(started.elapsed() < Duration::from_secs(1));
+    }
 
     #[test]
     fn pads_short_clips_to_one_second() {

@@ -17,10 +17,7 @@ function oggCrc(bytes) {
   for (const byte of bytes) {
     crc = (crc ^ (byte << 24)) >>> 0;
     for (let bit = 0; bit < 8; bit += 1) {
-      crc =
-        crc & 0x80000000
-          ? ((crc << 1) ^ 0x04c11db7) >>> 0
-          : (crc << 1) >>> 0;
+      crc = crc & 0x80000000 ? ((crc << 1) ^ 0x04c11db7) >>> 0 : (crc << 1) >>> 0;
     }
   }
   return crc;

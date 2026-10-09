@@ -1338,13 +1338,12 @@ fn transcribe_audio_file_sync(
     if cancellation.load(Ordering::Relaxed) {
         return Err(LfError::AudioCancelled("Audio file task was cancelled.".into()).into());
     }
-    let raw = crate::stt::transcribe_with_paragraph_pauses(
-        &crate::stt::NativeStt,
+    let raw = crate::stt::transcribe_file(
         &pcm,
         Some(stt_path.as_path()),
         &lang,
-        vad,
         &options,
+        Arc::clone(&cancellation),
     )?;
     if cancellation.load(Ordering::Relaxed) {
         return Err(LfError::AudioCancelled("Audio file task was cancelled.".into()).into());
