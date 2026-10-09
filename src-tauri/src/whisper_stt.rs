@@ -556,7 +556,7 @@ fn decode_loaded(
     }
     if !force_full_audio_ctx
         && !cancellation.is_cancelled()
-        && result.as_ref().is_err_and(|err| is_encoder_failure(err))
+        && result.as_ref().is_err_and(is_encoder_failure)
     {
         // A reduced `audio_ctx` is an optimization, not a correctness
         // requirement. whisper.cpp reports encoder backend failures as -6;

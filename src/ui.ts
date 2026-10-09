@@ -127,6 +127,16 @@ const EN = {
   transcript: "Transcript",
   afterDictionary: "After dictionary",
   formedText: "Formed text",
+  pipelineComplete: "Processing complete.",
+  resultSteps: "Processing result",
+  recognitionStep: "Recognition",
+  dictionaryStep: "Dictionary",
+  formattingStep: "Formatting",
+  copyTranscript: "Copy transcript",
+  copyDictionaryText: "Copy dictionary text",
+  copyFinalText: "Copy final text",
+  insertFailedResult:
+    "Automatic insertion failed. The final text is ready — copy or paste it, then dismiss.",
   downloadBusy: "Downloading",
   downloadWait: "Dictation starts when the checksum passes.",
   whisperNotReady:
@@ -333,6 +343,16 @@ const RU: typeof EN = {
   transcript: "Транскрипт",
   afterDictionary: "После словаря",
   formedText: "Готовый текст",
+  pipelineComplete: "Обработка завершена.",
+  resultSteps: "Результат обработки",
+  recognitionStep: "Распознавание",
+  dictionaryStep: "Словарь",
+  formattingStep: "Форматирование",
+  copyTranscript: "Скопировать транскрипт",
+  copyDictionaryText: "Скопировать текст после словаря",
+  copyFinalText: "Скопировать готовый текст",
+  insertFailedResult:
+    "Автоматическая вставка не удалась. Готовый текст сохранён — скопируйте или вставьте его, затем закройте результат.",
   downloadBusy: "Загрузка",
   downloadWait: "Диктовка начнётся после проверки контрольной суммы.",
   whisperNotReady:
