@@ -26,7 +26,7 @@ jobs:
     name: quality (js)
     runs-on: ubuntu-22.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: actions/setup-node@v4
         with:
           node-version-file: .nvmrc
@@ -42,7 +42,7 @@ jobs:
       matrix:
         os: [macos-14, windows-latest, ubuntu-22.04]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - if: runner.os == 'Linux'
         uses: ./.github/actions/linux-deps
       - if: runner.os == 'Windows'
@@ -73,7 +73,7 @@ jobs:
       matrix:
         os: [macos-14, windows-latest, ubuntu-22.04]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - if: runner.os == 'Linux'
         uses: ./.github/actions/linux-deps
       - if: runner.os == 'Windows'
@@ -147,7 +147,7 @@ jobs:
     name: license
     runs-on: ubuntu-22.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: actions/setup-node@v4
         with:
           node-version-file: .nvmrc
@@ -164,7 +164,7 @@ jobs:
     name: security
     runs-on: ubuntu-22.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: actions/setup-node@v4
         with:
           node-version-file: .nvmrc
@@ -204,7 +204,7 @@ jobs:
             target: x86_64-unknown-linux-gnu
             name: linux-x64
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - if: runner.os == 'Linux'
         uses: ./.github/actions/linux-deps
       - if: runner.os == 'Windows'
@@ -414,7 +414,7 @@ jobs:
             artifact: LocalFlow-linux-x64
             cargo_target: x86_64-unknown-linux-gnu
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Require Apple signing and notarization secrets
         if: runner.os == 'macOS'
         env:
@@ -516,7 +516,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: actions/download-artifact@v4
         with:
           path: dist
