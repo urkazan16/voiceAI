@@ -1,6 +1,7 @@
 use crate::error::{LfError, LfResult};
 use crate::pipeline::TranscriptCue;
 use serde::Serialize;
+use std::ffi::c_void;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::mpsc::{self, Sender};
@@ -73,6 +74,17 @@ impl Cancellation {
             Self::File(token) => token.load(Ordering::Relaxed),
         }
     }
+}
+
+/// `whisper-rs` 0.16's safe abort wrapper stores a trait object but invokes it
+/// through the concrete closure type, which corrupts the callback ABI. Pass a
+/// direct pointer to the cancellation token for the synchronous `full()` call.
+unsafe extern "C" fn whisper_should_abort(user_data: *mut c_void) -> bool {
+    if user_data.is_null() {
+        return false;
+    }
+    let cancellation = unsafe { &*(user_data as *const Cancellation) };
+    cancellation.is_cancelled()
 }
 
 enum WorkerCmd {
@@ -760,11 +772,27 @@ fn decode(
         params.set_vad_params(vad_params(options.long_form));
         params.enable_vad(true);
     }
-    let abort = cancellation.clone();
-    params.set_abort_callback_safe(move || abort.is_cancelled());
-    state
-        .full(params, pcm)
-        .map_err(|err| LfError::RuntimeUnsupported(err.to_string()))?;
+    // SAFETY: `state.full` is synchronous, so `cancellation` remains alive and
+    // at a stable address for every native callback invocation.
+    unsafe {
+        params.set_abort_callback(Some(whisper_should_abort));
+        params.set_abort_callback_user_data(
+            cancellation as *const Cancellation as *mut Cancellation as *mut c_void,
+        );
+    }
+    if let Err(err) = state.full(params, pcm) {
+        eprintln!(
+            "localflow: whisper full failed (cancelled={} samples={} audio_ctx={}): {err}",
+            cancellation.is_cancelled(),
+            pcm.len(),
+            if force_full_audio_ctx {
+                0
+            } else {
+                audio_ctx_for_samples(pcm.len())
+            }
+        );
+        return Err(LfError::RuntimeUnsupported(err.to_string()));
+    }
     if cancellation.is_cancelled() {
         return Err(LfError::Other("cancelled".into()));
     }
@@ -854,6 +882,16 @@ mod tests {
         setter.join().unwrap();
         assert_eq!(error.to_string(), "cancelled");
         assert!(started.elapsed() < Duration::from_secs(1));
+    }
+
+    #[test]
+    fn native_abort_callback_reads_the_real_cancellation_token() {
+        let token = Arc::new(AtomicBool::new(false));
+        let cancellation = Cancellation::File(Arc::clone(&token));
+        let user_data = &cancellation as *const Cancellation as *mut c_void;
+        assert!(!unsafe { whisper_should_abort(user_data) });
+        token.store(true, Ordering::Relaxed);
+        assert!(unsafe { whisper_should_abort(user_data) });
     }
 
     #[test]
