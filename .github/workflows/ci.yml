@@ -490,7 +490,7 @@ jobs:
           fi
           appimage="$(realpath "${appimages[0]}")"
           bash scripts/validate-appimage.sh "$appimage"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.artifact }}
           path: |
