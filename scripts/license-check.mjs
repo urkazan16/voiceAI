@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -26,6 +26,17 @@ const ALLOW = new Set([
 ]);
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+
+for (const file of [
+  "licenses/libopus.txt",
+  "licenses/symphonia-mpl-2.0.txt",
+  "licenses/symphonia-adapter-apache-2.0.txt",
+]) {
+  if (!existsSync(path.join(root, file))) {
+    console.error(`LICENSE FAIL missing packaged text: ${file}`);
+    process.exit(1);
+  }
+}
 
 function licenseString(raw) {
   if (!raw) return "";
@@ -102,7 +113,7 @@ if (cargo.status !== 0) {
 }
 const metadata = JSON.parse(cargo.stdout);
 for (const item of metadata.packages) {
-  if (!item.source) continue;
+  if (!item.source && item.name === "localflow") continue;
   const license = item.license ?? "";
   const licenseFile = item.license_file ?? "";
   if (!license && !licenseFile) {

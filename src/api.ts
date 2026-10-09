@@ -419,8 +419,13 @@ export const api = {
     call<number>("append_audio_upload", { id, chunk }),
   transcribeStagedAudio: (id: string, filename?: string) =>
     call<PipelineOutput>("transcribe_staged_audio", { id, filename }),
-  transcribeAudioFile: (args: { filename: string; path?: string; bytes?: number[] }) =>
-    call<PipelineOutput>("transcribe_audio_file", args),
+  transcribeAudioFile: (args: {
+    filename: string;
+    path?: string;
+    bytes?: number[];
+    taskId?: string;
+  }) => call<PipelineOutput>("transcribe_audio_file", args),
+  cancelAudioFileTask: (id: string) => call<void>("cancel_audio_file_task", { id }),
   getTranscribeProgress: () => call<TranscribeProgress>("get_transcribe_progress"),
   getHotkeyStatus: () => call<HotkeyStatus>("get_hotkey_status"),
   getStats: () => call<StatsSnapshot>("get_stats"),

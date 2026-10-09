@@ -27,6 +27,7 @@ pub fn invoked(args: &[String]) -> bool {
                 | "--version"
                 | "-V"
                 | "--json"
+                | "--experimental-opus"
         ) || a == "--"
             || Path::new(a)
                 .extension()
@@ -54,6 +55,7 @@ struct Opts {
     files: Vec<PathBuf>,
     dir: Option<PathBuf>,
     stdin: bool,
+    experimental_opus: bool,
     command: Command,
 }
 
@@ -77,6 +79,7 @@ fn parse(args: &[String]) -> Result<Opts, String> {
         files: Vec::new(),
         dir: None,
         stdin: false,
+        experimental_opus: false,
         command: Command::Transcribe,
     };
     let mut rest = args.iter().skip(1);
@@ -92,6 +95,7 @@ fn parse(args: &[String]) -> Result<Opts, String> {
             "--json" => opts.json = true,
             "--no-postprocess" | "--raw" => opts.no_post = true,
             "--stdin" => opts.stdin = true,
+            "--experimental-opus" => opts.experimental_opus = true,
             "--language" | "-l" => {
                 opts.language = Some(rest.next().cloned().ok_or("--language needs a value")?)
             }
@@ -154,7 +158,8 @@ LocalFlow CLI (no GUI)
 
 Usage:
   localflow transcribe [--json] [--no-postprocess] [--language ru|en|auto]
-                       [--model MODEL_ID] [--device NAME] [--dir DIR] [--stdin] [FILE...]
+                       [--model MODEL_ID] [--device NAME] [--dir DIR] [--stdin]
+                       [--experimental-opus] [FILE...]
   localflow devices
   localflow check [--json]
   localflow download [--model MODEL_ID]
@@ -172,18 +177,15 @@ fn transcribe(opts: Opts) -> Result<i32, String> {
     let mut paths_to_run: Vec<(String, Result<Vec<f32>, String>)> = Vec::new();
     if opts.stdin {
         eprintln!("reading audio from stdin");
-        paths_to_run.push((
-            "stdin".into(),
-            media::load_stdin().map_err(|e| e.to_string()),
-        ));
+        paths_to_run.push(("stdin".into(), load_cli_stdin(opts.experimental_opus)));
     }
     if let Some(dir) = &opts.dir {
         eprintln!("batch {}", dir.display());
-        for file in media::list_audio_files(dir).map_err(|e| e.to_string())? {
+        for file in list_cli_audio_files(dir, opts.experimental_opus)? {
             eprintln!("loading {}", file.display());
             paths_to_run.push((
                 file.display().to_string(),
-                media::load_pcm_16k_mono(&file).map_err(|e| e.to_string()),
+                load_cli_file(&file, opts.experimental_opus),
             ));
         }
     }
@@ -191,7 +193,7 @@ fn transcribe(opts: Opts) -> Result<i32, String> {
         eprintln!("loading {}", file.display());
         paths_to_run.push((
             file.display().to_string(),
-            media::load_pcm_16k_mono(file).map_err(|e| e.to_string()),
+            load_cli_file(file, opts.experimental_opus),
         ));
     }
     if paths_to_run.is_empty() {
@@ -266,6 +268,62 @@ fn transcribe(opts: Opts) -> Result<i32, String> {
         println!("{}", serde_json::to_string_pretty(&outputs).unwrap());
     }
     Ok(if any_error { 1 } else { 0 })
+}
+
+fn load_cli_file(path: &Path, experimental_opus: bool) -> Result<Vec<f32>, String> {
+    if experimental_opus {
+        #[cfg(feature = "audio-symphonia-opus")]
+        {
+            return media::load_pcm_16k_mono_experimental(path, &Default::default())
+                .map_err(|error| error.to_string());
+        }
+        #[cfg(not(feature = "audio-symphonia-opus"))]
+        return Err("--experimental-opus requires the audio-symphonia-opus build feature".into());
+    }
+    media::load_pcm_16k_mono(path).map_err(|error| error.to_string())
+}
+
+fn load_cli_stdin(experimental_opus: bool) -> Result<Vec<f32>, String> {
+    if experimental_opus {
+        #[cfg(feature = "audio-symphonia-opus")]
+        {
+            return media::load_stdin_experimental(&Default::default())
+                .map_err(|error| error.to_string());
+        }
+        #[cfg(not(feature = "audio-symphonia-opus"))]
+        return Err("--experimental-opus requires the audio-symphonia-opus build feature".into());
+    }
+    media::load_stdin().map_err(|error| error.to_string())
+}
+
+fn list_cli_audio_files(dir: &Path, experimental_opus: bool) -> Result<Vec<PathBuf>, String> {
+    if !experimental_opus {
+        return media::list_audio_files(dir).map_err(|error| error.to_string());
+    }
+    if !dir.is_dir() {
+        return Err(format!("{} is not a directory", dir.display()));
+    }
+    let mut files = Vec::new();
+    for entry in std::fs::read_dir(dir).map_err(|error| error.to_string())? {
+        let path = entry.map_err(|error| error.to_string())?.path();
+        let accepted = path
+            .extension()
+            .and_then(|value| value.to_str())
+            .is_some_and(|value| {
+                media::AUDIO_EXTENSIONS
+                    .iter()
+                    .any(|ext| value.eq_ignore_ascii_case(ext))
+                    || value.eq_ignore_ascii_case("opus")
+            });
+        if path.is_file() && accepted {
+            files.push(path);
+        }
+    }
+    files.sort();
+    if files.is_empty() {
+        return Err(format!("no audio files in {}", dir.display()));
+    }
+    Ok(files)
 }
 
 #[derive(serde::Serialize)]

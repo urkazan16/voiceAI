@@ -47,6 +47,7 @@
     "test:dictionary": "node scripts/run-with-toolchain.mjs cargo test --manifest-path src-tauri/Cargo.toml --locked dictionary --lib",
     "test:personalization": "node scripts/run-with-toolchain.mjs cargo test --manifest-path src-tauri/Cargo.toml --locked personalization --lib",
     "test:ai": "node scripts/run-with-toolchain.mjs cargo test --manifest-path src-tauri/Cargo.toml --locked --features ai-bench --test ai_bench",
+    "test:opus": "node scripts/run-with-toolchain.mjs cargo test --manifest-path src-tauri/Cargo.toml --locked --features audio-symphonia-opus --lib symphonia_opus",
     "check:local": "node scripts/run-with-toolchain.mjs cargo run --manifest-path src-tauri/Cargo.toml --quiet -- check",
     "download:stt": "node scripts/run-with-toolchain.mjs cargo run --manifest-path src-tauri/Cargo.toml --quiet -- download",
     "measure:block0": "bash scripts/block0-measure.sh",
@@ -62,6 +63,7 @@
     "license:check": "node scripts/license-check.mjs",
     "uniqueness:check": "node scripts/uniqueness-check.mjs",
     "sbom": "node scripts/run-with-toolchain.mjs node scripts/generate-sbom.mjs",
+    "sbom:opus": "node scripts/run-with-toolchain.mjs node scripts/generate-sbom.mjs --audio-symphonia-opus",
     "audit": "npm audit --omit=dev && node scripts/run-with-toolchain.mjs cargo audit --file src-tauri/Cargo.lock"
   },
   "dependencies": {

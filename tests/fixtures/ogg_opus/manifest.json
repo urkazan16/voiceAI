@@ -1,0 +1,101 @@
+{
+  "schema_version": 1,
+  "generator": "ffmpeg 8.1.2 with libopus, synthetic lavfi signals",
+  "license": "CC0-1.0; generated mathematical tones and silence contain no personal data",
+  "fixtures": [
+    {
+      "file": "mono-997hz-1s.opus",
+      "sha256": "f230b3bf72160b8a8ff5a74140258120d70721719f7a485c60fedc1c844c070b",
+      "profile": "Ogg/Opus, mapping family 0, mono, 48 kHz, VBR, 1 second",
+      "expected_samples_48k": 48000,
+      "expected_samples_16k": 16000,
+      "command": "ffmpeg -f lavfi -i sine=frequency=997:sample_rate=48000:duration=1 -c:a libopus -b:a 64k -vbr on -application audio -map_metadata -1 mono-997hz-1s.opus"
+    },
+    {
+      "file": "stereo-440-880hz-1s.ogg",
+      "sha256": "d6c31c969d5dda564bac892d0562044f058f4a40f436485648e396ef06b917d0",
+      "profile": "Ogg/Opus, mapping family 0, stereo, separate 440/880 Hz channels, VBR, 1 second",
+      "expected_samples_48k": 48000,
+      "expected_samples_16k": 16000,
+      "command": "ffmpeg -f lavfi -i sine=frequency=440:sample_rate=48000:duration=1 -f lavfi -i sine=frequency=880:sample_rate=48000:duration=1 -filter_complex [0:a][1:a]join=inputs=2:channel_layout=stereo[a] -map [a] -c:a libopus -b:a 96k -vbr on -application audio -map_metadata -1 stereo-440-880hz-1s.ogg"
+    },
+    {
+      "file": "mono-silence-80ms.opus",
+      "sha256": "bab8460a09dc14fb2703d5f92cef8962200fafc4eafbce0e3e3f46ed7db4af88",
+      "profile": "Ogg/Opus, mapping family 0, mono silence, short stream, 80 ms",
+      "expected_samples_48k": 3840,
+      "expected_samples_16k": 1280,
+      "command": "ffmpeg -f lavfi -i anullsrc=r=48000:cl=mono -t 0.08 -c:a libopus -b:a 32k -application audio -map_metadata -1 mono-silence-80ms.opus"
+    },
+    {
+      "file": "mono-997hz-1s.reference.f32le",
+      "sha256": "ed12ea7afea264b7df348388482904d860ba22c10ebb91ea48fca9e923ca053d",
+      "profile": "Reference libopus float decode, mono, 48 kHz, exactly 48000 samples",
+      "command": "ffmpeg 8.1.2 -i mono-997hz-1s.opus -c:a pcm_f32le -ar 48000 -ac 1 -f f32le mono-997hz-1s.reference.f32le"
+    },
+    {
+      "file": "stereo-440-880hz-1s.reference.f32le",
+      "sha256": "e81a0df72db0afde3b10249e2221d70c0690491df241095a7ea0fa5c699a8814",
+      "profile": "Reference libopus float decode and (L+R)/2 downmix, 48 kHz, exactly 48000 samples",
+      "command": "ffmpeg 8.1.2 -i stereo-440-880hz-1s.ogg -af pan=mono|c0=0.5*c0+0.5*c1 -c:a pcm_f32le -ar 48000 -f f32le stereo-440-880hz-1s.reference.f32le"
+    },
+    {
+      "file": "mono-997hz-1s-gain-plus-6db.opus",
+      "sha256": "93dcbb900ed81a20f605b849a40348e9f072851f98b09cbf7556222443d7b7d5",
+      "profile": "Ogg/Opus mono with OpusHead output gain +6 dB (Q7.8 value 1536)",
+      "expected_samples_48k": 48000,
+      "expected_samples_16k": 16000,
+      "command": "node scripts/generate-opus-fixture-variants.mjs"
+    },
+    {
+      "file": "mono-997hz-1s-gain-plus-6db.reference.f32le",
+      "sha256": "c1332ca81b77bf4d752b6244d30e31c259c14ae0f9a93ecb5c37f84db86e1c16",
+      "profile": "Reference libopus float decode with +6 dB OpusHead gain, 48 kHz",
+      "command": "ffmpeg 8.1.2 -i mono-997hz-1s-gain-plus-6db.opus -c:a pcm_f32le -ar 48000 -ac 1 -f f32le mono-997hz-1s-gain-plus-6db.reference.f32le"
+    },
+    {
+      "file": "mono-997hz-1s-gain-minus-6db.opus",
+      "sha256": "a62edd3e9bfeb4a099ea753a51cd082d973a4f0658976839af6d6e7b50e03cec",
+      "profile": "Ogg/Opus mono with OpusHead output gain -6 dB (Q7.8 value -1536)",
+      "expected_samples_48k": 48000,
+      "expected_samples_16k": 16000,
+      "command": "node scripts/generate-opus-fixture-variants.mjs"
+    },
+    {
+      "file": "mono-997hz-1s-gain-minus-6db.reference.f32le",
+      "sha256": "357fa8b87332f6cdf263d6eb31bf4ea468ae3d079e50cf514844b34d5cc3eddc",
+      "profile": "Reference libopus float decode with -6 dB OpusHead gain, 48 kHz",
+      "command": "ffmpeg 8.1.2 -i mono-997hz-1s-gain-minus-6db.opus -c:a pcm_f32le -ar 48000 -ac 1 -f f32le mono-997hz-1s-gain-minus-6db.reference.f32le"
+    },
+    {
+      "file": "mono-997hz-1s-input-rate-44100.opus",
+      "sha256": "73aaebead1734c7c321d38e9d4b02948284f0363b4d268cca02b4245cc9af685",
+      "profile": "Ogg/Opus mono with informational input sample rate 44100 Hz; encoded packets unchanged",
+      "expected_samples_48k": 48000,
+      "expected_samples_16k": 16000,
+      "command": "node scripts/generate-opus-fixture-variants.mjs"
+    },
+    {
+      "file": "mono-997hz-1s-initial-granule.opus",
+      "sha256": "5d4f98ba0eff2fe623554b2dc77883d2a40a25d7387823cadcd66fe8650d4ac7",
+      "profile": "Ogg/Opus mono with valid nonzero initial PCM position; audio page granules shifted by 48000",
+      "expected_samples_48k": 48000,
+      "expected_samples_16k": 16000,
+      "command": "node scripts/generate-opus-fixture-variants.mjs"
+    },
+    {
+      "file": "mono-chirp-vbr-60ms-1.2s.opus",
+      "sha256": "f29e8910e3207e92866064a28a21b058addf6dee8f6471727ab55f0986e41750",
+      "profile": "Ogg/Opus mono swept tone, VBR, 60 ms packets, 1.2 seconds",
+      "expected_samples_48k": 57600,
+      "expected_samples_16k": 19200,
+      "command": "ffmpeg 8.1.2 -f lavfi -i aevalsrc=0.18*sin(2*PI*(300+1700*t)*t):s=48000:d=1.2 -c:a libopus -b:a 48k -vbr on -application voip -frame_duration 60 -map_metadata -1 mono-chirp-vbr-60ms-1.2s.opus"
+    },
+    {
+      "file": "mono-chirp-vbr-60ms-1.2s.reference.f32le",
+      "sha256": "3951f8aca811847227d662ff5912d4fba42cd7919b4f27e04fc8e5a58b930cd4",
+      "profile": "Reference libopus float decode of the VBR 60 ms packet fixture, 48 kHz, exactly 57600 samples",
+      "command": "ffmpeg 8.1.2 -i mono-chirp-vbr-60ms-1.2s.opus -c:a pcm_f32le -ar 48000 -ac 1 -f f32le mono-chirp-vbr-60ms-1.2s.reference.f32le"
+    }
+  ]
+}

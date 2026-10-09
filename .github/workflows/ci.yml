@@ -88,6 +88,55 @@ jobs:
       - run: npm ci
       - run: npm run test:all
 
+  opus-prototype:
+    name: opus prototype (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-14, windows-latest, ubuntu-22.04]
+    steps:
+      - uses: actions/checkout@v4
+      - if: runner.os == 'Linux'
+        uses: ./.github/actions/linux-deps
+      - if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          echo 'LIBCLANG_PATH=C:\Program Files\LLVM\lib' >> "$GITHUB_ENV"
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.88.0
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+          prefix-key: opus-${{ matrix.os }}
+      - run: cargo test --manifest-path src-tauri/Cargo.toml --locked --features audio-symphonia-opus --lib symphonia_opus
+      - name: Decode fixture with the bundled runtime
+        run: cargo run --manifest-path src-tauri/Cargo.toml --locked --features audio-symphonia-opus --example opus_decode_bench -- tests/fixtures/ogg_opus/mono-997hz-1s.opus
+      - name: Verify no dynamic libopus dependency (Linux)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          dependencies="$(ldd src-tauri/target/debug/examples/opus_decode_bench)"
+          printf '%s\n' "$dependencies"
+          ! grep -Eiq 'libopus[^/]*\.so' <<<"$dependencies"
+      - name: Verify no dynamic libopus dependency (macOS)
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          dependencies="$(otool -L src-tauri/target/debug/examples/opus_decode_bench)"
+          printf '%s\n' "$dependencies"
+          ! grep -Eiq 'libopus[^/]*\.dylib' <<<"$dependencies"
+      - name: Verify no dynamic libopus dependency (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $dependencies = & 'C:\Program Files\LLVM\bin\llvm-objdump.exe' -p src-tauri/target/debug/examples/opus_decode_bench.exe
+          $dependencies
+          if ($dependencies -match '(?i)libopus[^\s]*\.dll') {
+            throw 'Experimental decoder unexpectedly depends on a libopus DLL'
+          }
+
   license:
     name: license
     runs-on: ubuntu-22.04
@@ -170,7 +219,13 @@ jobs:
           prefix-key: build-${{ matrix.name }}
       - run: npm ci
       - run: npm run build:ui
-      - run: bash scripts/run-with-toolchain.sh cargo build --manifest-path src-tauri/Cargo.toml --target ${{ matrix.target }}
+      - run: bash scripts/run-with-toolchain.sh cargo build --manifest-path src-tauri/Cargo.toml --locked --target ${{ matrix.target }}
+        env:
+          LOCALFLOW_GIT_SHA: ${{ github.sha }}
+          MACOSX_DEPLOYMENT_TARGET: "12.0"
+          CMAKE_OSX_ARCHITECTURES: ${{ matrix.cmake_osx_arch }}
+      - name: Compile experimental Ogg/Opus backend
+        run: bash scripts/run-with-toolchain.sh cargo build --manifest-path src-tauri/Cargo.toml --locked --features audio-symphonia-opus --target ${{ matrix.target }}
         env:
           LOCALFLOW_GIT_SHA: ${{ github.sha }}
           MACOSX_DEPLOYMENT_TARGET: "12.0"

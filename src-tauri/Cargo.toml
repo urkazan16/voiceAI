@@ -129,3 +129,8 @@ opt-level = 3
 # especially opaque in the console-less Windows release build).
 panic = "unwind"
 strip = "symbols"
+
+[patch.crates-io]
+# Pinned LocalFlow patch of 0.3.0: Rust 1.88 compatibility, multi-packet
+# pre-skip, reset correctness, and RFC 7845 output gain. See the stage-1 report.
+symphonia-adapter-libopus = { path = "vendor/symphonia-adapter-libopus" }

@@ -4,7 +4,7 @@ use serde::Serialize;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::mpsc::{self, Sender};
-use std::sync::{Mutex, Once, OnceLock};
+use std::sync::{Arc, Mutex, Once, OnceLock};
 use std::time::{Duration, Instant};
 use whisper_rs::{
     FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters, WhisperState,
@@ -56,7 +56,23 @@ struct TranscribeJob {
     pcm: Vec<f32>,
     language: String,
     options: DecodeOptions,
+    cancellation: Cancellation,
     reply: Sender<LfResult<String>>,
+}
+
+#[derive(Clone, Debug)]
+pub enum Cancellation {
+    Dictation,
+    File(Arc<AtomicBool>),
+}
+
+impl Cancellation {
+    pub(crate) fn is_cancelled(&self) -> bool {
+        match self {
+            Self::Dictation => crate::dictation::is_cancelled(),
+            Self::File(token) => token.load(Ordering::Relaxed),
+        }
+    }
 }
 
 enum WorkerCmd {
@@ -263,7 +279,7 @@ pub fn preload(model_path: PathBuf) {
 pub fn transcribe(
     model_path: &Path,
     pcm: &[f32],
-    _cancel: &std::sync::atomic::AtomicBool,
+    cancellation: Cancellation,
     language: &str,
     options: &DecodeOptions,
 ) -> LfResult<String> {
@@ -286,10 +302,12 @@ pub fn transcribe(
         pcm: owned,
         language: language.to_string(),
         options: options.clone(),
+        cancellation: cancellation.clone(),
         reply: reply_tx,
     }))
     .map_err(|_| LfError::RuntimeUnsupported("whisper worker stopped".into()))?;
     match reply_rx.recv_timeout(transcribe_wait(pcm.len().max(16_000))) {
+        Ok(_) if cancellation.is_cancelled() => Err(LfError::Other("cancelled".into())),
         Ok(result) => result,
         Err(mpsc::RecvTimeoutError::Timeout) => Err(LfError::RuntimeUnsupported(
             "Speech recognition timed out. On Intel Macs use Whisper Small or Base.".into(),
@@ -342,6 +360,7 @@ fn worker() -> Sender<WorkerCmd> {
                                         &job.pcm,
                                         &job.language,
                                         &job.options,
+                                        &job.cancellation,
                                     )
                                 })
                                 .and_then(|result| result);
@@ -362,6 +381,7 @@ fn run_job(
     pcm: &[f32],
     language: &str,
     options: &DecodeOptions,
+    cancellation: &Cancellation,
 ) -> LfResult<String> {
     ensure_loaded(loaded, model_path)?;
     let windows = if options.long_form {
@@ -374,7 +394,7 @@ fn run_job(
     let mut texts: Vec<String> = Vec::new();
     let mut cues: Vec<crate::pipeline::TranscriptCue> = Vec::new();
     for (i, (start, end)) in windows.iter().copied().enumerate() {
-        if crate::dictation::is_cancelled() {
+        if cancellation.is_cancelled() {
             return Err(LfError::Other("cancelled".into()));
         }
         CHUNK_INDEX.store(i as u32, Ordering::Relaxed);
@@ -383,7 +403,13 @@ fn run_job(
             note_inner_progress(100);
             continue;
         }
-        let text = decode_loaded(loaded, &pcm[start..end], language, options)?;
+        let text = decode_loaded(
+            loaded,
+            &pcm[start..end],
+            language,
+            options,
+            cancellation,
+        )?;
         let offset_ms = (start as u64 * 1000) / 16_000;
         let mut window_cues = last_cues();
         if options.long_form && !options.timestamps {
@@ -454,6 +480,7 @@ fn decode_loaded(
     pcm: &[f32],
     language: &str,
     options: &DecodeOptions,
+    cancellation: &Cancellation,
 ) -> LfResult<String> {
     let slot = loaded.as_mut().expect("whisper context");
     // `no_context` is set for every decode below, so the state can be reused
@@ -462,8 +489,8 @@ fn decode_loaded(
         .vad_model
         .as_deref()
         .filter(|p| p.is_file() && !VAD_BROKEN.load(Ordering::Relaxed));
-    match decode(&mut slot.state, pcm, language, options, vad) {
-        Err(err) if vad.is_some() && !crate::dictation::is_cancelled() => {
+    match decode(&mut slot.state, pcm, language, options, vad, cancellation) {
+        Err(err) if vad.is_some() && !cancellation.is_cancelled() => {
             // A rejected VAD model must not take dictation down with it.
             eprintln!("localflow: whisper VAD failed ({err}); decoding without VAD");
             // The failed VAD context may be cached on the state; start clean.
@@ -471,7 +498,14 @@ fn decode_loaded(
                 .ctx
                 .create_state()
                 .map_err(|e| LfError::RuntimeUnsupported(e.to_string()))?;
-            let retry = decode(&mut slot.state, pcm, language, options, None);
+            let retry = decode(
+                &mut slot.state,
+                pcm,
+                language,
+                options,
+                None,
+                cancellation,
+            );
             if retry.is_ok() {
                 // Only the VAD step was at fault: skip it for the rest of the session.
                 VAD_BROKEN.store(true, Ordering::Relaxed);
@@ -583,6 +617,7 @@ fn decode(
     language: &str,
     options: &DecodeOptions,
     vad_model: Option<&Path>,
+    cancellation: &Cancellation,
 ) -> LfResult<String> {
     let mut params = FullParams::new(SamplingStrategy::Greedy { best_of: 1 });
     params.set_n_threads(num_threads());
@@ -639,11 +674,12 @@ fn decode(
         params.set_vad_params(vad_params(options.long_form));
         params.enable_vad(true);
     }
-    params.set_abort_callback_safe(crate::dictation::is_cancelled);
+    let abort = cancellation.clone();
+    params.set_abort_callback_safe(move || abort.is_cancelled());
     state
         .full(params, pcm)
         .map_err(|err| LfError::RuntimeUnsupported(err.to_string()))?;
-    if crate::dictation::is_cancelled() {
+    if cancellation.is_cancelled() {
         return Err(LfError::Other("cancelled".into()));
     }
     let n = state.full_n_segments();

@@ -1,0 +1,17 @@
+[package]
+name = "symphonia-adapter-libopus"
+version = "0.3.0"
+description = "LocalFlow-pinned Symphonia adapter for libopus"
+license = "Apache-2.0"
+edition = "2021"
+rust-version = "1.88"
+publish = false
+
+[dependencies]
+log = "0.4.28"
+opusic-sys = { version = "0.7.3", default-features = false }
+symphonia-core = "0.6"
+
+[features]
+default = ["bundled"]
+bundled = ["opusic-sys/bundled"]

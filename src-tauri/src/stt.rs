@@ -1,6 +1,8 @@
 use crate::error::{LfError, LfResult};
 use crate::whisper_stt::DecodeOptions;
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
 pub trait SpeechToText: Send + Sync {
     fn transcribe(
@@ -22,12 +24,59 @@ impl SpeechToText for NativeStt {
         language: &str,
         options: &DecodeOptions,
     ) -> LfResult<String> {
+        transcribe_native(
+            pcm,
+            model_path,
+            language,
+            options,
+            crate::whisper_stt::Cancellation::Dictation,
+        )
+    }
+}
+
+pub fn transcribe_file(
+    pcm: &[f32],
+    model_path: Option<&Path>,
+    language: &str,
+    options: &DecodeOptions,
+    cancellation: Arc<AtomicBool>,
+) -> LfResult<String> {
+    let result = transcribe_native(
+        pcm,
+        model_path,
+        language,
+        options,
+        crate::whisper_stt::Cancellation::File(Arc::clone(&cancellation)),
+    );
+    if cancellation.load(Ordering::Relaxed) {
+        return Err(LfError::AudioCancelled(
+            "Audio file task was cancelled.".into(),
+        ));
+    }
+    result
+}
+
+fn transcribe_native(
+    pcm: &[f32],
+    model_path: Option<&Path>,
+    language: &str,
+    options: &DecodeOptions,
+    cancellation: crate::whisper_stt::Cancellation,
+) -> LfResult<String> {
+    if cancellation.is_cancelled() {
+        return Err(LfError::Other("cancelled".into()));
+    }
         if let Some(path) = model_path {
             if matches!(
                 options.stt_engine.trim().to_ascii_lowercase().as_str(),
                 "gigaam" | "parakeet"
             ) {
-                return crate::sherpa_stt::transcribe(&options.stt_engine, path, pcm);
+                let result = crate::sherpa_stt::transcribe(&options.stt_engine, path, pcm);
+                return if cancellation.is_cancelled() {
+                    Err(LfError::Other("cancelled".into()))
+                } else {
+                    result
+                };
             }
             if options.stt_engine.trim().eq_ignore_ascii_case("tone") {
                 return match crate::tone_stt::transcribe(path, pcm) {
@@ -41,7 +90,7 @@ impl SpeechToText for NativeStt {
             match crate::whisper_stt::transcribe(
                 path,
                 pcm,
-                crate::dictation::cancel_flag(),
+                cancellation,
                 language,
                 options,
             ) {
@@ -65,7 +114,6 @@ impl SpeechToText for NativeStt {
             };
             Err(LfError::ModelMissing(message.into()))
         }
-    }
 }
 
 pub fn transcribe_with_paragraph_pauses(

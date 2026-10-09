@@ -54,6 +54,8 @@ pub mod sherpa_stt;
 pub mod snippets;
 pub mod spoken_tech;
 pub mod stt;
+#[cfg(feature = "audio-symphonia-opus")]
+pub mod symphonia_opus;
 pub mod textscan;
 pub mod tone_stt;
 pub mod uninstall;
@@ -117,6 +119,7 @@ pub fn run() {
             commands::append_audio_upload,
             commands::transcribe_staged_audio,
             commands::transcribe_audio_file,
+            commands::cancel_audio_file_task,
             commands::get_transcribe_progress,
             commands::get_hotkey_status,
             commands::dictation_stop,

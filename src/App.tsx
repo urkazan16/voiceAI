@@ -274,6 +274,7 @@ export function App() {
   const logPaneRef = useRef<HTMLPreElement | null>(null);
   const audioFileRef = useRef<HTMLInputElement | null>(null);
   const audioBusyRef = useRef(false);
+  const audioTaskIdRef = useRef<string | null>(null);
   const autoDownloadStarted = useRef<Record<string, boolean>>({});
   const settingsRef = useRef(settings);
   const saveChain = useRef(Promise.resolve());
@@ -796,6 +797,8 @@ export function App() {
       "path" in file && typeof (file as File & { path?: string }).path === "string"
         ? (file as File & { path: string }).path
         : "";
+    const taskId = globalThis.crypto.randomUUID();
+    audioTaskIdRef.current = taskId;
     setAudioBusy(true);
     audioBusyRef.current = true;
     setFileProgress({
@@ -811,9 +814,10 @@ export function App() {
       const filename = file.name || nativePath || "upload.wav";
       let output;
       if (nativePath) {
-        output = await api.transcribeAudioFile({ filename, path: nativePath });
+        output = await api.transcribeAudioFile({ filename, path: nativePath, taskId });
       } else {
         const id = await api.beginAudioUpload(filename);
+        audioTaskIdRef.current = id;
         const step = 32 * 1024;
         const sendChunk = async (bytes: Uint8Array, total: number, already: number) => {
           let sent = already;
@@ -872,6 +876,7 @@ export function App() {
     } finally {
       setAudioBusy(false);
       audioBusyRef.current = false;
+      audioTaskIdRef.current = null;
       setFileProgress(null);
       if (audioFileRef.current) {
         audioFileRef.current.value = "";
@@ -1203,6 +1208,17 @@ export function App() {
                     {fileProgress.chunk + 1}/{fileProgress.chunks}
                   </p>
                 )}
+                <button
+                  className="mt-3 rounded-full border border-paper/30 px-4 py-1 text-sm"
+                  onClick={() => {
+                    const id = audioTaskIdRef.current;
+                    if (id) {
+                      void api.cancelAudioFileTask(id);
+                    }
+                  }}
+                >
+                  {t.barCancel}
+                </button>
               </div>
             )}
             {pipelineOut && (

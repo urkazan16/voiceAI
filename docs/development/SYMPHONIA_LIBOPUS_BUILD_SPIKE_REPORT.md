@@ -4,6 +4,11 @@ Date: 2026-10-08
 Scope: stage 1 of `SYMPHONIA_LIBOPUS_BACKEND_SPEC.md`  
 Decision: **BLOCKED before integration**
 
+This report is the stage-1 snapshot taken before approval of a pinned local
+adapter patch. Continued implementation and the current decision are recorded
+in `SYMPHONIA_LIBOPUS_PROTOTYPE_REPORT.md`; the failure evidence below remains
+the reason the unmodified crates.io adapter is not used.
+
 ## Result
 
 The requested starting pair cannot be built with LocalFlow's pinned Rust 1.88 toolchain:
@@ -60,17 +65,17 @@ symphonia-adapter-libopus = { version = "=0.3.0", default-features = false, feat
 
 Selected new runtime/build components:
 
-| Component | Version | Role | License / source evidence |
-| --- | ---: | --- | --- |
-| `symphonia` | 0.6.1 | facade, Ogg probe registration | MPL-2.0; crates.io checksum `a7edef6a96b696d4e0cab5ee9ebb7ca155ed95f30a6b45bbb8b97d2727f02424` |
-| `symphonia-core` | 0.6.1 | codec registry and audio buffers | MPL-2.0; locked in `Cargo.lock` |
-| `symphonia-common` | 0.6.1 | Ogg/Opus header parsing | MPL-2.0; locked in `Cargo.lock` |
-| `symphonia-format-ogg` | 0.6.1 | Ogg demuxer | MPL-2.0; locked in `Cargo.lock` |
-| `symphonia-metadata` | 0.6.1 | metadata support required by the Ogg feature | MPL-2.0; locked in `Cargo.lock` |
-| `symphonia-adapter-libopus` | 0.3.0 | Symphonia audio decoder adapter | MIT OR Apache-2.0; crates.io checksum `c6febe6f88f9a9483db7e5b72a2dad916d8f8eb588d18905a39c861319fc7fa1` |
-| `opusic-sys` | 0.7.5 | libopus FFI and bundled build | BSD-3-Clause; crates.io checksum `c9d1ecdf206421bc74343ab3bb2f30ad2abbfee41fa341f7181fecbaf957769a` |
-| vendored libopus | 1.6.1 | native Opus decoder | BSD-3-Clause plus the published patent grant in its `COPYING` file |
-| `cmake` crate | 0.1.58 | native build driver | build dependency selected by `bundled` |
+| Component                   | Version | Role                                         | License / source evidence                                                                                |
+| --------------------------- | ------: | -------------------------------------------- | -------------------------------------------------------------------------------------------------------- |
+| `symphonia`                 |   0.6.1 | facade, Ogg probe registration               | MPL-2.0; crates.io checksum `a7edef6a96b696d4e0cab5ee9ebb7ca155ed95f30a6b45bbb8b97d2727f02424`           |
+| `symphonia-core`            |   0.6.1 | codec registry and audio buffers             | MPL-2.0; locked in `Cargo.lock`                                                                          |
+| `symphonia-common`          |   0.6.1 | Ogg/Opus header parsing                      | MPL-2.0; locked in `Cargo.lock`                                                                          |
+| `symphonia-format-ogg`      |   0.6.1 | Ogg demuxer                                  | MPL-2.0; locked in `Cargo.lock`                                                                          |
+| `symphonia-metadata`        |   0.6.1 | metadata support required by the Ogg feature | MPL-2.0; locked in `Cargo.lock`                                                                          |
+| `symphonia-adapter-libopus` |   0.3.0 | Symphonia audio decoder adapter              | MIT OR Apache-2.0; crates.io checksum `c6febe6f88f9a9483db7e5b72a2dad916d8f8eb588d18905a39c861319fc7fa1` |
+| `opusic-sys`                |   0.7.5 | libopus FFI and bundled build                | BSD-3-Clause; crates.io checksum `c9d1ecdf206421bc74343ab3bb2f30ad2abbfee41fa341f7181fecbaf957769a`      |
+| vendored libopus            |   1.6.1 | native Opus decoder                          | BSD-3-Clause plus the published patent grant in its `COPYING` file                                       |
+| `cmake` crate               |  0.1.58 | native build driver                          | build dependency selected by `bundled`                                                                   |
 
 The resolved feature path is `audio-symphonia-opus -> symphonia-adapter-libopus/bundled -> opusic-sys/bundled`. The `opusic-sys` build script emits static linking for `opus`; it does not select a system libopus in this configuration. The inspected host used CMake 4.4.3 and Apple clang 17.0.0.
 
@@ -88,18 +93,18 @@ These findings mean that merely raising Rust to 1.89 would not complete stage 2:
 
 ## Target status
 
-| Gate | Status | Evidence / reason |
-| --- | --- | --- |
-| Rust 1.88 host build | FAIL | Adapter requires 1.89 and uses syntax rejected by 1.88 |
-| bundled libopus selection | PASS (configuration/source audit) | `bundled` reaches `opusic-sys`; static `opus` link emitted |
-| bundled libopus C compilation on macOS arm64 host | PASS | `opusic-sys 0.7.5` compiled before the Rust adapter failure |
-| macOS arm64 complete build/run | BLOCKED | Adapter Rust compilation fails |
-| macOS x64 build/run | BLOCKED | Same toolchain blocker; target is installed but was not treated as runtime proof |
-| Windows x64 build/run | BLOCKED | Same toolchain blocker; no Windows runtime available in this spike |
-| Linux x64 build/run | BLOCKED | Same toolchain blocker; target/runtime not available in this spike |
-| timing/gain/reference fixtures | BLOCKED | Decoder cannot compile; source audit already identifies required fixes |
-| installer/runtime-library smoke | BLOCKED | No complete experimental binary exists |
-| licensing approval for distribution | PENDING | Existing MPL exception names Servo/cssparser only; `NATIVE.md` disallows unreviewed codec backends |
+| Gate                                              | Status                            | Evidence / reason                                                                                  |
+| ------------------------------------------------- | --------------------------------- | -------------------------------------------------------------------------------------------------- |
+| Rust 1.88 host build                              | FAIL                              | Adapter requires 1.89 and uses syntax rejected by 1.88                                             |
+| bundled libopus selection                         | PASS (configuration/source audit) | `bundled` reaches `opusic-sys`; static `opus` link emitted                                         |
+| bundled libopus C compilation on macOS arm64 host | PASS                              | `opusic-sys 0.7.5` compiled before the Rust adapter failure                                        |
+| macOS arm64 complete build/run                    | BLOCKED                           | Adapter Rust compilation fails                                                                     |
+| macOS x64 build/run                               | BLOCKED                           | Same toolchain blocker; target is installed but was not treated as runtime proof                   |
+| Windows x64 build/run                             | BLOCKED                           | Same toolchain blocker; no Windows runtime available in this spike                                 |
+| Linux x64 build/run                               | BLOCKED                           | Same toolchain blocker; target/runtime not available in this spike                                 |
+| timing/gain/reference fixtures                    | BLOCKED                           | Decoder cannot compile; source audit already identifies required fixes                             |
+| installer/runtime-library smoke                   | BLOCKED                           | No complete experimental binary exists                                                             |
+| licensing approval for distribution               | PENDING                           | Existing MPL exception names Servo/cssparser only; `NATIVE.md` disallows unreviewed codec backends |
 
 ## Decision required before stage 2
 
@@ -114,10 +119,10 @@ Downgrading to the adapter 0.2 series is not a drop-in option because that serie
 
 ## Stage ledger
 
-| Stage | State |
-| --- | --- |
+| Stage                               | State                                                                 |
+| ----------------------------------- | --------------------------------------------------------------------- |
 | 1. Build spike and licensing review | Completed with blocker; distribution review remains pending by design |
-| 2. Isolated decoder | Not started — blocked by stage 1 |
-| 3. Resources and integration | Not started — blocked by stage 1 |
-| 4. Robustness and distribution | Not started — blocked by stage 1 |
-| 5. Final candidate decision | Candidate cannot be accepted in the current pinned configuration |
+| 2. Isolated decoder                 | Not started — blocked by stage 1                                      |
+| 3. Resources and integration        | Not started — blocked by stage 1                                      |
+| 4. Robustness and distribution      | Not started — blocked by stage 1                                      |
+| 5. Final candidate decision         | Candidate cannot be accepted in the current pinned configuration      |

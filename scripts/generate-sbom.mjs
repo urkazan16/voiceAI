@@ -5,9 +5,9 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const outDir = process.argv[2]
-  ? path.resolve(process.argv[2])
-  : path.join(root, "release-artifacts");
+const opusBuild = process.argv.includes("--audio-symphonia-opus");
+const outArg = process.argv.slice(2).find((arg) => arg !== "--audio-symphonia-opus");
+const outDir = outArg ? path.resolve(outArg) : path.join(root, "release-artifacts");
 mkdirSync(outDir, { recursive: true });
 
 const npm = JSON.parse(readFileSync(path.join(root, "package.json"), "utf8"));
@@ -17,7 +17,14 @@ const cargoEnv = {
 };
 const cargo = spawnSync(
   "cargo",
-  ["metadata", "--format-version", "1", "--manifest-path", "src-tauri/Cargo.toml"],
+  [
+    "metadata",
+    "--format-version",
+    "1",
+    "--manifest-path",
+    "src-tauri/Cargo.toml",
+    ...(opusBuild ? ["--features", "audio-symphonia-opus"] : []),
+  ],
   {
     encoding: "utf8",
     cwd: root,
@@ -51,7 +58,7 @@ for (const [name, version] of Object.entries({ ...npm.dependencies, ...npm.devDe
 }
 
 for (const pkg of metadata.packages ?? []) {
-  if (pkg.source) {
+  if (pkg.source || (opusBuild && pkg.name === "symphonia-adapter-libopus")) {
     components.push({
       name: pkg.name,
       version: pkg.version,
@@ -60,6 +67,16 @@ for (const pkg of metadata.packages ?? []) {
       checksum: "lockfile: src-tauri/Cargo.lock",
     });
   }
+}
+
+if (opusBuild) {
+  components.push({
+    name: "libopus",
+    version: "1.6.1",
+    license: "BSD-3-Clause",
+    source: "vendored in crates.io opusic-sys 0.7.5",
+    checksum: "c9d1ecdf206421bc74343ab3bb2f30ad2abbfee41fa341f7181fecbaf957769a",
+  });
 }
 
 const sbom = {
