@@ -21,6 +21,7 @@ pub fn invoked(args: &[String]) -> bool {
                 | "check"
                 | "devices"
                 | "paste-smoke"
+                | "opus-decode-smoke"
                 | "download"
                 | "--help"
                 | "-h"
@@ -64,6 +65,7 @@ enum Command {
     Check,
     Devices,
     PasteSmoke,
+    OpusDecodeSmoke,
     Download,
     Help,
     Version,
@@ -89,6 +91,7 @@ fn parse(args: &[String]) -> Result<Opts, String> {
             "check" => opts.command = Command::Check,
             "devices" => opts.command = Command::Devices,
             "paste-smoke" => opts.command = Command::PasteSmoke,
+            "opus-decode-smoke" => opts.command = Command::OpusDecodeSmoke,
             "download" => opts.command = Command::Download,
             "--help" | "-h" => opts.command = Command::Help,
             "--version" | "-V" => opts.command = Command::Version,
@@ -146,6 +149,7 @@ fn run_inner(args: &[String]) -> Result<i32, String> {
             }
         }
         Command::PasteSmoke => paste_smoke(),
+        Command::OpusDecodeSmoke => opus_decode_smoke(opts),
         Command::Download => download_required(opts),
         Command::Transcribe => transcribe(opts),
     }
@@ -164,6 +168,7 @@ Usage:
   localflow check [--json]
   localflow download [--model MODEL_ID]
   localflow paste-smoke
+  localflow opus-decode-smoke FILE
   localflow --version
   localflow --help
 
@@ -171,6 +176,82 @@ Exit status is 0 on success and non-zero on error.
 Progress goes to stderr; transcripts go to stdout.
 "
     );
+}
+
+fn opus_decode_smoke(opts: Opts) -> Result<i32, String> {
+    if opts.stdin || opts.dir.is_some() || opts.files.len() != 1 {
+        return Err("opus-decode-smoke requires exactly one file".into());
+    }
+    let started = std::time::Instant::now();
+    let pcm = load_cli_file(&opts.files[0], true)?;
+    let decode_ms = started.elapsed().as_secs_f64() * 1000.0;
+    if pcm.is_empty() || pcm.iter().any(|sample| !sample.is_finite()) {
+        return Err("AUDIO_OUTPUT_INVALID: decoded PCM is empty or non-finite".into());
+    }
+
+    #[derive(serde::Serialize)]
+    struct SmokeResult {
+        backend: &'static str,
+        sample_rate: u32,
+        samples: usize,
+        decode_ms: f64,
+        peak_rss_bytes: Option<u64>,
+    }
+
+    #[cfg(feature = "audio-symphonia-opus")]
+    let backend = crate::symphonia_opus::BACKEND_NAME;
+    #[cfg(not(feature = "audio-symphonia-opus"))]
+    let backend = "unavailable";
+
+    println!(
+        "{}",
+        serde_json::to_string(&SmokeResult {
+            backend,
+            sample_rate: 16_000,
+            samples: pcm.len(),
+            decode_ms,
+            peak_rss_bytes: peak_rss_bytes(),
+        })
+        .map_err(|error| error.to_string())?
+    );
+    Ok(0)
+}
+
+#[cfg(unix)]
+fn peak_rss_bytes() -> Option<u64> {
+    let mut usage = std::mem::MaybeUninit::<libc::rusage>::zeroed();
+    // SAFETY: `usage` points to writable storage of the exact type required by
+    // getrusage, and the value is read only after a successful call.
+    if unsafe { libc::getrusage(libc::RUSAGE_SELF, usage.as_mut_ptr()) } != 0 {
+        return None;
+    }
+    // SAFETY: getrusage returned success and initialized the structure.
+    let max_rss = unsafe { usage.assume_init() }.ru_maxrss;
+    if max_rss < 0 {
+        return None;
+    }
+    #[cfg(target_os = "macos")]
+    return Some(max_rss as u64);
+    #[cfg(not(target_os = "macos"))]
+    return (max_rss as u64).checked_mul(1024);
+}
+
+#[cfg(windows)]
+fn peak_rss_bytes() -> Option<u64> {
+    use windows_sys::Win32::System::ProcessStatus::{
+        K32GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS,
+    };
+    use windows_sys::Win32::System::Threading::GetCurrentProcess;
+
+    let mut counters = std::mem::MaybeUninit::<PROCESS_MEMORY_COUNTERS>::zeroed();
+    let size = std::mem::size_of::<PROCESS_MEMORY_COUNTERS>() as u32;
+    // SAFETY: the pseudo-handle is valid for the current process and counters
+    // points to writable storage of `size` bytes.
+    if unsafe { K32GetProcessMemoryInfo(GetCurrentProcess(), counters.as_mut_ptr(), size) } == 0 {
+        return None;
+    }
+    // SAFETY: K32GetProcessMemoryInfo returned success and initialized it.
+    Some(unsafe { counters.assume_init() }.PeakWorkingSetSize as u64)
 }
 
 fn transcribe(opts: Opts) -> Result<i32, String> {
@@ -531,6 +612,18 @@ mod tests {
     fn paste_smoke_command_parses() {
         let opts = parse(&["lf".into(), "paste-smoke".into()]).unwrap();
         assert!(matches!(opts.command, Command::PasteSmoke));
+    }
+
+    #[test]
+    fn opus_decode_smoke_command_parses_one_file() {
+        let opts = parse(&[
+            "lf".into(),
+            "opus-decode-smoke".into(),
+            "fixture.opus".into(),
+        ])
+        .unwrap();
+        assert!(matches!(opts.command, Command::OpusDecodeSmoke));
+        assert_eq!(opts.files, [PathBuf::from("fixture.opus")]);
     }
 
     #[test]

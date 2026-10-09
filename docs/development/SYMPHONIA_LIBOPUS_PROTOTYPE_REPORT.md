@@ -2,7 +2,7 @@
 
 Updated: 2026-10-09
 Scope: stages 1–5 of `SYMPHONIA_LIBOPUS_BACKEND_SPEC.md`
-Decision: **accept as an opt-in engineering prototype; do not distribute or enable by default yet**
+Decision: **approved for optional distribution; do not enable by default yet**
 
 ## Executive result
 
@@ -18,19 +18,20 @@ prototype pinned a local Apache-2.0-selected patch. The patch replaces the
 Rust-1.89-only syntax, carries pre-skip across packets, restores it on reset,
 and applies the Opus header gain exactly once.
 
-This is not a production/distribution approval. Runtime installer smoke tests
-on every target, the project's MPL review for Symphonia, and complete packaged
-license/source-offer verification remain release gates.
+The manual project MPL-2.0 review and exact-source access path are approved.
+The cancellation requirement is formally scoped to decode/resample and
+Whisper. Local macOS x64 package measurement is complete; retained package
+smoke and measurements on the other declared targets remain release gates.
 
 ## Stage ledger
 
-| Stage                               | Result                                      | Evidence                                                                                                                                                           |
-| ----------------------------------- | ------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| 1. Build spike and licensing review | PASS with release blockers                  | Rust 1.88 incompatibility reproduced; local patch approved and pinned; dependency/native tree and SBOM provenance recorded                                         |
-| 2. Isolated decoder                 | PASS on the host                            | Profile validator, strict decoder, trim/gain/downmix, stateful FIR resampler, reference PCM and signal tests pass                                                  |
-| 3. Resources and integration        | PASS for Whisper; partial for alternate STT | Streamed input, budgets/deadline, independent cancellation, RAII staging cleanup, UI/CLI route and errors; T-One/Sherpa cannot abort inside their synchronous call |
-| 4. Robustness and distribution      | PARTIAL                                     | Expanded fixtures, packaged license texts and local dependency inspection pass; remote target/installed-app smoke and legal review remain pending                  |
-| 5. Candidate decision               | ACCEPT PROTOTYPE ONLY                       | Keep feature and runtime route off by default; do not advertise or ship until remaining gates pass                                                                 |
+| Stage                               | Result                                  | Evidence                                                                                                                                                    |
+| ----------------------------------- | --------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1. Build spike and licensing review | PASS                                    | Rust 1.88 incompatibility reproduced; local patch approved and pinned; MPL review and exact-source manifest recorded                                        |
+| 2. Isolated decoder                 | PASS on the host                        | Profile validator, strict decoder, trim/gain/downmix, stateful FIR resampler, reference PCM and signal tests pass                                           |
+| 3. Resources and integration        | PASS under scoped cancellation contract | Streamed input, budgets/deadline, independent cancellation, RAII staging cleanup, UI/CLI route and documented result suppression for synchronous native STT |
+| 4. Robustness and distribution      | PARTIAL                                 | Expanded fixtures, bundled notices/source manifest, local macOS package measurement and inspection pass; remote target measurements remain pending          |
+| 5. Candidate decision               | APPROVE OPTIONAL DISTRIBUTION           | Keep feature and runtime route off by default until retained target-matrix evidence is green                                                                |
 
 ## Implemented contract
 
@@ -50,6 +51,9 @@ license/source-offer verification remain release gates.
   validation, packet decode, and at least every 1024 resampler outputs.
 - Emits stable `AUDIO_*` error categories and avoids user path/audio/tag/text
   logging on the new command route.
+- Provides a model-free `opus-decode-smoke` CLI diagnostic for packaged-runtime
+  verification; it reports backend, sample rate, sample count, decode time and
+  process peak RSS.
 - Cleans staged uploads with an owning RAII guard on success, error,
   cancellation and Rust unwind. Abrupt process termination remains subject to
   normal OS/application temp cleanup.
@@ -58,9 +62,11 @@ Whisper file recognition now carries the independent file token into
 whisper.cpp's abort callback. A queued task polls the token every 50 ms, and a
 unit test verifies return within one second. Dictation continues to use its own
 global token. The T-One, GigaAM and Parakeet wrappers do not expose a comparable
-mid-inference abort callback; file cancellation is checked before and after
-those synchronous calls, so the sub-second end-to-end gate remains open for
-those alternate engines.
+mid-inference abort callback. Their accepted contract is immediate cancellation
+state plus result suppression before/after synchronous native inference; it is
+not a sub-second worker-release guarantee. New native engines conservatively
+default to the same mode. The complete decision is recorded in
+`STT_CANCELLATION_CONTRACT.md`.
 
 ## Audio and robustness evidence
 
@@ -108,10 +114,25 @@ Rust 1.88, `audio-symphonia-opus` enabled.
 | 1 s mono fixture    |     10,131 B |  16,000 samples |                 11 ms | 0.51 s cold launch | not captured |
 | 60 s synthetic mono |    662,320 B | 960,000 samples |                538 ms |             0.55 s |  7,811,072 B |
 
-The benchmark executable was 810,344 bytes. This is not an installer-size
-delta or a comparison with the legacy route; those measurements remain for the
-installed-build matrix. The 60-second file was generated only for local
-performance measurement and is not committed as a fixture.
+The benchmark executable was 810,344 bytes. The 60-second file was generated
+only for local performance measurement and is not committed as a fixture.
+
+The final candidate was measured again as two otherwise identical release
+builds from the same checkout and toolchain. The default executable was
+36,731,776 bytes and the `audio-symphonia-opus` executable was 37,195,680
+bytes: a 463,904-byte (1.263%) increase. The earlier pre-instrumentation result
+was +459,752 bytes (+1.231%). `otool -L` listed no libopus dylib.
+
+Unsigned headless DMGs were then created from those apps with the same Tauri
+`create-dmg` script, fixed 150 MiB intermediate image and compression settings.
+The default DMG was 32,146,123 bytes and the feature DMG was 32,400,412 bytes:
+a 254,289-byte (0.791%) increase. This is a controlled local payload comparison,
+not a signed/notarized release-size claim.
+
+Running the packaged one-second fixture from the final feature app took 9.964
+ms and reported 7,155,712 bytes peak RSS. Repeated process launches vary, so
+the retained per-target CI reports, rather than this single sample, are the
+release comparison record.
 
 ## Build, test and supply-chain evidence
 
@@ -130,19 +151,48 @@ npm run build:ui
 npm run check:js
 npm run license:check
 npm run sbom:opus -- /tmp/localflow-opus-sbom
+cargo build --manifest-path src-tauri/Cargo.toml --locked --release --bin localflow
+cargo build --manifest-path src-tauri/Cargo.toml --locked --release \
+  --bin localflow --features audio-symphonia-opus
+npx tauri build --bundles app \
+  --config '{"bundle":{"macOS":{"signingIdentity":null}}}' -- \
+  --locked --features audio-symphonia-opus
+LOCALFLOW_SKIP_BUILD=1 LOCALFLOW_AUDIO_SYMPHONIA_OPUS=1 \
+  npm run build:release
 ```
 
-The full default Rust library suite completed with 298 passed, 3 ignored and 0
-failed tests. With the feature enabled, 325 passed, 3 were ignored and 0
-failed; the standalone patched adapter adds 2 passing tests. The frontend suite
+The full default Rust library suite completed with 301 passed, 3 ignored and 0
+failed tests. With the feature enabled, 328 passed, 3 were ignored and 0
+failed; both runs also passed all 46 integration, acceptance and performance
+tests. The standalone patched adapter adds 2 passing tests. The frontend suite
 passes 28 tests. The SBOM
 includes the local adapter, `opusic-sys`, and bundled libopus 1.6.1 with the
 locked source checksum. CI now builds/tests the feature on the declared macOS,
 Windows and Linux targets, runs a real decode, and rejects a dynamic libopus
-dependency. Local `otool -L` inspection found no libopus dylib. The MPL-2.0,
-selected Apache-2.0 and libopus license texts are packaged. A committed workflow
-definition is not evidence that remote jobs or installed binaries have passed,
-and the Symphonia MPL decision remains a manual project review.
+dependency. Local `otool -L` inspection found no libopus dylib. Tauri is
+configured to embed `NOTICE` and the separate license texts in every installed
+application, and the package job retains those files, the SBOM and changelog as
+CI artifacts. `SHA256SUMS` covers the SBOM, NOTICE, changelog and every separate
+license and source-manifest file as well as top-level installer files. The
+manual review in `docs/licensing/SYMPHONIA_MPL_REVIEW.md` approves the five
+unmodified Symphonia 0.6.1 crates and records exact crates.io archive URLs and
+Cargo.lock hashes. A committed workflow definition is not evidence that remote
+jobs or installed binaries have passed.
+
+A local unsigned macOS x64 experimental `.app` was also built in release mode.
+Its actual `Contents/Resources` contains `NOTICE`, the complete
+`THIRD_PARTY_LICENSES` directory and the model catalog at their configured
+paths. The packaged executable contains the Symphonia/libopus route and has no
+dynamic libopus dependency. The release wrapper executed `opus-decode-smoke`
+from that packaged executable and verified exactly 16,000 mono samples at 16
+kHz from the pinned one-second fixture. This host bundle inspection is green,
+but it is not evidence for Windows and Linux installers. The controlled local
+unsigned/headless DMG size comparison is recorded above.
+
+CI has a separate manual `opus_package_smoke` dispatch. It builds all four
+declared target packages, executes the same packaged-runtime smoke, and does
+not upload or publish the experimental installers. The workflow definition is
+committed, but a remote run must still be retained before release acceptance.
 
 ## Enable and disable
 
@@ -159,6 +209,15 @@ with `LOCALFLOW_EXPERIMENTAL_OPUS=1`. Omitting either the Cargo feature or the
 environment variable disables the desktop route. The CLI flag is explicit and
 does not require the environment variable.
 
+The release wrapper can build the experimental artifact and matching SBOM with:
+
+```sh
+LOCALFLOW_AUDIO_SYMPHONIA_OPUS=1 npm run build:release
+```
+
+Without that build-time variable, `npm run build:release` remains a default
+feature-off build.
+
 ## Unsupported inputs
 
 WebM/Matroska/MP4 Opus, raw Opus, Vorbis-in-Ogg, mapping families other than 0,
@@ -169,16 +228,12 @@ promise native AAC/M4A, ALAC, MP3, FLAC, AIFF or Vorbis support.
 ## Remaining production gates
 
 1. Run and retain green CI/runtime evidence on Windows x64, macOS x64/arm64 and
-   Linux x64, then smoke-test installed artifacts without FFmpeg or system
-   libopus and inspect their dynamic dependencies.
-2. Complete the project's manual MPL-2.0 review for Symphonia and verify the
-   corresponding-source access path in the final packaged artifact. Required
-   license texts and notices are now present in the repository.
-3. Either add cooperative cancellation inside T-One/GigaAM/Parakeet or formally
-   narrow the sub-second cancellation contract to decoding and Whisper
-   recognition.
-4. Measure installer-size delta and compare release performance against the
-   existing baseline on fixed hardware for every target.
+   Linux x64 using the manual `opus_package_smoke` matrix, without FFmpeg or
+   system libopus, and inspect their dynamic dependencies. The macOS x64 local
+   packaged-runtime smoke is green; the remote matrix has not been run here.
+2. Retain installer-size and packaged performance results from that matrix for
+   macOS arm64, Windows x64 and Linux x64. The fixed-host macOS x64 measurement
+   is complete and recorded above.
 
-Until these are complete, the correct outcome is an available engineering
-prototype whose default behavior and production packaging remain unchanged.
+Until these cross-target checks are retained, the backend remains optional and
+off by default; the existing default audio behavior remains unchanged.

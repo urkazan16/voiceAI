@@ -7,6 +7,12 @@ on:
     tags:
       - "v*"
   workflow_dispatch:
+    inputs:
+      opus_package_smoke:
+        description: Build and runtime-test experimental Opus installers without publishing them
+        type: boolean
+        required: false
+        default: false
 
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
@@ -231,12 +237,158 @@ jobs:
           MACOSX_DEPLOYMENT_TARGET: "12.0"
           CMAKE_OSX_ARCHITECTURES: ${{ matrix.cmake_osx_arch }}
 
+  # Manual and intentionally non-publishing: this builds each real installer,
+  # executes the packaged decoder, and then lets the runner discard the files.
+  opus-package-smoke:
+    name: opus package smoke (${{ matrix.name }})
+    if: github.event_name == 'workflow_dispatch' && inputs.opus_package_smoke
+    environment: APPLE_CERTIFICATE
+    runs-on: ${{ matrix.os }}
+    needs: [build, security]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-14
+            name: macos-x64
+            cargo_target: x86_64-apple-darwin
+            cmake_osx_arch: x86_64
+          - os: macos-14
+            name: macos-arm64
+            cargo_target: aarch64-apple-darwin
+            cmake_osx_arch: arm64
+          - os: windows-latest
+            name: windows-x64
+            cargo_target: x86_64-pc-windows-msvc
+          - os: ubuntu-22.04
+            name: linux-x64
+            cargo_target: x86_64-unknown-linux-gnu
+    steps:
+      - uses: actions/checkout@v4
+      - name: Require Apple signing and notarization secrets
+        if: runner.os == 'macOS'
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          missing=()
+          for key in APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_SIGNING_IDENTITY APPLE_ID APPLE_PASSWORD APPLE_TEAM_ID; do
+            if [[ -z "${!key}" ]]; then
+              missing+=("$key")
+            fi
+          done
+          if [[ ${#missing[@]} -gt 0 ]]; then
+            echo "Experimental macOS package smoke requires signing and notarization: ${missing[*]}"
+            exit 1
+          fi
+      - if: runner.os == 'Linux'
+        uses: ./.github/actions/linux-deps
+      - if: runner.os == 'Linux'
+        run: sudo apt-get install --no-install-recommends -y file libfuse2 squashfs-tools
+      - if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          echo 'LIBCLANG_PATH=C:\Program Files\LLVM\lib' >> "$GITHUB_ENV"
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.88.0
+          targets: ${{ matrix.cargo_target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+          prefix-key: opus-package-${{ matrix.name }}
+      - run: npm ci
+      - name: Import Developer ID certificate
+        if: runner.os == 'macOS'
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+        run: bash scripts/ci-macos-import-cert.sh
+      - name: Build the default package baseline
+        run: npm run build:release
+        env:
+          LOCALFLOW_GIT_SHA: ${{ github.sha }}
+          CARGO_BUILD_TARGET: ${{ matrix.cargo_target }}
+          MACOSX_DEPLOYMENT_TARGET: "12.0"
+          CMAKE_OSX_ARCHITECTURES: ${{ matrix.cmake_osx_arch }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+      - name: Record the default package sizes
+        run: node scripts/measure-opus-package-delta.mjs snapshot default .release-measure/default.json
+        env:
+          CARGO_BUILD_TARGET: ${{ matrix.cargo_target }}
+      - name: Build and runtime-test the experimental package
+        run: npm run build:release
+        env:
+          LOCALFLOW_AUDIO_SYMPHONIA_OPUS: "1"
+          LOCALFLOW_GIT_SHA: ${{ github.sha }}
+          CARGO_BUILD_TARGET: ${{ matrix.cargo_target }}
+          MACOSX_DEPLOYMENT_TARGET: "12.0"
+          CMAKE_OSX_ARCHITECTURES: ${{ matrix.cmake_osx_arch }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+      - name: Compare default and experimental release artifacts
+        run: |
+          node scripts/measure-opus-package-delta.mjs snapshot audio-symphonia-opus .release-measure/opus.json
+          node scripts/measure-opus-package-delta.mjs compare .release-measure/default.json .release-measure/opus.json release-artifacts/OPUS_PACKAGE_DELTA
+        env:
+          CARGO_BUILD_TARGET: ${{ matrix.cargo_target }}
+      - name: Verify packaged executable has no dynamic libopus (macOS)
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          executable="src-tauri/target/${{ matrix.cargo_target }}/release/bundle/macos/LocalFlow.app/Contents/MacOS/localflow"
+          dependencies="$(otool -L "$executable")"
+          printf '%s\n' "$dependencies"
+          ! grep -Eiq 'libopus[^/]*\.dylib' <<<"$dependencies"
+      - name: Verify packaged executable has no dynamic libopus (Linux)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          executable="src-tauri/target/${{ matrix.cargo_target }}/release/localflow"
+          dependencies="$(ldd "$executable")"
+          printf '%s\n' "$dependencies"
+          ! grep -Eiq 'libopus[^/]*\.so' <<<"$dependencies"
+      - name: Verify packaged executable has no dynamic libopus (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $executable = 'src-tauri/target/${{ matrix.cargo_target }}/release/localflow.exe'
+          $dependencies = & 'C:\Program Files\LLVM\bin\llvm-objdump.exe' -p $executable
+          $dependencies
+          if ($dependencies -match '(?i)libopus[^\s]*\.dll') {
+            throw 'Packaged experimental decoder unexpectedly depends on a libopus DLL'
+          }
+      - name: Retain package measurements (installers are intentionally excluded)
+        uses: actions/upload-artifact@v4
+        with:
+          name: opus-measurement-${{ matrix.name }}
+          path: |
+            .release-measure/default.json
+            .release-measure/opus.json
+            release-artifacts/OPUS_PACKAGE_DELTA.json
+            release-artifacts/OPUS_PACKAGE_DELTA.md
+            release-artifacts/opus-runtime-metrics.json
+          if-no-files-found: error
+
   # Installers are uploaded as run artifacts. Skip on pull_request (including
   # Dependabot): those runs only compile. Tag a v* release or push main / Run workflow.
   package:
     name: package
     if: >
-      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'workflow_dispatch' && !inputs.opus_package_smoke) ||
       (github.event_name == 'push' &&
         (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')))
     # Secrets live in the APPLE_CERTIFICATE environment, not repository secrets.
@@ -347,12 +499,16 @@ jobs:
             release-artifacts/LocalFlow-*.deb
             release-artifacts/LocalFlow-*.AppImage
             release-artifacts/SHA256SUMS
+            release-artifacts/NOTICE
+            release-artifacts/THIRD_PARTY_LICENSES/
+            release-artifacts/sbom.cdx.json
+            release-artifacts/CHANGELOG.md
           if-no-files-found: error
 
   publish:
     name: publish
     if: >
-      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'workflow_dispatch' && !inputs.opus_package_smoke) ||
       (github.event_name == 'push' &&
         (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')))
     needs: package

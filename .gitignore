@@ -11,6 +11,7 @@ src-tauri/resources/runtime/*.dll
 src-tauri/gen/
 third_party/
 release-artifacts/
+.release-measure/
 models/
 *.dmg
 *.app

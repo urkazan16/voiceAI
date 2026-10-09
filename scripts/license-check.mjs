@@ -31,11 +31,71 @@ for (const file of [
   "licenses/libopus.txt",
   "licenses/symphonia-mpl-2.0.txt",
   "licenses/symphonia-adapter-apache-2.0.txt",
+  "licenses/symphonia-source.json",
 ]) {
   if (!existsSync(path.join(root, file))) {
     console.error(`LICENSE FAIL missing packaged text: ${file}`);
     process.exit(1);
   }
+}
+
+const symphoniaSource = JSON.parse(
+  readFileSync(path.join(root, "licenses/symphonia-source.json"), "utf8"),
+);
+const cargoLock = readFileSync(path.join(root, "src-tauri/Cargo.lock"), "utf8");
+const expectedSymphoniaCrates = new Set([
+  "symphonia",
+  "symphonia-common",
+  "symphonia-core",
+  "symphonia-format-ogg",
+  "symphonia-metadata",
+]);
+if (
+  symphoniaSource.version !== "0.6.1" ||
+  symphoniaSource.license !== "MPL-2.0" ||
+  symphoniaSource.crates?.length !== expectedSymphoniaCrates.size
+) {
+  console.error("LICENSE FAIL invalid Symphonia source manifest header or crate count");
+  process.exit(1);
+}
+for (const item of symphoniaSource.crates) {
+  if (!expectedSymphoniaCrates.delete(item.name)) {
+    console.error(`LICENSE FAIL unexpected or duplicate Symphonia source: ${item.name}`);
+    process.exit(1);
+  }
+  const expectedUrl = `https://crates.io/api/v1/crates/${item.name}/0.6.1/download`;
+  if (item.download !== expectedUrl || !/^[a-f0-9]{64}$/.test(item.sha256)) {
+    console.error(`LICENSE FAIL invalid Symphonia source URL/hash: ${item.name}`);
+    process.exit(1);
+  }
+  const escapedName = item.name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const locked = new RegExp(
+    `\\[\\[package\\]\\]\\nname = "${escapedName}"\\nversion = "0\\.6\\.1"\\nsource = "[^"]+"\\nchecksum = "${item.sha256}"`,
+  );
+  if (!locked.test(cargoLock)) {
+    console.error(`LICENSE FAIL Symphonia source does not match Cargo.lock: ${item.name}`);
+    process.exit(1);
+  }
+}
+if (expectedSymphoniaCrates.size !== 0) {
+  console.error(
+    `LICENSE FAIL missing Symphonia source entries: ${[...expectedSymphoniaCrates].join(", ")}`,
+  );
+  process.exit(1);
+}
+
+const tauriConfig = JSON.parse(readFileSync(path.join(root, "src-tauri/tauri.conf.json"), "utf8"));
+const bundledResources = tauriConfig.bundle?.resources;
+if (
+  !bundledResources ||
+  Array.isArray(bundledResources) ||
+  bundledResources["../NOTICE"] !== "NOTICE" ||
+  bundledResources["../licenses/"] !== "THIRD_PARTY_LICENSES/"
+) {
+  console.error(
+    "LICENSE FAIL Tauri bundle must embed NOTICE and licenses/ in stable resource paths",
+  );
+  process.exit(1);
 }
 
 function licenseString(raw) {

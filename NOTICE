@@ -47,8 +47,9 @@ Optional experimental Ogg/Opus build only:
 Symphonia 0.6.1
 Copyright (c) The Project Symphonia Developers
 MPL-2.0. This component is not enabled in the default build.
-See licenses/symphonia-mpl-2.0.txt. The corresponding unmodified source is
-identified by the Cargo.lock crates.io checksums and experimental SBOM.
+See licenses/symphonia-mpl-2.0.txt. Exact corresponding unmodified Source Code
+Form, direct download URLs and SHA-256 checksums are listed in
+licenses/symphonia-source.json.
 
 symphonia-adapter-libopus 0.3.0 (LocalFlow-pinned modifications)
 Apache-2.0 selected from the upstream MIT OR Apache-2.0 options.

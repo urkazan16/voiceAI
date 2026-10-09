@@ -28,10 +28,22 @@ experimental SBOM with `npm run sbom:opus`.
 
 The packaged license texts are `licenses/symphonia-mpl-2.0.txt`,
 `licenses/symphonia-adapter-apache-2.0.txt`, and `licenses/libopus.txt`.
-Symphonia source identity and checksums are retained in `Cargo.lock` and the
-generated SBOM; a release must preserve a practical way for recipients to
-obtain the exact corresponding MPL-covered source.
+Tauri copies `NOTICE` and the complete `licenses/` directory into stable
+application resource paths, while CI retains the same files with the SBOM and
+changelog beside each target's installer artifact.
+The project review in `SYMPHONIA_MPL_REVIEW.md` approves Symphonia 0.6.1 for
+optional distribution. `licenses/symphonia-source.json` gives recipients
+direct crates.io URLs and Cargo.lock SHA-256 values for the exact five
+MPL-covered source archives; it is bundled with the license texts and covered
+by `SHA256SUMS`.
 
-This feature is not approved for a production installer until the separate
-Symphonia MPL-2.0 review, target installer smoke tests, and final packaged
-artifact inspection are complete.
+Build an experimental installer and its feature-aware SBOM with
+`LOCALFLOW_AUDIO_SYMPHONIA_OPUS=1 npm run build:release`. Omitting the variable
+keeps the normal release feature off.
+The experimental wrapper also runs `opus-decode-smoke` from the packaged
+application and requires exactly 16,000 mono samples at 16 kHz from the pinned
+one-second fixture before it accepts the package.
+
+The MPL-2.0 review and local macOS packaged-artifact inspection are complete.
+Production enablement still requires retained green package-smoke and
+measurement results for every declared release target.

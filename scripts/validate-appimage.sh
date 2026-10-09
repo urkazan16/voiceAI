@@ -73,4 +73,17 @@ mkdir "$extract_dir"
 diricon_target="$(readlink "$extract_dir/squashfs-root/.DirIcon")"
 [[ "$diricon_target" != /* ]] || die ".DirIcon must be relative, got: $diricon_target"
 
+require_payload_file() {
+  local name="$1"
+  local found
+  found="$(find "$extract_dir/squashfs-root" -type f -name "$name" -print -quit)"
+  [[ -n "$found" ]] || die "required packaged resource is missing: $name"
+}
+
+require_payload_file NOTICE
+require_payload_file libopus.txt
+require_payload_file symphonia-mpl-2.0.txt
+require_payload_file symphonia-source.json
+require_payload_file symphonia-adapter-apache-2.0.txt
+
 echo "Validated AppImage catalog requirements: $appimage"

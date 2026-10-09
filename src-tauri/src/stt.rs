@@ -16,6 +16,25 @@ pub trait SpeechToText: Send + Sync {
 
 pub struct NativeStt;
 
+/// File-task cancellation contract for the selected recognizer.
+///
+/// Whisper exposes an abort callback and must return within one second of a
+/// cancellation request. The sherpa-onnx file APIs enter a synchronous native
+/// inference call with no abort hook; those engines suppress the eventual
+/// result but may keep their worker occupied until that call returns.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FileCancellationMode {
+    CooperativeAbort,
+    ResultSuppression,
+}
+
+pub fn file_cancellation_mode(engine: &str) -> FileCancellationMode {
+    match engine.trim().to_ascii_lowercase().as_str() {
+        "" | "whisper" => FileCancellationMode::CooperativeAbort,
+        _ => FileCancellationMode::ResultSuppression,
+    }
+}
+
 impl SpeechToText for NativeStt {
     fn transcribe(
         &self,
@@ -206,6 +225,20 @@ mod tests {
         )
         .unwrap_err();
         assert_eq!(err.code(), "AUDIO_CANCELLED");
+    }
+
+    #[test]
+    fn file_cancellation_contract_is_conservative_for_native_engines() {
+        assert_eq!(
+            file_cancellation_mode("whisper"),
+            FileCancellationMode::CooperativeAbort
+        );
+        for engine in ["tone", "gigaam", "parakeet", "future-native-engine"] {
+            assert_eq!(
+                file_cancellation_mode(engine),
+                FileCancellationMode::ResultSuppression
+            );
+        }
     }
 
     #[test]

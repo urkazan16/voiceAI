@@ -1,0 +1,35 @@
+{
+  "component": "Symphonia",
+  "version": "0.6.1",
+  "license": "MPL-2.0",
+  "sourceFormNotice": "These unmodified crates are the exact MPL-2.0 Source Code Form used by the optional LocalFlow Ogg/Opus backend.",
+  "upstreamRepository": "https://github.com/pdeljanov/Symphonia",
+  "upstreamTag": "v0.6.1",
+  "crates": [
+    {
+      "name": "symphonia",
+      "download": "https://crates.io/api/v1/crates/symphonia/0.6.1/download",
+      "sha256": "a7edef6a96b696d4e0cab5ee9ebb7ca155ed95f30a6b45bbb8b97d2727f02424"
+    },
+    {
+      "name": "symphonia-common",
+      "download": "https://crates.io/api/v1/crates/symphonia-common/0.6.1/download",
+      "sha256": "2acc3fcc18ec9b8cdd48614e259c4cf0d27b71d41e5d9b120b42c5adab12d7c4"
+    },
+    {
+      "name": "symphonia-core",
+      "download": "https://crates.io/api/v1/crates/symphonia-core/0.6.1/download",
+      "sha256": "01c412864d599d4750d0c3d684d7e093ec05e5309681ef5252cc1096a437f6e0"
+    },
+    {
+      "name": "symphonia-format-ogg",
+      "download": "https://crates.io/api/v1/crates/symphonia-format-ogg/0.6.1/download",
+      "sha256": "0b5495e7f7e3c7035328d82b6d6e377eef289bb0c4105bdeb557fc93a833f994"
+    },
+    {
+      "name": "symphonia-metadata",
+      "download": "https://crates.io/api/v1/crates/symphonia-metadata/0.6.1/download",
+      "sha256": "83713a97705d77bdef7cdbc0768fd6e5a54e4cd7e48d60a806ae85639e2c87c6"
+    }
+  ]
+}

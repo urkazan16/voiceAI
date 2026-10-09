@@ -18,6 +18,12 @@ import { fileURLToPath } from "node:url";
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const host = process.platform;
 const cargoTarget = process.env.CARGO_BUILD_TARGET?.trim() || "";
+const experimentalOpus = process.env.LOCALFLOW_AUDIO_SYMPHONIA_OPUS === "1";
+let experimentalRuntimeMetrics = null;
+
+function opusCargoArgs() {
+  return experimentalOpus ? ["--features", "audio-symphonia-opus"] : [];
+}
 
 function releaseArch() {
   if (cargoTarget.startsWith("x86_64") || cargoTarget.startsWith("i686")) {
@@ -108,7 +114,7 @@ if (!skipBuild) {
   if (cargoTarget) {
     tauriArgs.push("--target", cargoTarget);
   }
-  tauriArgs.push("--", "--locked");
+  tauriArgs.push("--", "--locked", ...opusCargoArgs());
   run("npx", tauriArgs);
   if (host === "win32") {
     verifyWindowsSherpaRuntimeInInstaller();
@@ -122,6 +128,17 @@ mkdirSync(artifacts, { recursive: true });
 const bundleDir = path.join(rustReleaseDir(), "bundle");
 const ARTIFACT_FILE = /\.(dmg|exe|msi|deb|rpm|AppImage)$/i;
 
+if (host === "darwin") {
+  verifyBundledComplianceFiles(
+    path.join(bundleDir, "macos", "LocalFlow.app", "Contents", "Resources"),
+  );
+}
+if (experimentalOpus && host === "darwin") {
+  experimentalRuntimeMetrics = verifyExperimentalOpusExecutable(
+    path.join(bundleDir, "macos", "LocalFlow.app", "Contents", "MacOS", "localflow"),
+  );
+}
+
 if (host === "linux") {
   const appImageDir = path.join(bundleDir, "appimage");
   const appImages = existsSync(appImageDir)
@@ -132,6 +149,12 @@ if (host === "linux") {
     process.exit(1);
   }
   run("bash", ["scripts/harden-appimage.sh", path.join(appImageDir, appImages[0])]);
+  if (experimentalOpus) {
+    experimentalRuntimeMetrics = verifyExperimentalOpusExecutable(
+      path.join(appImageDir, appImages[0]),
+      ["--appimage-extract-and-run"],
+    );
+  }
 }
 
 function collect(kind) {
@@ -141,7 +164,13 @@ function collect(kind) {
     const from = path.join(dir, name);
     const to = path.join(artifacts, name);
     const st = lstatSync(from);
-    const take = st.isDirectory() ? name.endsWith(".app") : ARTIFACT_FILE.test(name);
+    // Failed macOS packaging can leave an uncompressed rw.*.dmg beside the
+    // .app. Only collect the artifact type owned by each bundle directory so
+    // that a temporary image cannot overwrite the final compressed DMG.
+    const take =
+      kind === "macos"
+        ? st.isDirectory() && name.endsWith(".app")
+        : !st.isDirectory() && !name.startsWith("rw.") && ARTIFACT_FILE.test(name);
     if (!take) continue;
     if (existsSync(to)) {
       rmSync(to, { recursive: true, force: true });
@@ -163,14 +192,34 @@ if (ciMacos) {
   notarizeAndStapleDmgs(artifacts);
 }
 
-run("node", ["scripts/generate-sbom.mjs", artifacts]);
-run("node", ["scripts/write-sha256sums.mjs", artifacts]);
+run("node", [
+  "scripts/generate-sbom.mjs",
+  ...(experimentalOpus ? ["--audio-symphonia-opus"] : []),
+  artifacts,
+]);
 cpSync(path.join(root, "licenses"), path.join(artifacts, "THIRD_PARTY_LICENSES"), {
   recursive: true,
 });
 copyFileSync(path.join(root, "NOTICE"), path.join(artifacts, "NOTICE"));
 
 writeFileSync(path.join(artifacts, "CHANGELOG.md"), readFileSync(path.join(root, "CHANGELOG.md")));
+if (experimentalRuntimeMetrics) {
+  writeFileSync(
+    path.join(artifacts, "opus-runtime-metrics.json"),
+    `${JSON.stringify(
+      {
+        platform: host,
+        arch: releaseArch(),
+        ...experimentalRuntimeMetrics,
+      },
+      null,
+      2,
+    )}\n`,
+  );
+} else {
+  rmSync(path.join(artifacts, "opus-runtime-metrics.json"), { force: true });
+}
+run("node", ["scripts/write-sha256sums.mjs", artifacts]);
 
 console.log(
   `Release artifacts for LocalFlow ${version} (${host}/${releaseArch()}) written to ${artifacts}`,
@@ -230,6 +279,7 @@ function stageWindowsSherpaRuntime() {
     "--locked",
     "--bin",
     "localflow",
+    ...opusCargoArgs(),
   ];
   if (cargoTarget) {
     cargoArgs.push("--target", cargoTarget);
@@ -264,6 +314,69 @@ function stagedWindowsRuntimeDlls() {
   return dlls;
 }
 
+function verifyExperimentalOpusExecutable(executable, launcherArgs = []) {
+  const fixture = path.join(root, "tests/fixtures/ogg_opus/mono-997hz-1s.opus");
+  if (!existsSync(executable)) {
+    throw new Error(`experimental Opus smoke executable is missing: ${executable}`);
+  }
+  const result = spawnSync(executable, [...launcherArgs, "opus-decode-smoke", fixture], {
+    cwd: root,
+    env: process.env,
+    encoding: "utf8",
+    maxBuffer: 1024 * 1024,
+  });
+  if (result.error || result.status !== 0) {
+    if (result.stdout) process.stdout.write(result.stdout);
+    if (result.stderr) process.stderr.write(result.stderr);
+    throw new Error(
+      `packaged experimental Opus decode failed (${result.error?.message ?? result.status})`,
+    );
+  }
+  let decoded;
+  try {
+    decoded = JSON.parse(result.stdout.trim());
+  } catch {
+    throw new Error(`packaged experimental Opus decode returned invalid JSON: ${result.stdout}`);
+  }
+  if (
+    decoded.backend !== "symphonia-libopus" ||
+    decoded.sample_rate !== 16_000 ||
+    decoded.samples !== 16_000
+  ) {
+    throw new Error(
+      `packaged experimental Opus decode returned unexpected output: ${result.stdout}`,
+    );
+  }
+  if (
+    typeof decoded.decode_ms !== "number" ||
+    !Number.isFinite(decoded.decode_ms) ||
+    decoded.decode_ms < 0 ||
+    !Number.isSafeInteger(decoded.peak_rss_bytes) ||
+    decoded.peak_rss_bytes <= 0
+  ) {
+    throw new Error(`packaged experimental Opus metrics are invalid: ${result.stdout}`);
+  }
+  console.log(
+    `Packaged experimental Opus decode passed (16,000 mono samples at 16 kHz, ${decoded.decode_ms.toFixed(2)} ms, peak RSS ${decoded.peak_rss_bytes} bytes).`,
+  );
+  return decoded;
+}
+
+function verifyBundledComplianceFiles(resourceRoot) {
+  for (const relative of [
+    "NOTICE",
+    path.join("THIRD_PARTY_LICENSES", "libopus.txt"),
+    path.join("THIRD_PARTY_LICENSES", "symphonia-mpl-2.0.txt"),
+    path.join("THIRD_PARTY_LICENSES", "symphonia-adapter-apache-2.0.txt"),
+    path.join("THIRD_PARTY_LICENSES", "symphonia-source.json"),
+  ]) {
+    if (!existsSync(path.join(resourceRoot, relative))) {
+      throw new Error(`packaged compliance file is missing: ${relative}`);
+    }
+  }
+  console.log("Packaged NOTICE and codec license texts are present.");
+}
+
 /**
  * A DLL in Tauri's resources directory cannot satisfy a PE import: Windows
  * resolves `sherpa-onnx-c-api.dll` before Rust's `main` runs. Install the
@@ -288,6 +401,12 @@ function verifyWindowsSherpaRuntimeInInstaller() {
       if (!existsSync(path.join(installRoot, required))) {
         throw new Error(`NSIS package did not install ${required} next to localflow.exe`);
       }
+    }
+    verifyBundledComplianceFiles(installRoot);
+    if (experimentalOpus) {
+      experimentalRuntimeMetrics = verifyExperimentalOpusExecutable(
+        path.join(installRoot, "localflow.exe"),
+      );
     }
   } finally {
     rmSync(installRoot, { recursive: true, force: true });
